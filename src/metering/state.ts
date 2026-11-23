@@ -10,6 +10,7 @@
 // mentioning cache. Coverage distinguishes a category nobody could measure from one the
 // model simply does not use.
 
+import type { OperationMeteringRecord } from "./record.ts";
 import type { TokenUsage } from "../types.ts";
 import {
   CATEGORY_FIELD,
@@ -40,7 +41,7 @@ export interface UsageCategoryTotal {
   readonly attributedOperationCount: number;
   /** Operations explicitly known not to use this category. */
   readonly notApplicableOperationCount: number;
-  /** Applicable/unknown operations for which this category could not be established. */
+  /** Applicable/unknown operations for which this category was partly or wholly unavailable. */
   readonly unavailableOperationCount: number;
   readonly coverage: CategoryCoverage;
 }
@@ -93,6 +94,10 @@ export interface AgentSessionMeteringState {
   readonly ratedCosts: MoneyTotal;
   readonly unallocatedUsage: UnallocatedUsageState;
   readonly activeBaseline: MeteringBaseline | null;
+  /** The last sealed, accounted native call in this channel's ledger prefix. */
+  readonly nativeCursor?: { readonly channelKey: string; readonly after: string };
+  /** Durable recovery slot. The operation commit clears it with the same transaction. */
+  readonly pendingNativeMetering?: OperationMeteringRecord;
 }
 
 /**
@@ -177,6 +182,8 @@ export interface OperationAccrual {
   /** Applicability from the resolved policy; unknown when no policy was resolved. */
   readonly applicability: Readonly<Record<TokenCategory, CategoryApplicability>> | null;
   readonly baseline: MeteringBaseline | null;
+  /** Known usage covers only part of this operation. */
+  readonly partial?: boolean;
   /** Usage observed but belonging to no operation — never merged into totals. */
   readonly unallocated?: readonly UnallocatedUsageAccrual[];
 }
@@ -198,7 +205,7 @@ export function accrueOperation(
   const nextAggregate = {
     knownTokens: aggregate.knownTokens + (attributable?.totalTokens ?? 0),
     attributedOperationCount: aggregate.attributedOperationCount + (measured ? 1 : 0),
-    unavailableOperationCount: aggregate.unavailableOperationCount + (measured ? 0 : 1),
+    unavailableOperationCount: aggregate.unavailableOperationCount + (!measured || accrual.partial ? 1 : 0),
   };
 
   const categoryTotals: Record<string, UsageCategoryTotal> = {};
@@ -216,7 +223,7 @@ export function accrueOperation(
       notApplicableOperationCount:
         current.notApplicableOperationCount + (value === undefined && notApplicable ? 1 : 0),
       unavailableOperationCount:
-        current.unavailableOperationCount + (value === undefined && !notApplicable ? 1 : 0),
+        current.unavailableOperationCount + (!notApplicable && (value === undefined || accrual.partial) ? 1 : 0),
     };
     categoryTotals[key] = Object.freeze({ ...next, coverage: deriveCoverage(next) });
   }
@@ -374,6 +381,9 @@ function isStructurallyValid(state: AgentSessionMeteringState): boolean {
     if (!isCategoryTotal(totals[key])) return false;
   }
   if (!isMoneyTotal(state.ratedCosts)) return false;
+  const cursor = state.nativeCursor;
+  if (cursor !== undefined && (typeof cursor?.channelKey !== "string" || !cursor.channelKey ||
+    typeof cursor.after !== "string" || !cursor.after)) return false;
 
   const unallocated = state.unallocatedUsage as unknown as Record<string, unknown> | undefined;
   if (!unallocated || !isTokenCount(unallocated.recordCount) || !isMoneyTotal(unallocated.ratedCosts)) {

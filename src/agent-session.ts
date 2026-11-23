@@ -61,6 +61,7 @@ import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
 import { formatResponseMessages } from "./response.ts";
+import { recoverNativeClose } from "./metering/native/durability.ts";
 import { MeteringEngine, type CloseOperationInput, type OpenDetachedOperation, type OpenOperation } from "./metering/engine.ts";
 import {
   AgentSessionHandoffError,
@@ -557,6 +558,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.metering = new MeteringEngine({
       agentSessionId: this.agentSessionId,
       adapterId: config.adapterId,
+      native: config.native !== undefined,
       enforcement: config.metering?.enforcement ?? "best_effort",
       // Absence selects the pinned catalog; `false` is how a consumer says "no rating".
       pricing: config.metering?.pricing ?? createModelsDevResolver(),
@@ -3851,7 +3853,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
     };
   }
 
-  /** Closes a rating unit, emits its record and surfaces a strict-mode block. */
   private async closeOperation(
     operation: OpenOperation,
     outcome: "completed" | "cancelled" | "error",
@@ -3860,15 +3861,16 @@ export class AgentConversation implements AgentClient, Bridgeable {
     engine: MeteringEngine = this.metering,
     nativeMetering?: CloseOperationInput["nativeMetering"],
   ): Promise<OperationMeteringRecord> {
-    const wasBlocked = engine.blocked;
-    const live = engine === this.metering;
+    const wasBlocked = engine.blocked, live = engine === this.metering;
+    if (operation.nativeChannel && this.ownerLifecycle?.nativeMetering) {
+      const replay = await recoverNativeClose(this.ownerLifecycle.nativeMetering, engine, operation);
+      if (replay) return replay;
+    }
     const record = await engine.close(operation, {
       outcome,
       reportedCumulative,
       nativeMetering,
       ...(usageFailureReason ? { usageFailureReason } : {}),
-      // Context and provider cost describe the live thread. An unconfirmed transition
-      // target has neither yet, and borrowing the source's would misreport it.
       contextAfter: live ? this._contextWindow : null,
       providerCostAfter: live ? this._providerCost : null,
     });

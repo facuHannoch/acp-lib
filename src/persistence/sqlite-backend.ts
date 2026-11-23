@@ -48,6 +48,7 @@ import {
   type MessageRecord,
   type MeteringCommitInput,
   type MeteringPersistence,
+  type MeteringOperationIdentity,
   type MeteringRecordListOptions,
   type MeteringRecordPage,
   type NewConversationRecord,
@@ -1341,6 +1342,14 @@ class SqliteMeteringPersistence implements MeteringPersistence {
       ))),
       ...(hasMore ? { nextCursor: encodeOffset(offset + limit) } : {}),
     });
+  }
+
+  async operationIdentity(agentConversationId: AgentConversationId, operationId: string): Promise<MeteringOperationIdentity | null> {
+    const row = this.database.query<MeteringOperationIdentity, [string, string]>(
+      `SELECT outcome, adapter_id AS adapterId, completed_at AS completedAt FROM metering_records
+       WHERE agent_conversation_id = ? AND operation_id = ?`,
+    ).get(agentConversationId, nonblank(operationId, "metering operationId"));
+    return row ?? null;
   }
 
   async get(

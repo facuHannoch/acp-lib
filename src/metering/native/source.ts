@@ -7,6 +7,7 @@ export interface NativeTurnUsage {
   /** An observation for reconciliation. It is not an accounting acknowledgement. */
   readonly lastSeenCallId?: string;
   readonly unmeasured: number;
+  readonly prefixEnd?: string;
 }
 
 export const UNVERIFIED_NATIVE_SOURCE = "native-harness-unverified";
@@ -17,7 +18,8 @@ export interface NativeTurnRead extends NativeTurnUsage {
 
 export interface NativeTurnMetering {
   readonly turnId: string;
-  read(): Promise<NativeTurnRead>;
+  readonly isTerminal?: () => boolean;
+  read(position?: NativeLedgerPosition): Promise<NativeTurnRead>;
 }
 
 /** Stages one explicitly owned turn before the engine's synchronous drain. */
@@ -57,9 +59,9 @@ export class NativeInferenceSource implements InferenceSource {
   async #pull(turnId: string, position?: NativeLedgerPosition): Promise<NativeTurnUsage> {
     this.#ready = [];
     this.#current = undefined;
-    const { calls, lastSeenCallId } = await this.ledger.readTurn(this.channel, turnId, position);
+    const { calls, lastSeenCallId, prefixEnd } = await this.ledger.readTurn(this.channel, turnId, position);
     const { evidence, inferences, unmeasured } = projectNativeUsage(calls, this.sessionKey);
-    this.#current = { calls: evidence, lastSeenCallId, unmeasured };
+    this.#current = { calls: evidence, lastSeenCallId, unmeasured, prefixEnd };
     this.#ready = inferences;
     return this.#current;
   }

@@ -13,6 +13,7 @@ interface NativeMeasurement {
   readonly applicability: null;
   readonly ratingComplete: false;
   readonly ratingFailureReason: string;
+  readonly accountedThrough?: string;
 }
 
 const observedProvenance: MeteringProvenance = Object.freeze({
@@ -23,7 +24,7 @@ const observedProvenance: MeteringProvenance = Object.freeze({
 });
 
 /** Called once from operation close. A read failure becomes evidence without discarding the turn. */
-export async function measureNativeTurn(channel: string, metering?: NativeTurnMetering): Promise<NativeMeasurement> {
+export async function measureNativeTurn(channel: string, metering?: NativeTurnMetering, after?: string): Promise<NativeMeasurement> {
   const identity = { channel, turnId: metering?.turnId ?? null };
   const base = { applicability: null, ratingComplete: false, ratingFailureReason: nativeRouteUnavailable } as const;
   const unavailable = (reason: string, evidence: NativeOperationUsage): NativeMeasurement => ({
@@ -36,7 +37,7 @@ export async function measureNativeTurn(channel: string, metering?: NativeTurnMe
   }
 
   try {
-    const { calls, unmeasured, inferences } = await metering.read();
+    const { calls, unmeasured, inferences, prefixEnd } = await metering.read({ after });
     const evidence: NativeOperationUsage = { ...identity, status: "observed", calls, unmeasured };
     if (!inferences.length) {
       return unavailable(calls.length ? "native model-call usage is incomplete" : "native ledger has no calls for this turn", evidence);
@@ -50,9 +51,15 @@ export async function measureNativeTurn(channel: string, metering?: NativeTurnMe
       summed.totalTokens += tokens.totalTokens;
     }
     const attributable = unpricedUsage(summed);
+    const terminal = metering.isTerminal?.() === true;
+    const reason = unmeasured > 0 ? "some native model-call attempts could not be measured"
+      : !terminal ? "the native turn's terminal outcome was not confirmed"
+      : undefined;
     return {
       ...base, evidence, provenance: observedProvenance, attributable,
-      usage: { status: "metered", reportedCumulative: summed, attributable },
+      ...(unmeasured === 0 && terminal && prefixEnd !== undefined ? { accountedThrough: prefixEnd } : {}),
+      usage: { status: "metered", reportedCumulative: summed, attributable,
+        ...(reason ? { reason } : {}) },
     };
   } catch (error) {
     const reason = `native ledger unavailable: ${String(error)}`;

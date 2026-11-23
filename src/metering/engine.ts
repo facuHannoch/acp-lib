@@ -1,3 +1,4 @@
+import { requireNativeMeteringCapability } from "./native/requirements.ts";
 // Per-operation metering. See §7 (rating units), §8, §9, §11, §12.
 //
 // The engine owns one rating unit per ACP operation: resolve and freeze a pricing policy
@@ -123,6 +124,7 @@ export interface MeteringEngineOptions {
   readonly counterInterpretation?: CounterInterpretation;
   /** When present and healthy, replaces ACP usage as the measurement. */
   readonly inferenceSource?: InferenceSource;
+  readonly native?: boolean;
 }
 
 /** A rating unit opened before dispatch and closed after the operation finishes. */
@@ -189,6 +191,7 @@ export class MeteringEngine {
   private lateArrivals: readonly ProviderInference[] = [];
 
   constructor(private readonly options: MeteringEngineOptions) {
+    if (options.native) requireNativeMeteringCapability(options.enforcement);
     const source = options.inferenceSource;
     this.inferenceSource = source?.certificationId === UNVERIFIED_NATIVE_SOURCE ? undefined : source;
     const restoration = restoreMeteringState(options.initialState, options.agentSessionId);
@@ -436,15 +439,16 @@ export class MeteringEngine {
    */
   async close(open: OpenOperation, input: CloseOperationInput): Promise<OperationMeteringRecord> {
     const strict = this.options.enforcement !== "best_effort";
-    const native = open.nativeChannel === undefined ? undefined : await measureNativeTurn(open.nativeChannel, input.nativeMetering);
+    const cursor = this.state.nativeCursor;
+    const native = open.nativeChannel === undefined ? undefined : await measureNativeTurn(open.nativeChannel, input.nativeMetering,
+      cursor?.channelKey === open.internalSessionId ? cursor.after : undefined);
     const source = native ? undefined : this.inferenceSource;
     const certified = source ? await this.measureCertified(source, open, input) : null;
     const { usage, attributable, applicability, nextBaseline, ratingFailureReason, ratingComplete } =
       native ? { ...native, nextBaseline: this.baseline } : certified ?? this.measure(open, input);
 
     let pricingStatus: MeteringPricingStatus;
-    // A post-operation rating failure is more specific than a preflight one, so it wins.
-    let pricingFailureReason = ratingFailureReason ?? open.pricingFailureReason ?? undefined;
+    const pricingFailureReason = ratingFailureReason ?? open.pricingFailureReason ?? undefined;
 
     // `pricingSource` describes PROVENANCE and is legitimately null on a multi-model
     // operation, where each model's source is engraved in its line item instead. Using it
@@ -479,6 +483,7 @@ export class MeteringEngine {
       attributable,
       applicability,
       baseline: nextBaseline,
+      partial: native?.usage.status === "metered" && native.usage.reason !== undefined,
       ...(foreign.length > 0 || this.lateArrivals.length > 0
         ? {
             unallocated: [
@@ -490,6 +495,9 @@ export class MeteringEngine {
     });
     this.baseline = nextBaseline;
     if (nextBaseline) this.trustedZeroBaseline = false;
+    if (native?.accountedThrough && open.internalSessionId) {
+      this.state = Object.freeze({ ...this.state, nativeCursor: { channelKey: open.internalSessionId, after: native.accountedThrough } });
+    }
 
     const record: OperationMeteringRecord = Object.freeze({
       operationId: open.operationId,

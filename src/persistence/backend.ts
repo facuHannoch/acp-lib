@@ -695,7 +695,15 @@ export interface MeteringRecordPage {
   readonly nextCursor?: string;
 }
 
+/** The durable deduplication row survives removal of an operation's detailed record. */
+export interface MeteringOperationIdentity {
+  readonly outcome: OperationMeteringRecord["outcome"];
+  readonly adapterId: string;
+  readonly completedAt: number;
+}
+
 export interface MeteringPersistence {
+  operationIdentity?(agentConversationId: AgentConversationId, operationId: string): Promise<MeteringOperationIdentity | null>;
   /** Atomically deduplicate the operation and advance its bounded restoration state. */
   commit(input: MeteringCommitInput): Promise<PersistedConversationMeteringState>;
   saveState(

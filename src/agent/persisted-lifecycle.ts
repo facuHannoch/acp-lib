@@ -1,3 +1,4 @@
+import { DurableNativeMetering } from "../metering/native/durability.ts";
 import { workerTerminalFailure } from "../persistence/worker-terminal-reason.ts";
 import { writeConversationError } from "./error-record-writer.ts";
 import type { OperationStalledError } from "../operations/errors.ts";
@@ -51,13 +52,18 @@ import type { MediaStore } from "../media/store.ts";
 export class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle {
   private readonly outputMedia = new WeakMap<object, string>();
   private readonly deliveredMessages = new Map<string, { ids: readonly string[]; throughSequence: number }>();
+  readonly nativeMetering: DurableNativeMetering;
+
   constructor(
     private readonly agent: Agent,
     private readonly conversationId: AgentConversationId,
     private readonly initialParticipants: readonly ParticipantRef[],
     private readonly settings: ManagerSettings,
     readonly recoverInPlace?: (error: unknown) => Promise<void>,
-  ) {}
+  ) {
+    this.nativeMetering = new DurableNativeMetering(agent.persistence, conversationId, agent.id,
+      (record) => this.writeMeteringRecord(record));
+  }
 
   async operationFailed(input: { operationId: string; error: OperationStalledError }): Promise<void> {
     const written = await writeConversationError(this.agent, this.settings, {
@@ -363,6 +369,11 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
   }
 
   async meteringRecorded(record: OperationMeteringRecord): Promise<void> {
+    if (record.nativeUsage) return this.nativeMetering.record(record);
+    return this.writeMeteringRecord(record);
+  }
+
+  private async writeMeteringRecord(record: OperationMeteringRecord): Promise<void> {
     const level = this.settings.capture.metering;
     let reference: ConversationRecord | undefined;
     await this.agent.persistence.transaction(async (persistence) => {

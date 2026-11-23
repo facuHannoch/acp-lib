@@ -1,3 +1,4 @@
+import type { NativeMeteringRecovery } from "./metering/native/durability.ts";
 import type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 import type { Adapter } from "./adapters.ts";
 import type { AgentMode } from "./controller.ts";
@@ -85,6 +86,7 @@ export interface OwnedPromptFailed extends OwnedPromptInput, OwnedPromptTurnMess
 
 /** @internal Agent-owned persistence and identity boundary for a conversation turn. */
 export interface AgentConversationOwnerLifecycle {
+  readonly nativeMetering?: NativeMeteringRecovery;
   operationFailed?(input: { readonly operationId: string; readonly error: OperationStalledError }): Promise<void>;
   recoverInPlace?(error: unknown): Promise<void>;
   beforePrompt(input: OwnedPromptInput): Promise<OwnedPromptPreparation>;

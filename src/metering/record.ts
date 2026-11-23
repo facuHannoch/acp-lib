@@ -33,6 +33,8 @@ export type OperationOutcome = "completed" | "cancelled" | "error";
 export type MeteringUsageResult =
   | {
       readonly status: "metered";
+      /** Why the reported value is a lower bound when some usage could not be measured. */
+      readonly reason?: string;
       readonly reportedCumulative: TokenUsage;
       readonly attributable: AttributableUsage;
     }

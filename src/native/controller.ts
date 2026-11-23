@@ -62,7 +62,6 @@ type TurnScoped = Extract<ChannelEvent["event"], { turnId: string }>;
 interface Turn {
   /** The id the session knows the turn by. */
   readonly id: string;
-  /** The harness's turn id. */
   readonly harnessId: string;
   readonly items: Set<string>;
   /** Events received before `prompt()` attached; replayed there, in order. */
@@ -73,6 +72,7 @@ interface Turn {
   readonly completed: Set<string>;
   readonly approvals: Set<string>;
   ended: Outcome | null;
+  terminalOnWire?: boolean;
   /** This conversation asked for the interruption, so an interrupted end is a cancel, not a failure. */
   cancelRequested: boolean;
   /** Given up locally (`forceStop`, `abandonTurn`, `stop`): later events only release bookkeeping. */
@@ -92,7 +92,6 @@ export class NativeController implements ConversationController, ChannelPort {
   readonly #turnListeners = new Set<(event: TurnEvent) => void>();
   readonly #outputListeners = new Set<OutputListener>();
   readonly #connectionListeners = new Set<() => void>();
-  /** Last confirmed milestone of each input this conversation sent (`items_receipt`): Delivered, then Seen. */
   readonly #receipts = new Map<string, "delivered" | "seen">();
   /** Items of turns the last view listed, so a checkpoint resumed later can name what it took. */
   #viewTurns = new Map<string, readonly string[]>();
@@ -324,7 +323,7 @@ export class NativeController implements ConversationController, ChannelPort {
   }
 
   /** One event of a turn: bookkeeping that must not wait for the supervisor, then the handlers (or the hold). */
-  #accept(turn: Turn, event: TurnScoped): void {
+  #accept(turn: Turn, event: TurnScoped, terminalOnWire = true): void {
     if (turn.ended) return; // terminal once: a second end (live after reconciled, or the reverse) changes nothing
     if (event.type === "items_receipt") {
       for (const item of event.items) if (this.#receipts.get(item) !== "seen") this.#receipts.set(item, event.milestone);
@@ -334,6 +333,7 @@ export class NativeController implements ConversationController, ChannelPort {
       turn.completed.add(event.messageId);
     }
     if (event.type === "turn_ended") {
+      turn.terminalOnWire = terminalOnWire;
       turn.ended = { outcome: event.outcome, ...(event.error === undefined ? {} : { error: event.error }), ...(event.uncertainCalls ? { uncertainCalls: event.uncertainCalls } : {}) };
       // Terminal for every input the turn took: nothing is left to retry.
       this.#host.settle(turn.items);
@@ -361,7 +361,7 @@ export class NativeController implements ConversationController, ChannelPort {
     const settle = (turn: Turn, status: TurnStatus | undefined) => {
       if (!status) {
         // The harness has no such turn (a session recreated on an empty home): it cannot end by itself.
-        this.#accept(turn, { type: "turn_ended", turnId: turn.harnessId, outcome: "failed", error: "the harness has no record of this turn" });
+        this.#accept(turn, { type: "turn_ended", turnId: turn.harnessId, outcome: "failed", error: "the harness has no record of this turn" }, false);
         return;
       }
       for (const message of byTurn.get(status.turnId) ?? []) {
@@ -411,9 +411,9 @@ export class NativeController implements ConversationController, ChannelPort {
     const replay = turn.ended !== null;
     return {
       turnId,
-      nativeMetering: { turnId: turn.harnessId, read: () =>
+      nativeMetering: { turnId: turn.harnessId, isTerminal: () => turn.terminalOnWire === true, read: position =>
         (this.#usage ??= new NativeInferenceSource(this.#host.sessionId, this.#channel, this.#host.usageLedger))
-          .readTurn(turn.harnessId) },
+          .readTurn(turn.harnessId, position) },
       get live() { return !replay; },
       subscribeOutput: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
       cancel: () => this.#interrupt(turn),

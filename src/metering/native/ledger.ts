@@ -18,6 +18,7 @@ export interface NativeLedgerPosition {
 interface NativeLedgerRead {
   readonly calls: readonly ModelCallSummary[];
   readonly lastSeenCallId?: string;
+  readonly prefixEnd?: string;
 }
 
 const defaultBounds: LedgerBounds = { timeoutMs: 15_000, maxPages: 1_000 };
@@ -35,6 +36,8 @@ export class NativeUsageLedger {
     let after = position.after;
     const seenIds = new Set(after === undefined ? [] : [after]);
     const calls: ModelCallSummary[] = [];
+    // Other channels have independent cursors. An earlier call on this channel is a gap.
+    const prefix = { hasEarlierTurn: false, blocked: false };
 
     try {
       const readPage = this.openRead();
@@ -42,8 +45,9 @@ export class NativeUsageLedger {
         signal.throwIfAborted();
         const page = await untilAborted(readPage(after === undefined ? {} : { after }, signal), signal);
         signal.throwIfAborted();
-        const seenThrough = collectPage(page, channel, turnId, seenIds, calls);
-        if (page.next === undefined) return { calls, lastSeenCallId: seenThrough ?? after };
+        const seenThrough = collectPage(page, channel, turnId, seenIds, calls, prefix);
+        if (page.next === undefined) return { calls, lastSeenCallId: seenThrough ?? after,
+          prefixEnd: prefix.blocked ? undefined : calls.at(-1)?.callId };
         after = page.next;
       }
       throw new Error("Native usage ledger exceeded its page budget");
@@ -61,6 +65,7 @@ function collectPage(
   turnId: string,
   seenIds: Set<string>,
   selected: ModelCallSummary[],
+  prefix: { hasEarlierTurn: boolean; blocked: boolean },
 ): string | undefined {
   if (!Array.isArray(page?.calls)) throw new Error("Invalid native usage ledger page");
   const seenThrough = page.calls.at(-1)?.callId;
@@ -75,7 +80,12 @@ function collectPage(
       throw new Error("Native usage ledger returned a call without channel or turn ownership");
     }
     seenIds.add(call.callId);
-    if (call.channel === channel && call.turnId === turnId) selected.push(call);
+    if (call.channel !== channel) continue;
+    if (call.turnId !== turnId) prefix.hasEarlierTurn = true;
+    else {
+      prefix.blocked ||= prefix.hasEarlierTurn;
+      selected.push(call);
+    }
   }
   return seenThrough;
 }

@@ -1,3 +1,4 @@
+import { requireNativeMeteringCapability } from "../metering/native/requirements.ts";
 import { defersProvider, resolveProviderStart } from "../conversation-startup.ts";
 import { appendAssistantMessage } from "./append-assistant-message.ts";
 import { inheritPermissionConfig, validateConversationPermissionConfig, type ConversationPermissionConfig } from "../permissions/policy.ts";
@@ -792,8 +793,6 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       const adapterId = this.resolveAdapterId(config.adapterId);
       const adapter = this.agent.adapters.require(adapterId);
       const runtime = { ...this.settings.defaults, ...config.runtime, ...inheritPermissionConfig(this.settings.defaults, config, config.runtime) };
-      // A native adapter makes this conversation a channel of the Agent's harness session. Nothing is
-      // started here: channel settings decided now are stored and reach the harness with its next open.
       const nativeAdapter = this.agent.adapters.native(adapterId);
       const nativeHost = nativeAdapter ? this.agent.nativeHarness : null;
       if (nativeAdapter && !nativeHost) throw new Error("a native adapter requires AgentConfig.harness");
@@ -802,7 +801,6 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         if (desire) await nativeHost.changeChannel(id, desire);
       }
       await this.detachedMeteringBarriers.get(id);
-      const persistedMetering = await this.agent.persistence.metering.state(id);
       const lifecycle = new PersistedConversationLifecycle(
         this.agent,
         id,
@@ -821,15 +819,15 @@ export class DefaultAgentConversationManager implements AgentConversationManager
             });
         },
       );
+      const meteringState = nativeHost ? await lifecycle.nativeMetering.restore()
+        : (await this.agent.persistence.metering.state(id))?.state;
       this.shutdownStarts.signal.throwIfAborted();
       this.liveSettings.set(id, config.settings);
       conversation = await AgentConversation.create({
         signal: this.shutdownStarts.signal,
         deferProviderStart: config.deferProviderStart,
         ...runtime,
-        ...(persistedMetering
-          ? { metering: { ...runtime.metering, initialState: persistedMetering.state } }
-          : {}),
+        ...(meteringState ? { metering: { ...runtime.metering, initialState: meteringState } } : {}),
         ...("title" in config && config.title !== undefined ? { title: config.title } : {}),
         adapter,
         adapterId,
@@ -937,6 +935,8 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     resolveProviderStart(config.runtime?.providerStart);
     const adapterId = this.resolveAdapterId(config.adapterId);
     this.agent.adapters.require(adapterId);
+    if (this.agent.adapters.native(adapterId)) requireNativeMeteringCapability(
+      (config.runtime?.metering ?? this.settings.defaults.metering)?.enforcement);
     const mode = config.mode ?? config.runtime?.mode ?? this.settings.defaults.mode;
     if (mode === "degraded" && config.providerSession === "load") {
       throw new Error("providerSession.kind=load requires ACP (normal) mode");

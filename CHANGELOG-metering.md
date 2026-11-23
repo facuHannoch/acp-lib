@@ -3,6 +3,19 @@
 Pre-1.0 changes introduced by the `AgentSession` metering feature
 (`.res/somelogs.md/9-5+/9-6-SPEC-metering.md` §21). Fold this into the release notes.
 
+## Native harness usage
+
+- Native turn metering records carry the observed call and attempt evidence in `nativeUsage`.
+  When a turn has an unmeasured attempt, `usage.reason` explains the partial total. An empty
+  ledger read or an undispatched turn with a metering record has unavailable usage. A prompt
+  cancelled while still queued may have no metering record. Neither result establishes exact zero
+  usage.
+- Agent-owned native metering persists a per-channel cursor with the operation's state and
+  replays a failed save under its original operation ID, including when detail retention is off.
+- Native `billing_required` refuses admission until the harness can confirm the
+  `native-harness@1` sealed per-turn accounting capability. The current wire covers turn-owned
+  calls. Between-turn usage remains a harness dependency.
+
 ## 1. `Usage` → `TokenUsage`, with corrected field names
 
 The old type was wrong in three ways: it used non-ACP field names, omitted the required

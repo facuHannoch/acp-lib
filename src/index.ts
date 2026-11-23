@@ -147,6 +147,7 @@ export type {
   MessageRecord,
   AgentMeteringCommitInput,
   MeteringCommitInput,
+  MeteringOperationIdentity,
   MeteringPersistence,
   MeteringRecordListOptions,
   MeteringRecordPage,
