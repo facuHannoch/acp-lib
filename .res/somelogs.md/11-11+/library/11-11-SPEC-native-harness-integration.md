@@ -213,8 +213,9 @@ exactly.
 
 ### Brief R6 (outline): small gaps from the integration log
 
-Withdraw through the harness after a push was sent (local only before); the stall clock paused while the host
-reopens; `items_receipt` forwarded beyond `receiptOf`; a real-process test with `stream` text.
+Confirm withdrawal through the harness once a push was sent, including across reopen. Forward `items_receipt`
+beyond `receiptOf` and verify consumer `stream` text over real stdio. Keep a reopen regression for backend
+supervision, which already disables the client stall clock.
 
 Follow-ups, not scheduled: message submissions surviving an acp-client restart; reconciling turns that ended while
 no acp-client process existed; bounded recovery pages for turns and inputs; acp-client-side `agent.harness.export()`
@@ -481,7 +482,7 @@ The process is what costs (and, isolated, a container per agent); channels are c
   one (protocol spec, Delivery).
 - **Restarts on a crash:** bounded (3 within 60 s, with a pause between). **A crash alone settles nothing:** the
   harness may have ended a turn just before crashing, without its end reaching acp-client. Running turns stay pending
-  through the restart (the stall clock paused), and reconciliation gives each its outcome: ended → finished from its
+  through the restart (native supervision disables the client stall clock), and reconciliation gives each its outcome: ended → finished from its
   turn record; `running_at_crash` → failed (a message it had taken settles as failed). So a prompt settles once, from
   the turn's end or from reconciliation. A turn the consumer gave up on locally during the restart (`forceStop`, its
   prompt already rejected) is still recorded if reconciliation reports it ended (its messages and metering), but its
@@ -706,8 +707,9 @@ metering), and a cap is deferred (`todos/11-13-TODO-spending-cap.md`).
 - **Withdraw** of a message the harness already accepted asks the harness to remove it from the inbox; it succeeds
   only if the harness confirms the message wasn't taken yet. With no answer it waits like any request (A harness that
   doesn't answer); it never guesses. Withdraw is local only while the push **hasn't been sent**; once sent (even
-  before its acknowledgement) it goes through the harness, which sees the push before the withdraw (one ordered
-  connection), so "withdrawn" is never reported for a message the agent is working on.
+  before its acknowledgement) it goes through the harness. Concurrent server dispatch can return `not_found`
+  before the push is stored. That reply leaves withdrawal unresolved. If the harness reports `taken`, the
+  prompt follows the turn.
 - **Exclusive operations hold the channel first:** handing the conversation off out of native, stopping it, deleting
   it, and resetting it (a cleared transcript). Handoff out and reset wait for a running turn to end; stop and delete
   interrupt it. `setPolicy` and `setConfig` are not exclusive: they apply from the next item or model call. Every
