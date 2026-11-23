@@ -142,3 +142,22 @@ Other checks:
 - **Model names** (`deepseek/deepseek-v4.1-flash`, `gpt-6.1-terra`) are hard-coded; I can't check they exist without a paid call, so confirm them before the live run.
 
 **For the held O6 step 3:** because live mode copies the user's Codex login, get the user's go-ahead for the copy as well as the spend, and make cleanup survive a kill (a signal handler that removes the root, or a user-provided isolated `CODEX_HOME`).
+
+# Part 4 — the fixes in `0f11c79..c1b1c04`
+
+One commit, `c1b1c04` (smoke runner, README, `lifecycle-agent.ts` fixture). I read `git diff` and ran a clean `git archive c1b1c04` (`/tmp/clad2a-c1`), `TMPDIR` on `/dev/shm`. I didn't check out the branch.
+
+**Verdict: all five of your points hold. No blocking findings; two small notes.** Full suite on the archive: typecheck clean, **1,590 pass, 0 fail, 149 files**.
+
+| Point | Result |
+| --- | --- |
+| **No path copies or reads `~/.codex/auth.json`** | Confirmed. `grep` over `smoke-tests`, `src` and `test` finds no `auth.json` (the one hit is an unrelated `auth.jsonl` in the characterization test). `writeFile` and the `auth` variable are gone; `readFile` is still imported and is used only for the result file (`run.ts:188`). The runner only passes `CODEX_HOME` to `codex login status` and to the worker |
+| **Missing or non-disposable `ACP_ORCH_CODEX_HOME` refused** | Confirmed with a fake `HOME` (so nothing touched the real home) and stub `codex`/`codex-acp`: unset → "Live mode requires … a disposable ACP_ORCH_CODEX_HOME"; equal to `~/.codex` → "Use a disposable Codex home"; **a symlink to `~/.codex` → refused too** (both sides go through `realpath`); a nonexistent path → `ENOENT` from `realpath`, i.e. refused, if with a less friendly message. All happen before the temp root is created and before any spend |
+| **Cleanup on a signal removes the tmp tree** | Confirmed. With a stub `codex login status` that sleeps, `timeout` sent SIGTERM mid-run: output `Live run terminated` then `{"tempRemoved":true}`, and no `acp-orch-live-*` directory was left. SIGINT uses the same path. The supplied home is never removed (only `root`) |
+| **Orphan lifecycle-agent no longer leaks** | Confirmed. The fixture now exits on stdin `end`. After the full suite (including the SIGKILL tests) there is no `lifecycle-agent` process from the archive. The two orphans still running belong to my earlier retry probe and to core-p's gate directory, both from before the fix |
+| **Free mode makes no network calls** | Confirmed: `unshare -rn bun smoke-tests/orchestrator/run.ts` (no network namespace) passes, 1 pass, 4 filtered out. It prints the planned model names first, which is only a `console.log`. The model environment variables are read, never sent anywhere |
+
+**Notes:**
+
+1. **"Disposable" means only "not exactly `~/.codex`".** My probe with `ACP_ORCH_CODEX_HOME` set to the fake `HOME` itself (a parent of the real `~/.codex`) was accepted and ran. A parent directory, or a directory that contains the real login, isn't refused. Consider also rejecting a home that contains, or is inside, `~/.codex`, or one that already holds `auth.json` unless the user opts in. It is the user's own variable, so this is a guard-rail, not a hole.
+2. **Signals are caught, then work waits for the abort to unwind.** The handlers only abort the deadline controller, so a signal during an unbounded await (for example `agent.close()` in the `finally`) doesn't kill the process until that await ends. Nothing leaks, but a second signal won't force an exit. The README states that an uncatchable kill (SIGKILL) leaves an `acp-orch-live-*` work tree, which now contains no login file.
