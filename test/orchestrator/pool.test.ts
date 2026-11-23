@@ -3,10 +3,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent, createAgentConversationId, type AgentConversation, type WorkerEvent } from "../../src/index.ts";
+import { WorkerPool } from "../../src/orchestrator/pool.ts";
 
 const actor = { kind: "consumer" } as const;
 
-async function rig(limit: number, holds = true) {
+async function rig(limit: number, holds = true, idleStopMs?: number | false) {
   const directory = await mkdtemp(join(tmpdir(), "acp-worker-pool-"));
   const release = join(directory, "release");
   const providerState = join(directory, "provider-sessions.json");
@@ -16,10 +17,10 @@ async function rig(limit: number, holds = true) {
     adapters: { fixture: { command: ["bun", fixture] } },
     capture: { message: "content" },
     checkpointing: { enabled: false },
-    orchestrator: { workers: { limit } },
+    orchestrator: { workers: { limit, idleStopMs } },
     conversationDefaults: { env: { LIFECYCLE_TOOL_GATE_FILE: release, LIFECYCLE_STATE: providerState } },
   });
-  return { agent, pool: agent.orchestrator!, providerState, release: () => writeFile(release, ""), async close() {
+  return { agent, pool: agent.orchestrator!, providerState, release: () => writeFile(release, ""), hold: () => rm(release), async close() {
     try { await agent.close(); }
     finally { await rm(directory, { recursive: true, force: true }); }
   } };
@@ -241,3 +242,60 @@ for (const op of ["check", "list"] as const) {
     } finally { await close(); }
   }, 20_000);
 }
+
+test("idle timeout releases the provider slot and the next send reloads its conversation", async () => {
+  const { agent, pool, release, hold, close } = await rig(1, true, 30);
+  const stopped = Promise.withResolvers<WorkerEvent>();
+  const reloaded = Promise.withResolvers<WorkerEvent>();
+  agent.events.subscribeWorkers(({ event }) => {
+    if (event.kind === "worker_stopped" && event.reason === "idle") stopped.resolve(event);
+    if (event.kind === "worker_reloaded") reloaded.resolve(event);
+  });
+  try {
+    await pool.open(actor, { text: "[lifecycle:tool]" });
+    const worker = await agent.workers!.check("w1");
+    const original = (await agent.conversations.open(worker.conversationId)).conversation;
+    expect(original.connection.isConnected).toBe(true);
+    await release();
+    expect(await stopped.promise).toMatchObject({ handle: "w1", conversationId: worker.conversationId, reason: "idle" });
+    expect(original.connection.isConnected).toBe(false);
+    expect((await agent.workers!.check("w1")).state).toBe("offline");
+
+    await hold();
+    expect(await pool.send(actor, "w1", { text: "[lifecycle:tool]" })).toEqual({ status: "sent" });
+    expect(await reloaded.promise).toMatchObject({ handle: "w1", conversationId: worker.conversationId });
+    const replacement = (await agent.conversations.open(worker.conversationId)).conversation;
+    expect(replacement).not.toBe(original);
+    expect(replacement.connection.isConnected).toBe(true);
+    expect(replacement.internalSessionId).toBe(original.internalSessionId);
+    await release();
+  } finally { await close(); }
+}, 20_000);
+
+test("idle timers can be disabled, are cleared by a new send and stay closed at shutdown", async () => {
+  const { agent, close } = await rig(1, false);
+  try {
+    const conversation = await agent.conversations.create({ role: "worker" });
+    const row = { handle: "timer", conversationId: conversation.id, openedBy: "consumer", createdAt: new Date().toISOString() } as const;
+    const ignore = () => {};
+    const disabled = new WorkerPool(1, false);
+    const inactive = disabled.attach(row, conversation);
+    disabled.armIdle(inactive, ignore, ignore);
+    expect(inactive.idleTimer).toBeUndefined();
+
+    const enabled = new WorkerPool(1, 600_000);
+    const live = enabled.attach(row, conversation);
+    try {
+      enabled.armIdle(live, ignore, ignore);
+      expect(live.idleTimer).toBeDefined();
+      const work = enabled.start(live, { id: "new" });
+      expect(live.idleTimer).toBeUndefined();
+      enabled.finish(live, work);
+      enabled.armIdle(live, ignore, ignore);
+      expect(live.idleTimer).toBeDefined();
+      enabled.closeIdleTimers();
+      enabled.armIdle(live, ignore, ignore);
+      expect(live.idleTimer).toBeUndefined();
+    } finally { enabled.closeIdleTimers(); }
+  } finally { await close(); }
+}, 15_000);

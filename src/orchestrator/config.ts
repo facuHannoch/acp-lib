@@ -11,6 +11,7 @@ export interface OrchestratorConfig {
     readonly adapterId?: string;
     readonly cwd?: string;
     readonly limit: number;
+    /** Time idle before stopping the provider process. Defaults to ten minutes. */
     readonly idleStopMs?: number | false;
   };
 }
@@ -23,5 +24,9 @@ export function validateOrchestrator(
   if (messageCapture !== "content") throw new Error('orchestrator requires message capture "content"');
   if (!Number.isSafeInteger(config.workers.limit) || config.workers.limit < 1) {
     throw new RangeError("orchestrator worker limit must be a positive integer");
+  }
+  const idle = config.workers.idleStopMs;
+  if (idle !== undefined && idle !== false && (!Number.isInteger(idle) || idle < 0 || idle > 2_147_483_647)) {
+    throw new RangeError("orchestrator worker idleStopMs must be a non-negative timer delay or false");
   }
 }

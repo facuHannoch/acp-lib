@@ -28,7 +28,7 @@ export class Orchestrator {
     private readonly assignments?: WorkerAssignmentPort,
     private readonly findGivingConversation?: FindGivingConversation,
   ) {
-    this.pool = new WorkerPool(options.limit);
+    this.pool = new WorkerPool(options.limit, options.idleStopMs ?? 600_000);
     const defaults = ownPermissions(options.defaultPermissions);
     this.defaultWorkerPermissions = defaults ? [defaults] : [];
   }
@@ -141,6 +141,7 @@ export class Orchestrator {
 
   close(): Promise<void> {
     this.closed = true;
+    this.pool.closeIdleTimers();
     return this.pool.run(async () => {});
   }
 
@@ -238,7 +239,11 @@ export class Orchestrator {
       this.emit({ ...identity, kind: "worker_failed", reason: workerTerminalFailure(false, error).reason });
     }).finally(() => {
       slot.completions.delete(completion);
-      if (this.pool.finish(slot, active) && slot.conversation.state.phase !== "stopped") this.emit({ ...identity, kind: "worker_idle" });
+      this.pool.finish(slot, active);
+      if (this.pool.busy(slot) || slot.conversation.state.phase === "stopped") return;
+      this.emit({ ...this.identity(slot.row), kind: "worker_idle" });
+      this.pool.armIdle(slot, row => this.emit({ ...this.identity(row), kind: "worker_stopped", reason: "idle" }),
+        error => this.log.warn("worker_idle_stop_failed", { handle: slot.row.handle, error: String(error) }));
     });
     slot.completions.add(completion);
     void completion.catch(() => undefined);

@@ -8,6 +8,7 @@ interface Slot {
   row: WorkerRow;
   readonly completions: Set<Promise<void>>;
   touched: number;
+  idleTimer?: ReturnType<typeof setTimeout>;
   work?: { readonly started: number; readonly sender?: string; readonly assignment: RunningAssignment };
 }
 
@@ -15,8 +16,9 @@ export class WorkerPool {
   private readonly slots = new Map<string, Slot>();
   private tail = Promise.resolve();
   private access = 0;
+  private idleTimersClosed = false;
 
-  constructor(private readonly limit: number) {}
+  constructor(private readonly limit: number, private readonly idleStopMs: number | false) {}
 
   run<T>(work: () => Promise<T>): Promise<T> {
     const result = this.tail.then(work);
@@ -38,8 +40,12 @@ export class WorkerPool {
   async release(handle: string): Promise<void> {
     const slot = this.slots.get(handle);
     if (!slot) return;
-    await slot.conversation.stop();
-    this.slots.delete(handle);
+    this.cancelIdle(slot);
+    try {
+      await slot.conversation.stop();
+    } finally {
+      if (this.slots.get(handle) === slot) this.slots.delete(handle);
+    }
   }
 
   async makeRoom(onEvicted: (row: WorkerRow) => void): Promise<boolean> {
@@ -58,20 +64,48 @@ export class WorkerPool {
   }
 
   busy(slot: Slot): boolean {
-    return Boolean(slot.work || slot.conversation.isBusy);
+    return Boolean(slot.work || slot.completions.size || slot.conversation.isBusy);
   }
 
   start(slot: Slot, assignment: RunningAssignment, sender?: string): NonNullable<Slot["work"]> {
+    this.cancelIdle(slot);
     slot.touched = ++this.access;
     const started = slot.work?.started ?? performance.now();
     return slot.work = { started, sender, assignment };
   }
 
-  finish(slot: Slot, work: Slot["work"]): boolean {
-    if (slot.work !== work) return false;
+  finish(slot: Slot, work: Slot["work"]): void {
+    if (slot.work !== work) return;
     slot.work = undefined;
     slot.touched = ++this.access;
-    return true;
+  }
+
+  armIdle(slot: Slot, onStopped: (row: WorkerRow) => void, onError: (error: unknown) => void): void {
+    if (this.idleTimersClosed || this.idleStopMs === false) return;
+    this.cancelIdle(slot);
+    const handle = slot.row.handle;
+    const timer = setTimeout(() => {
+      void this.run(async () => {
+        // The callback may have entered the queue before a send or teardown cancelled it.
+        if (slot.idleTimer !== timer) return;
+        slot.idleTimer = undefined;
+        if (this.idleTimersClosed || this.get(handle) !== slot || this.busy(slot)) return;
+        await this.release(handle);
+        onStopped(slot.row);
+      }).catch(onError);
+    }, this.idleStopMs);
+    timer.unref?.();
+    slot.idleTimer = timer;
+  }
+
+  closeIdleTimers(): void {
+    this.idleTimersClosed = true;
+    for (const slot of this.slots.values()) this.cancelIdle(slot);
+  }
+
+  private cancelIdle(slot: Slot): void {
+    clearTimeout(slot.idleTimer);
+    slot.idleTimer = undefined;
   }
 
   summary(row: WorkerRow): WorkerSummary {
