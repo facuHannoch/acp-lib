@@ -2,7 +2,7 @@ import type { PermissionSettings } from "../permissions/matcher.ts";
 import type { AgentConversationId } from "../agent-ids.ts";
 import type { OperationActivity } from "../operations/contracts.ts";
 import type { WorkerRow } from "../persistence/workers.ts";
-import type { WorkerAssignmentOutcome } from "../persistence/worker-delivery-contract.ts";
+import type { WorkerAssignmentOutcome, WorkerDeliveryState } from "../persistence/worker-delivery-contract.ts";
 
 export interface DelegationPolicy {
   readonly use: boolean;
@@ -43,6 +43,8 @@ export interface WorkerSummary extends WorkerRow {
   readonly sender?: string;
   readonly busyMs?: number;
   readonly latestOutcome?: WorkerAssignmentOutcome;
+  /** Delivery state of the latest staged assignment. */
+  readonly deliveryState?: WorkerDeliveryState;
   /** The last successful result, when the most recent outcome is a dispatch refusal. */
   readonly latestResult?: Extract<WorkerAssignmentOutcome, { kind: "result" }>;
 }

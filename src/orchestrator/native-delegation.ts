@@ -92,9 +92,9 @@ export function withDelegationTools(
         }
         return orchestrator().open(actor, input);
       }),
-      check: tool("Check the status of a worker by handle.", handleOnly,
+      check: tool("Check a worker by handle, including its latest staged result and delivery state. Results for native destinations may be absent until the harness opens.", handleOnly,
         (args, actor) => orchestrator().check(actor, args.worker as string)),
-      list: tool("List the workers visible to this conversation.", { type: "object", properties: {}, additionalProperties: false },
+      list: tool("List visible workers with their latest staged results and delivery states. Results for native destinations may be absent until the harness opens.", { type: "object", properties: {}, additionalProperties: false },
         (_args, actor) => orchestrator().list(actor)),
       stop: tool('Interrupt running work and clear pending prompts. Returns "stopped" after an interruption or "idle" if there was no work to stop.', handleOnly,
         async (args, actor) => ({ status: await orchestrator().stop(actor, args.worker as string) })),

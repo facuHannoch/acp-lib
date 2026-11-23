@@ -105,7 +105,10 @@ for (const state of ["pending", "blocked_policy", "missing", "retired"] as const
       const staged = await repo.readStaged(id);
       expect(staged).toMatchObject({ outcome: { kind: "result", text: expect.stringContaining("result") },
         delivery: { state: status } });
+      expect(await agent.workers!.check("w1")).toMatchObject({ deliveryState: status });
+      expect(await agent.workers!.list()).toMatchObject([{ deliveryState: status }]);
       expect((await host.timeline()).events.filter(entry => entry.kind === "external_notice")).toHaveLength(0);
+      if (state !== "blocked_policy") await expect(agent.workers!.retryDelivery("w1")).rejects.toThrow("no policy-blocked delivery");
       if (state === "pending") {
         expect(await repo.redirect(id, { kind: "native", id: createAgentConversationId() })).toBe(false);
         expect(await repo.readStaged(id)).toEqual(staged);
@@ -122,14 +125,15 @@ for (const state of ["pending", "blocked_policy", "missing", "retired"] as const
         await host.start();
         await host.flushWorkerDelivery();
         expect((await repo.readStaged(id))?.delivery.state).toBe("blocked_policy");
-        expect(await repo.transitionDelivery(`worker-result:${id}`, { from: "blocked_policy", to: "pending", explicitRetry: true })).toBe(true);
-        await host.flushWorkerDelivery();
+        await agent.workers!.retryDelivery("w1");
       }
       const delivered = state === "pending" || state === "blocked_policy";
       expect((await repo.readStaged(id))?.delivery.state).toBe(delivered ? "delivered" : status);
       expect((await host.timeline()).events.filter(entry => entry.kind === "external_notice")).toHaveLength(delivered ? 1 : 0);
-      expect(await agent.workers!.check("w1")).toMatchObject({ latestOutcome: staged?.outcome });
-      expect(await agent.workers!.list()).toMatchObject([{ latestOutcome: staged?.outcome }]);
+      const summary = { latestOutcome: staged?.outcome, deliveryState: delivered ? "delivered" : status };
+      expect(await agent.workers!.check("w1")).toMatchObject(summary);
+      expect(await agent.workers!.list()).toMatchObject([summary]);
+      await expect(agent.workers!.retryDelivery("w1")).rejects.toThrow("no policy-blocked delivery");
     } finally { await rig.clean(); }
   }, 35_000);
 }
