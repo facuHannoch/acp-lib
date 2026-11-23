@@ -5,24 +5,32 @@ Pre-1.0 changes introduced by the `AgentSession` metering feature
 
 ## Native harness usage
 
-- Native turn metering records carry the observed call and attempt evidence in `nativeUsage`.
-  When a turn has an unmeasured attempt, `usage.reason` explains the partial total. An empty
-  ledger read or an undispatched turn with a metering record has unavailable usage. A prompt
-  cancelled while still queued may have no metering record. Neither result establishes exact zero
-  usage.
-- Agent-owned native metering persists a per-channel cursor with the operation's state and
-  replays a failed save under its original operation ID, including when detail retention is off.
-  The turn record's usage and `state.totals` carry usage attributed to their own turns.
-  A later close records unaccounted usage of an earlier turn in `nativeUsage.unaccountedEarlierCalls`
-  and adds its known tokens once to `state.unallocatedUsage`. SQLite schema 21 keeps bounded
-  metering proof on the operation index even with detailed retention off. Oversized evidence is
-  summarized with counts and a truncation flag. If only truncated proof survives, later-sealed
-  attempts of that turn outside the retained proof cannot be recovered as tokens and show as
-  unmeasured evidence.
+- Agent-owned native turn metering is on by default (`best_effort`). A consumer-supplied
+  `inferenceSource` and pricing policy are ignored. Measured usage has `native_ledger` provenance,
+  unknown routing, partial attribution and no certification ID, even when every attempt was
+  measured. Without provider or model identity, measured usage reports `pricing_unavailable`.
+- `nativeUsage` carries observed call and attempt evidence. `usage.reason` explains partial
+  measurement. Empty scans and undispatched turns with a metering record report unavailable usage.
+  A prompt cancelled in the queue may have no metering record. Neither case establishes zero usage.
+- A failed final save replays under its original operation ID if the write-ahead record was staged.
+  If both writes fail, a later close can recover sealed calls as unaccounted usage of an earlier turn.
+  The evidence is on that record in `nativeUsage.unaccountedEarlierCalls`, and its measured tokens
+  accrue once to `state.unallocatedUsage`. These additions cover earlier-turn usage. Between-turn
+  usage remains unsupported. `nativeUsage.earlierEvidencePending` flags evidence still awaiting
+  durable accounting. Read attributed totals in `record.nextState.totals` or from the state returned
+  by `persistence.metering.state(id)` for the conversation.
+- SQLite schema 21 stores the per-channel cursor in metering state and bounded proof on the
+  operation index row. The proof survives pruning of operation detail. The upgrade is one-way.
+  Older code refuses a schema 21 database. If only truncated proof survives, later-sealed
+  attempts outside the retained proof cannot be recovered as tokens and show as unmeasured.
+  An already-counted attempt omitted from proof can also show as unmeasured in later evidence.
+  That count cannot be summed as lost spend.
 - Records written by the intermediate native metering implementation at `4bbefcb` are not backfilled.
-- Native `billing_required` refuses admission until the harness can confirm the
-  `native-harness@1` sealed per-turn accounting capability. The current wire covers turn-owned
-  calls. Between-turn usage remains a harness dependency.
+- Native `billing_required` throws `MeteringPreflightError` until the harness can attest
+  `native-harness@1` sealed per-turn accounting. Certification needs provider and model identity,
+  normalized cache categories, reported cost and currency when available, attempt purpose, and a
+  sealed turn manifest that can attest zero. Between-turn billing needs a harness producer for calls
+  without turn ownership and bounded collection while idle.
 
 ## 1. `Usage` → `TokenUsage`, with corrected field names
 
