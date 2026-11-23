@@ -385,9 +385,13 @@ acp-client starts
 ## Events
 
 `worker_opened`, `worker_busy`, `worker_idle`, `worker_replied`, `worker_failed`, `worker_redirected`,
-`worker_stopped` (idle stop or eviction, with which), `worker_reloaded`, `worker_dropped`. Each carries the handle,
+`worker_stopped` (idle stop, eviction or a requested stop, with which), `worker_reloaded`, `worker_dropped`. Each carries the handle,
 the conversation id, `opened_by` and `last_conversation`. Facts, never user-facing text. Permission requests use the
-giving conversation's own `permission_requested` and `permission_resolved` (Flow 4).
+giving conversation's own `permission_requested` and `permission_resolved` (Flow 4). `worker_failed` carries the refusal
+reason (`worker refused: assignment conflict` or `worker refused: dispatch hook failed`), its cause and the destination
+when a steer or a first dispatch is refused after the tool returned. `check` and `list` summaries also carry
+`latestOutcome`, `deliveryState` (`pending`, `delivered`, `blocked_policy`, `failed_destination`) and `latestResult` (the
+last real result, when the newest outcome is a refusal).
 
 ## Configuration
 
@@ -397,6 +401,11 @@ new Agent({
   orchestrator: {
     workers: { adapterId: "codex", cwd: "/work", limit: 2, idleStopMs: 600_000 },  // the pool adapter, else the
                                                               // Agent's default (an ACP adapter); idle stop 10 min
+    policies: { owner: { delegation: { use: true, scope: "all", redirect: true },   // by harness policy name
+                         workerPermissions: { default: "ask", rules: {} } } },
+    ownerPolicies: ["owner"],        // a call is the owner's only if every one of its policy names is listed
+    defaults: { delegation: { use: false, scope: "none", redirect: false },        // an empty list of names, and
+                workerPermissions: { default: "deny", rules: {} } },               // consumer-opened workers
   },
 });
 ```
@@ -631,10 +640,20 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 
 ## Acceptance
 
-- The suite (workers on the offline fixture agents) covers slots, eviction and reload, `no_worker_free` with the listing, busy and redirect,
-  policy refusals, restart with a busy worker, forwarded permissions at each level and on timeout. No provider key.
-- A consumer lists and stops every worker.
-- No edit to `src/agent-session.ts`.
+- The suite (workers on the offline fixture agents) covers slots, eviction and reload, `no_worker_free` with the listing,
+  busy, steer, redirect and `assignment: "new"` (including a steer racing the worker's natural completion and a steer
+  refused after the tool returned), policy refusals and their composition across `policyNames`, forwarded permissions at
+  each level and on timeout, stop, drop and idle stop. No provider key.
+- Durable delivery: a result reaches a native channel as one notice (policies of every contributing input, a redirect
+  before and after staging), an ACP conversation as one idempotent append; blocked, failed and retried delivery; and
+  real-SIGKILL crash recovery with a busy worker for **both** destination kinds: killed after the final record and before
+  staging (the result recovered, nothing redispatched), killed before the final record (one uncertainty notice), a staged
+  notice not yet accepted (delivered once).
+- The stdio route over `serve --stdio` with a scripted model: delegate, a reply on the agent's channel, a forwarded
+  permission, a redirect with the composed actor. One live run (Codex workers, a cheap OpenRouter agent), authorized by
+  the owner and recorded in its report.
+- A consumer lists, stops and drops every worker, and retries a blocked notice.
+- `src/agent-session.ts` has no growth and exactly one changed line, O4's reviewed constructor registration.
 
 ## Limitations
 
@@ -656,6 +675,11 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 
 - **No notice to the previous conversation on a redirect, and a stop the giver asked for may still produce an
   interrupted notice:** all conversations of the entity are the same agent, so neither is needed in v1.
+
+- **A native result isn't visible in `check` and `list` until the harness opens** (staging waits for the host; ACP
+  stages locally); `worker_idle` for a native destination waits for the native flush; a folded steer emits one
+  `worker_replied` per handle; a blocked notice shows in `check` only while it is the newest (the consumer's retry
+  targets the newest blocked one, then the next).
 
 ## Decided in review 2 (2026-11-22)
 
