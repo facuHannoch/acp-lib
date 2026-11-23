@@ -36,3 +36,15 @@ The changelog documents `deferred` and the configuration. A search of the reposi
 | `src/client.ts` | 1,062 | 1,046 |
 | `src/controller.ts` | 840 | 764 |
 | `src/agent/conversation-manager.ts` | 1,013 | 1,012 |
+
+## Review follow-up
+
+The initial recovery test captured a checkpoint before the second prompt, then queued a new checkpoint before shutdown. The replacement Agent can finish that queued checkpoint before first use. Both eager open and deferred first use call the same recovery policy, which reads the latest stored checkpoint when recovery begins. The reviewer reproduced selection of the new checkpoint at sequence 9 in place of the original one at sequence 4. In my original isolated comparison, eager passed 20 of 20 and first use passed 19 of 20. The failing deferred run compared two different checkpoint IDs. Logs are in `/tmp/r4-recovery-original.DEe9fp`.
+
+`491cf66` keeps the eager assertion. The deferred test checks that the checkpoint announced by recovery is stored and covers at least the original checkpoint's sequence. It checks the selected ID and the recovered-through sequence in the provider attachment records, plus one `provider_reconnected` event with `via: "recovered"`. No recovery code or wait changed for this race.
+
+Equivalent startup callers now share the connection attempt and each receive startup progress, including replay of stages already reached. The offline test joins from the initialized event and verifies both observers see exactly the same two stages. Superseding an in-flight `startFresh` on a live connection deliberately stops that transport. An outstanding ACP session creation has no withdrawal operation, so teardown fences its late state change. The regression verifies the old PID is dead and the replacement loads the original recorded session.
+
+The changelog spells out that deferred first use closes a transport after a failed session creation and returns the provider error. Eager startup remains available for consumers that need to authenticate on the retained transport. It also identifies recovery progress, `provider_reconnected` and persisted records as the first-use recovery surfaces. The handoff grace test uses monotonic time and a wider gap between the expected and incorrect grace periods.
+
+The recovery file passed 20 consecutive isolated runs. Logs are in `/tmp/r4-recovery-fixed.4lntNu`. The clean archive passed typecheck and **1,616 tests across 151 files in 118.82 s** with `TMPDIR` on `/dev/shm`. All 35 snapshots passed and the A1 hash was unchanged. Logs are in `/tmp/acp-o1-r4-followup.EOCorb`. The three protected files stayed at 4,495, 1,046 and 764 lines.
