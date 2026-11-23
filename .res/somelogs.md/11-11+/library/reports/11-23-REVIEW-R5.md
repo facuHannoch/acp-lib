@@ -211,3 +211,59 @@ All over a real stdio harness with SQLite triggers for the failures.
 1. **Design point for you to confirm: the earlier tokens are visible, but in no aggregate.** In the double-failure probe the persisted totals after turn 3 are **count 2, known 253 = 220 + 33**; the 110 is in turn 2's `nativeUsage.unaccountedEarlierCalls` only, and `unallocatedUsage` is empty. The coverage is `partial`, so a consumer is told the total is a lower bound, but anyone summing `state.totals` (the usual limit-enforcement input) misses 110, and "330 expected" in your brief is true of the evidence (110 + 220), not of the state. The engine already has an `unallocated` accrual for usage that belongs to no operation; accruing the earlier tokens there would put them in an aggregate as well as in the record. If "recorded separately" is the intended design, the changelog should say that totals exclude earlier unaccounted calls.
 2. **The proof column has no explicit size bound** (see the table).
 3. The report's disk-backed focused trials hit `session/create` timeouts before the RAM-backed gate; I saw none, but note that these are heavy tests on a slow disk.
+
+# Part 5 — R5 step 2b final follow-up (`4bbefcb..147bd63`): unallocated accrual and the proof cap
+
+`c271475` (code) and `147bd63` (report). I used a clean `git archive 147bd63` (`/tmp/clad2a-r5e`, `TMPDIR` on `/dev/shm`), and `4bbefcb`'s archive to write a database with the previous source. Probes and mutations ran only there.
+
+**Verdict: the follow-up does what was decided. Approve. No findings against the change; three small notes.**
+
+- **Typecheck clean. Full suite: 1,649 pass, 0 fail, 155 files**, 35 snapshots (none changed; A1 unchanged). Harness suites 367 pass. No leftover process.
+- **Sizes:** `agent-session.ts` **4,492**, `metering/engine.ts` **1,034** (≤ 1,051); `client.ts` 1,046, `controller.ts` 764, `native/host.ts` 909, `native/controller.ts` 599, `conversation-manager.ts` 1,012, `agent.ts` 563. New: `proof.ts` 51 lines.
+- **The three new tests: 20 / 20 in isolation** (the retirement test, and the bounded-proof test's two cases), and the files `metering-unallocated` and `metering-durability` **20 / 20** whole-file.
+
+## (1) Totals plus unallocated, no double count
+
+My probes, re-run over a real stdio harness with SQLite triggers (state shown is persisted):
+
+| Scenario | Result |
+| --- | --- |
+| **Both writes failing, in-process and after a reopen** | After turn 3: attributed **253 = 220 + 33**, unallocated **110** (one accrual, 100 in / 10 out), so **363 = 110 + 220 + 33** is everything spent; turn 3's record doesn't repeat the earlier evidence. Same in both modes |
+| **A failed save during retirement, two reopens** | The pending record holds the evidence; reopen 1 and reopen 2 both show attributed 220 and unallocated 110, **one** metering row; then turn 3 adds 33 (attributed 253, unallocated still 110); 1 of 2 records carries the earlier evidence |
+| **Two channels closing at once** (a double failure on alpha only) | Beta exact (224, complete, nothing unallocated); alpha 2,002 attributed plus 1,001 unallocated |
+| **A late-sealed attempt of a partial turn** | Counted once: turn 2 accrues 30 to unallocated and carries it as evidence; turn 3 neither repeats nor re-accrues it |
+| **Several closes after a gap** | Still bounded (each close reads from the previous cursor); the gap's rows were unmeasured, so nothing is accrued, which is right |
+
+The accrual commits with the record and the cursor in the same commit, so a replay can't add it twice; the persistence is the same pending-record path as before.
+
+## (2) The cap (128 attempt ids, 32 KiB)
+
+With detail pruned, measured through `serializeNativeMeteringProof` and end to end:
+
+| Case | Result |
+| --- | --- |
+| attempt ids at **127 / 128** | stored in full, no flag |
+| **129 / 200** | the first 128 are kept, `nativeAccountedAttemptCount` records the true count (129, 200) and `…Truncated: true` is set |
+| an **oversized id** (200 characters) | dropped, the count and the flag still say so |
+| earlier calls at **127 / 128 / 129** | 127 and 128 in full; **129 becomes a summary** (`truncated`, call count, attempt count, unmeasured, token sums) |
+| the **32 KiB** boundary (20-id calls) | full list through **41** calls, summary from 42; a stored proof never exceeds the cap; 100 calls with 128 ids each collapse to a 204-byte summary that keeps the counts and token total |
+| **end to end, 130 measured attempts, pruned** | proof row 1,021 bytes: 128 ids, count 130, truncated; turn 1 total 1,430 as scripted; turn 2 clean |
+| **truncated proof, then a late-sealed call** (the call hidden at turn 1 and visible after a reopen) | **Nothing re-accrued:** `unallocated` stays empty; the affected earlier calls appear in turn 2's evidence as unmeasured with the reason "the earlier operation's retained accounting proof was truncated". Totals stay 1,419 + 8 |
+
+So past the cap nothing is silently dropped (counts and the flag are kept) and nothing is double-accrued. The accrual itself is **independent of the cap**: it is computed from the live ledger read, so the unallocated total stays exact.
+
+**Mutations (each reverted; four native metering files, 31 tests):** no unallocated accrual, accrual twice, the truncated proof ignored (re-accrual), no truncation flag, no id cap, no byte cap, the summary dropping tokens, and the engine ignoring native unallocated: **all fail** targeted tests.
+
+## (3) A record written by `4bbefcb`
+
+I wrote a database with the previous source (a double failure, so a record with earlier evidence and no accrual) and continued it with the new source: the record and its operation identity read fine (no cap or truncation fields, treated as not truncated), schema 21, a new prompt works, and the cursor and totals continue (attributed 253). **Note 1:** such an old record's 110 stays in its evidence only; it is **not backfilled** into unallocated (unallocated is empty). Say so in the changelog if any database was written by the intermediate commit.
+
+## (4) The changelog
+
+It now says: the turn record's usage and `state.totals` carry usage attributed to their own turns; a later close records unaccounted usage of an earlier turn in `nativeUsage.unaccountedEarlierCalls` and adds its known tokens once to `state.unallocatedUsage`; schema 21 keeps bounded proof with detail retention off; oversized evidence is summarized with counts and a truncation flag; attempts without accounting proof stay visible as unmeasured. The separate line still says **between-turn usage remains a harness dependency**, and nothing claims between-turn support; the accrual reason is "unaccounted usage of an earlier turn".
+
+## Notes
+
+1. Records written by the intermediate `4bbefcb` aren't backfilled (above).
+2. **A truncated proof forfeits recovery of later-sealed attempts of that turn:** they are shown as unmeasured evidence, not accrued. That is the safe choice and it is visible, but say it in the changelog next to "oversized evidence".
+3. The accrual list can hold one entry per earlier measured attempt in a single close (bounded by the 100 earlier turns per close); fine in practice.
