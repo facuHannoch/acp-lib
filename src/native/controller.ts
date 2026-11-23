@@ -1,3 +1,4 @@
+import { NativeInferenceSource } from "../metering/native/source.ts";
 import { nativeConversationStopping, nativeProviderTurnEnded, refuseNativeOnClose } from "../permissions/conversation.ts";
 import { runNativeApproval } from "./approvals.ts";
 import { recordingPermissionHandlers } from "../permissions/policy.ts";
@@ -101,6 +102,7 @@ export class NativeController implements ConversationController, ChannelPort {
   #attachment: Promise<void> | null = null;
   #attachmentHandle?: { dispose(): void };
   #attachmentApprovals = new AbortController();
+  #usage?: NativeInferenceSource;
 
   constructor(config: NativeControllerConfig) {
     this.#config = config;
@@ -208,8 +210,6 @@ export class NativeController implements ConversationController, ChannelPort {
   catchUp(after: string, commit: Parameters<NativeHarnessHost["catchUp"]>[2], signal?: AbortSignal) {
     return this.#host.catchUp(this.#channel, after, commit, signal);
   }
-
-  // --- settings and usage -----------------------------------------------------------------------
 
   readonly configOptions: ConfigOptions = NO_OPTIONS;
   setConfig(id: string): Promise<void> {
@@ -400,8 +400,6 @@ export class NativeController implements ConversationController, ChannelPort {
     return [...this.#turns.values()].some((turn) => !turn.ended && !turn.released);
   }
 
-  // --- prepared turns ---------------------------------------------------------------------------
-
   prepareTurn(turnId: string, content: TurnContent): PreparedTurn {
     const turn = this.#turns.get(turnId);
     if (!turn || turn.released) throw new Error(`unknown turn ${turnId}`);
@@ -410,10 +408,12 @@ export class NativeController implements ConversationController, ChannelPort {
       for (const listener of [...listeners]) listener(output);
       for (const listener of [...this.#outputListeners]) listener(output);
     };
-    // A turn that had already ended when it was prepared only replays what was held for it.
     const replay = turn.ended !== null;
     return {
       turnId,
+      nativeMetering: { turnId: turn.harnessId, read: () =>
+        (this.#usage ??= new NativeInferenceSource(this.#host.sessionId, this.#channel, this.#host.usageLedger))
+          .readTurn(turn.harnessId) },
       get live() { return !replay; },
       subscribeOutput: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
       cancel: () => this.#interrupt(turn),

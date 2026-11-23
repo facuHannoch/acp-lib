@@ -866,6 +866,7 @@ the `http` runtime.
 ### Billing-grade metering
 
 > **2026-11-21:** not built: usage isn't forwarded yet. The source is the harness's model-call records (`session/model-calls`), pulled, not pushed per call. brief R5.
+> R5 adds persisted native metering evidence. Per-call usage events and native `TurnResult.usage` are deferred.
 
 The library knows native costs as precisely as it knows the certified OpenCode plugin's (decided 2026-11-13; this
 brings the measurement part of `todos/11-12-TODO-billing-required-native.md` into stage 2a). A consumer enforces

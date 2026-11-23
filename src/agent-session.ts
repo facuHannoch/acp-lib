@@ -61,7 +61,7 @@ import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
 import { formatResponseMessages } from "./response.ts";
-import { MeteringEngine, type OpenDetachedOperation, type OpenOperation } from "./metering/engine.ts";
+import { MeteringEngine, type CloseOperationInput, type OpenDetachedOperation, type OpenOperation } from "./metering/engine.ts";
 import {
   AgentSessionHandoffError,
   type AgentSessionMeteringSnapshot,
@@ -564,7 +564,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       ...(config.metering?.counterInterpretation
         ? { counterInterpretation: config.metering.counterInterpretation }
         : {}),
-      ...(config.metering?.inferenceSource
+      ...(config.metering?.inferenceSource && !config.native
         ? { inferenceSource: config.metering.inferenceSource }
         : {}),
       // A thread we are about to create has counters starting at zero; one we load does
@@ -3364,8 +3364,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       presentation: this.presentation,
       metering: {
         open: (item) => this.openMeteredOperation(item),
-        close: (operation, outcome, reportedCumulative, usageFailureReason) =>
-          this.closeOperation(operation, outcome, reportedCumulative, usageFailureReason),
+        close: (operation, outcome, reportedCumulative, usageFailureReason, nativeMetering) =>
+          this.closeOperation(operation, outcome, reportedCumulative, usageFailureReason, this.metering, nativeMetering),
       },
       steering: this.steering,
       owner: {
@@ -3411,6 +3411,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       internalSessionId: this._internalSessionId,
       providerId: this.providerId,
       model: this.model,
+      native: this.controllerDefaults.native,
       degraded: isDegradedController(this.controller),
     });
   }
@@ -3850,24 +3851,21 @@ export class AgentConversation implements AgentClient, Bridgeable {
     };
   }
 
-  /**
-   * Close a rating unit, emit its record, and surface a strict-mode block.
-   *
-   * `contextAfter`/`providerCostAfter` are the latest observations seen by completion.
-   * ACP gives no ordering guarantee, so neither is asserted to describe THIS operation.
-   */
+  /** Closes a rating unit, emits its record and surfaces a strict-mode block. */
   private async closeOperation(
     operation: OpenOperation,
     outcome: "completed" | "cancelled" | "error",
     reportedCumulative: TokenUsage | null,
     usageFailureReason?: string,
     engine: MeteringEngine = this.metering,
+    nativeMetering?: CloseOperationInput["nativeMetering"],
   ): Promise<OperationMeteringRecord> {
     const wasBlocked = engine.blocked;
     const live = engine === this.metering;
     const record = await engine.close(operation, {
       outcome,
       reportedCumulative,
+      nativeMetering,
       ...(usageFailureReason ? { usageFailureReason } : {}),
       // Context and provider cost describe the live thread. An unconfirmed transition
       // target has neither yet, and borrowing the source's would misreport it.

@@ -613,6 +613,7 @@ export type {
   MeteringEnforcement,
   MeteringPricingStatus,
   MeteringProvenance,
+  NativeOperationUsage,
   MeteringReconciliation,
   CostReconciliation,
   MeteringUsageResult,
