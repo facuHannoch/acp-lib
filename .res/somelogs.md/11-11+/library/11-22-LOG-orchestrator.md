@@ -249,3 +249,8 @@ edit to `src/agent-session.ts`.
 - The user merged `pre-alpha` (`3d96dbd`: the retry and delivery-state follow-up and the spec's Acceptance, Events,
   Configuration and Limitations updates) into alpha. The live run uses option A: the user logs in to a throwaway Codex
   home (`/tmp/orch-codex`) themselves; cod2a runs it after R4 step 3, with the caps in the plan.
+- The user logged in (ChatGPT) to a disposable Codex home outside `/tmp`: `$AGENTS_COMMON_ARTIFACTS_DIR/codex_home`
+  (real path `.agents/.artifacts/common/codex_home`; git-ignored through `.agents/.artifacts/`, nothing tracked under
+  `.agents`; `auth.json` mode 0600, the directory 0755; outside `~/.codex`). The live run (O6 step 3) is released to cod2a
+  after the current R4 follow-up, with that `ACP_ORCH_CODEX_HOME`: no agent reads or prints the login; the script never
+  removes the supplied home; the user logs out and deletes it afterwards.
