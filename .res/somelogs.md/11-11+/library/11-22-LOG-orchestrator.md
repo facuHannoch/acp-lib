@@ -150,3 +150,6 @@ edit to `src/agent-session.ts`.
   ask after a redirect stays with the previous giver; consumer-opened workers use the configured defaults;
   `ownerPolicies` sets `isOwner`. Cod1a's runtime (`f580069`, crash follow-up `2fb1bcf`) is awaiting its serial
   full runs and Clad1a; O3a waits for it. O5a (no dependency on it) goes to cod2a next.
+- O4 follow-up in from cod2a, `71b63d8` (consumer workers use `orchestrator.defaults.workerPermissions`; changelog for
+  the optional `turnId`, the `source` mark and `WorkerPermissionSource`); 1,540 green on cod2a's run; sent to clad2a.
+  O5a step 1 (`a6ec0af`) is in cod2a's gate.
