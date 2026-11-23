@@ -128,3 +128,58 @@ With those three, the port is the right place, and replacing the fake with the r
   fine; ask the spec owner whether the coupling is intended.
 - **`worker_redirected` is emitted before dispatch**, so a rejected hook leaves it already published (see point 3 above).
 - **Baseline:** 1,527 tests, up from 1,521.
+
+## Follow-up: `efb3aae` (compose worker policies, preserve giver authority)
+
+All my O2 notes are **closed**, and the composition semantics hold. No findings. I read `efb3aae` and ran a clean
+`git archive efb3aae` (`/tmp/clad2a-o2b`): typecheck clean, **1,529 pass, 0 fail, 142 files**, 35 snapshots, hash
+`fbc6ec2c…` unchanged. I also wrote my own probes.
+
+| My O2 note | Status |
+| --- | --- |
+| `policyNames` on the actor and the port | **Closed.** The conversation actor has `policyNames`, and `beforeDispatch(row, plan, messageId, policyNames)` receives them (a consumer passes `[]`). The test checks the port saw `[owner]` then `[trusted]` in order |
+| `busyMs` restarts at every steer | **Closed.** `pool.start` now keeps the existing `started` while the slot is busy. My probe: 705 ms before a steer, **2,110 ms** after (≈ 700 + 800 + 600), where it used to report ~900. The test asserts it never decreases |
+| A same-giver `redirect: true` was refused | **Closed.** The redirect gate now fires only when the destination actually *changes* (`running.destination !== plan.assignment.destination`), not on the flag. My probe: a policy without redirect authority got `steered` for its own work. A different conversation without `redirect: true` still gets `busy`; with it, the gate applies |
+| `use: true` with `scope: "none"` couldn't open | **Closed.** `requireWorkerUse` no longer requires scope. Scope now means "which workers it sees": its own (`openedBy`) or work currently given to it (`running.destination`) |
+| Steer boundary: a call before `prompt()` | **Covered at the repository level, as core-p says**, but note the status below |
+| A rejected hook after a steer | **Covered by the same contract, if O3a uses it** (below) |
+
+**Restricted scope, probed.** A `scope: "none"` conversation, with another conversation's worker present:
+
+- `list` shows only its own worker (`w2`);
+- `check` of its own worker works;
+- `check` of the other worker gives `refused:scope`;
+- `check` of an **unknown** handle also gives `refused:scope`, so existence can't be probed;
+- `send` to the other worker gives `refused:scope`.
+
+The busy and `no_worker_free` listings are filtered the same way. A test shows a restricted conversation sees the worker
+once it's currently given that conversation's work.
+
+**Composition, probed.**
+
+- `composeDelegationPolicy`: `use` and `redirect` need all policies; `scope: "none"` wins; `maxOpen` is the minimum
+  (3, 1 and none gave 1); an empty list throws.
+- `matchWorkerPermissionLevel` matches **within each policy first** (so a policy with no matching rule contributes its own
+  default, never skipped), then reduces with deny < ask < allow. On a request with four policies mixing allow, deny, ask
+  and a kind-vs-command conflict:
+  - the result is the same for **all 24 orderings**;
+  - adding a policy **never loosens** it;
+  - a single `deny` anywhere wins;
+  - inside one policy the kind-vs-command rule is still the most restrictive (`allow` + `deny` gave `deny`);
+  - with no policies it returns `ask`. The spec's "empty list → the orchestrator's defaults" belongs to O6's resolution
+    step, so this never fires in practice.
+- The reduction reuses R2's ordering: `mostRestrictivePermissionLevel` was extracted from the matcher, and the matcher's
+  own kind-vs-command choice now calls it. There's one definition of the order.
+
+**The steer-boundary status.** Cod1a's draft contract is on `aiagent/cod1a-worker-delivery-amendment`, not on alpha or
+in this tree. It declares `markSteered(workerConversationId, messageIds)`, `continueAssignment(id, predecessorMessageId,
+successorMessageId)`, `closeContinuation(id, expectedMessageId, failure)` and `replaceAssignment(old, expectedMessageId,
+replacement)`. That design answers my concern: the lifecycle records a steered cancellation as *awaiting continuation*
+instead of staging an immutable interrupted notice, the successor's `beforeDispatch` links it with `continueAssignment`,
+and `closeContinuation` is the recovery if the hook rejects. So no `prepare` call is needed. Two caveats for O3a:
+
+1. **It's a contract only for now.** On that branch `markSteered` appears only in the contract file, with no implementation
+   or test yet. O3a depends on it landing.
+2. **O3a must call `closeContinuation`** when a hook rejects or a dispatch fails after a steer, and test a refused hook on a
+   `continue`. The `worker_redirected` event is still published before dispatch, so a rejected hook leaves it already out;
+   emit it after the hook, or accept it and say so.
