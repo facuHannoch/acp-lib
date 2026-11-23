@@ -262,11 +262,16 @@ The user never sees the worker's text directly; the agent reads it and decides w
   the harness commits it to the channel's inbox before acknowledging, deduplicates retries by id, and refuses it
   while the channel or session is suspended ([external notices spec](../../../../src/native-harness/.res/docs/channel-messaging/0001-DESIGN-external-notices/SPEC.md)). For an ACP conversation
   (later, with MCP) it is an out-of-band message delivered with the next prompt.
-- **Durable native completion:** persist the assignment's identity, destination and originating policy names before
-  work starts. Use a worker backend whose completion can be recovered by assignment id or retained until
-  acknowledged. In the `Agent` database, record the result and stage the pending notice in one transaction. After an
-  acp-client restart, recover unstaged completions and retry staged notices by their stable id until the harness
-  accepts them or delivery is recorded as blocked or failed; the result stays available to `check` and `list`.
+- **Durable native completion:** persist the assignment's identity, worker-operation correlation, destination and
+  originating policy names before dispatch. A committed final ACP worker conversation record is the recovery source.
+  In the `Agent` database, record the assignment result and stage the pending notice in one transaction. After an
+  acp-client restart, recover finalized unstaged completions by assignment id and retry staged notices by stable id
+  until accepted, blocked or failed; the result stays available to `check` and `list`. If no reliable final record or
+  supported provider recovery is available, stage an interruption notice with an uncertain outcome and do not
+  automatically repeat the work. Recovery of a result that never reached a durable worker record is future work.
+- **Redirect and completion:** persist the new destination and policy provenance together when redirect takes
+  effect. Completion staging freezes the committed assignment state in the pending notice. A later redirect
+  leaves that notice intact. Preserve policy restrictions from all work taken into the completed worker turn.
 - A stop asked by the conversation itself produces no item: the tool result said "stopped".
 - Several items arriving together are taken in one turn: the harness drains what waits at each model call.
 - Pull stays available: `check` and `list`. What a reply contains is tuned by the test run; v1 sends the final message.
