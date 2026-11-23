@@ -235,3 +235,9 @@ edit to `src/agent-session.ts`.
   read-through done. **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O3-retry.md)): 1,589 in 149 files.
   Spec: Acceptance, Events, Configuration and Limitations updated to what is built. Follow-up for cod2a: commit the
   real-SIGKILL test for a busy worker with an ACP destination.
+- The ACP busy-worker restart test `0f11c79` and the opt-in smoke runner `e1b378b` reviewed by clad2a (`f38098a`): the
+  test is real (the `partial` boundary failed under four mutations); the runner's free mode passes, live mode fails
+  fast without a key. Findings: the live mode copies `~/.codex/auth.json` into a temp `CODEX_HOME` (0600, removed in a
+  `finally`, but a SIGKILL would leave it): still needs the user's go-ahead, and the cleanup must survive a kill; the
+  `partial` test leaks an orphan worker process; the model names are hard-coded. Coordinator run on `0f11c79`:
+  1,590 in 149 files green (RAM-backed). cod2a to fix, then R4.
