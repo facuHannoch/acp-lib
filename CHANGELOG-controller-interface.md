@@ -217,9 +217,16 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   completion is outstanding. That result now also includes a cancelled
   metering record. During stop, the Agent reads any missed committed replies
   for the exact turn and stores them once by harness message ID. A late
-  completion does not re-enter the live output. Inputs can still incur spend if take has won or
+  completion does not re-enter the live output. With a silent host, withdrawal
+  and reply recovery can add about six seconds to native stop or close,
+  one second for withdrawal and five for recovery. Other shutdown requests
+  keep their own deadlines. Inputs can still incur spend if take has won or
   the host is unavailable or silent.
   `TurnEvent` now includes the controller's `input_withdrawn` confirmation.
+- Stop-time reply recovery needs a prepared turn. If the only take evidence
+  arrived in the withdrawal response, a committed reply can be missing locally
+  after stop and a same-Agent reopen. A new Agent can recover the reply from
+  the harness's persisted session when the submission is still tracked.
 
 ## Native item receipts
 

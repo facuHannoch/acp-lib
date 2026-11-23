@@ -1023,8 +1023,13 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   and its cancelled metering record. If the first message was still
   streaming without a completion, the returned text is empty. Before stop
   finishes, the Agent tries to recover missed committed replies from that
-  turn for persistence. Recovered replies are stored once and do not change
-  the caller's result. Submitted
+  prepared turn for persistence. Recovered replies are stored once and do not
+  change the caller's result. If the controller never saw the turn and learned
+  of the take only from withdrawal, a committed reply can remain missing
+  after reopening the conversation in the same Agent. A new Agent can recover
+  it from the persisted harness session when the submission is still tracked.
+  A silent host can add about six seconds for withdrawal and reply recovery.
+  Submitted
   inputs that were never taken reject with `NativeInputStoppedError` (includes
   `messageId`). If take wins or the host is unavailable or silent, the input
   may still run and incur model charges.

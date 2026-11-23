@@ -73,21 +73,28 @@ export async function openOrCreate(
 export async function recoverStoppedReplies(
   client: HarnessClient, channel: string, turnId: string, seen: readonly ResponseMessage[],
 ): Promise<readonly ResponseMessage[]> {
-  const signal = AbortSignal.timeout(5_000);
-  const known = new Set(seen.map(message => message.messageId));
-  const recovered: ResponseMessage[] = [];
-  let cursor: string | undefined;
-  do {
-    const page: Awaited<ReturnType<HarnessClient["reconcileChannel"]>> = await client.request(
-      "channel/reconcile", cursor === undefined ? { channel, turnIds: [turnId] } : { channel, cursor }, signal,
-    );
-    if (page.unknownTurnIds.includes(turnId)) throw new Error(`native stop recovery could not find turn ${turnId}`);
-    for (const { messageId } of page.replies) {
-      if (known.has(messageId)) continue;
-      known.add(messageId);
-      recovered.push({ messageId, text: await readCompleteMessage(client, messageId, signal) });
-    }
-    cursor = page.next;
-  } while (cursor !== undefined);
-  return recovered;
+  const controller = new AbortController();
+  const { signal } = controller;
+  // Keep the timer across RPCs, including gaps with no abort listener.
+  const deadline = setTimeout(() => controller.abort(new DOMException("Native stop reply recovery timed out", "TimeoutError")), 5_000);
+  try {
+    const known = new Set(seen.map(message => message.messageId));
+    const recovered: ResponseMessage[] = [];
+    let cursor: string | undefined;
+    do {
+      const page: Awaited<ReturnType<HarnessClient["reconcileChannel"]>> = await client.request(
+        "channel/reconcile", cursor === undefined ? { channel, turnIds: [turnId] } : { channel, cursor }, signal,
+      );
+      if (page.unknownTurnIds.includes(turnId)) throw new Error(`native stop recovery could not find turn ${turnId}`);
+      for (const { messageId } of page.replies) {
+        if (known.has(messageId)) continue;
+        known.add(messageId);
+        recovered.push({ messageId, text: await readCompleteMessage(client, messageId, signal) });
+      }
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return recovered;
+  } finally {
+    clearTimeout(deadline);
+  }
 }
