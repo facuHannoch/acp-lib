@@ -1336,7 +1336,7 @@ handoff, modes, config options, provider session listing, adoption, and a
 local user-message record for native prompts. See [native turn metering](#native-turn-metering)
 for available usage evidence and its limits.
 
-## Orchestrator and worker delivery
+## Orchestrator and worker delivery (experimental)
 
 Enable the orchestrator on the same Agent as the native harness. It requires
 `capture.message: "content"` and persistence capabilities for workers and worker
@@ -1398,7 +1398,10 @@ worker, or include `worker` to send to a known handle. `check` and `stop`
 take `{ worker }`; `list` takes an empty object. These names are reserved
 while native delegation is enabled. The trusted host can also use
 `agent.orchestrator` with a consumer actor. Use
-`agent.events.subscribeWorkers` for worker lifecycle events.
+`agent.events.subscribeWorkers` for worker lifecycle events. Event kinds are
+`worker_opened`, `worker_busy`, `worker_idle`, `worker_replied`,
+`worker_reloaded`, `worker_dropped`, `worker_redirected`, `worker_failed`
+and `worker_stopped`.
 
 A busy worker follows its current assignment. Its current giver can steer
 with another message for the same handle. A different giver needs redirect
@@ -1427,7 +1430,9 @@ destination receives a harness notice. Restart recovery looks for the saved
 result by assignment ID, and retries eligible notices without running the
 worker again. A lost result can be reported as uncertain. `check` and
 `list` show the latest outcome and delivery state when available. Native
-results may be absent until the harness opens. `retryDelivery` explicitly
+results may be absent until the harness opens. Delivery states are `pending`
+(awaiting delivery), `delivered`, `blocked_policy` (policy rejection), and
+`failed_destination` (the destination is missing or retired). `retryDelivery` explicitly
 retries only the newest policy-blocked delivery. A retired or missing
 destination remains a failed delivery.
 

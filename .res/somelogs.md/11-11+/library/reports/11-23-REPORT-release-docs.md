@@ -39,3 +39,43 @@ including explicit retry. No real provider calls were made.
 The pack dry run lists both added documents and the consumer guide, retains
 the 0.12.1 version, and lists the native harness CLI source. Package exclusions
 were left as configured. No library source or tests changed.
+
+## Release review follow-up
+
+The migration now separates upgrade requirements for existing consumers from
+opt-in native and orchestration behavior. A TypeScript compiler API comparison
+of the installed and archived package entries counted 828 exports in 0.12.1
+and 913 in alpha, with all 828 retained. The package exports map and
+dependency fields match. The type audit identified the new required channel
+capability, prompt-handle and event-bus methods, turn-start cause, additions
+to concrete class shapes and the widened adapter, event, startup and
+metering discriminants. The migration distinguishes required
+`capabilities.channels` from the optional `workers` and `workerDelivery` flags
+and the optional repositories.
+
+The scratch compiler again reported 112 baseline diagnostics, 125 after
+switching to alpha and byte-identical baseline diagnostics after the
+documented source and test-double edits. That comparison verifies types.
+The runtime check used separate scratch copies with the same installed
+dependencies and linked both local sibling packages.
+
+| agents-core file | Published 0.12.1 | Alpha, source edits only | Alpha, source and double edits |
+| --- | ---: | ---: | ---: |
+| `steer-delivery.test.ts` | 9 pass | 1 pass, 8 fail | 9 pass |
+| `user-chat-acceptance.test.ts` | 11 pass | 9 pass, 2 fail | 11 pass |
+
+The note names every identified double and shows the method that preserves
+its mutable connection. We could not run `unit/hub.test.ts` in the scratch
+layout. Importing its Docker configuration fails before any test starts
+because the `bundledImageSources` macro is unavailable.
+
+Both README startup blocks compile against alpha and ran with an offline
+fixture adapter substituted for Codex. The package dry run lists
+515 paths and still reports 0.12.1 with the same exclusions. An exact-word
+search of every packed path found `defaultPermission` only in the migration
+instructions, changelog and a dated historical native harness design log.
+The old migration guide now links to the new one as the next step from
+0.12.1. The orchestrator section is labelled experimental and names the
+worker event kinds and delivery states. No library source, tests, or
+agents-core checkout files changed. The audit, compile and runtime logs
+are under `/tmp/acp-release.ywAUlH`.

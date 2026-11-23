@@ -1,5 +1,8 @@
 # Migrating from 0.10.2 to 0.12.0
 
+This is the historical 0.12 guide. For the next upgrade from published 0.12.1,
+see [Migrating from 0.12.1 to 0.13](MIGRATION-0.12-to-0.13.md).
+
 For agents-core and the webapp, which pin `@qlairoslabs/acp-client` `0.10.2`. This covers everything
 since: `0.11.0`, the operation lifecycle (`0.11.2`), and the work done for the 2026-10-13
 requirements list. `CONSUMER_GUIDE.md` is the full reference; this file says what changed and what to do
