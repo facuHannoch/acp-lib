@@ -235,3 +235,48 @@ edit to `src/agent-session.ts`.
   read-through done. **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O3-retry.md)): 1,589 in 149 files.
   Spec: Acceptance, Events, Configuration and Limitations updated to what is built. Follow-up for cod2a: commit the
   real-SIGKILL test for a busy worker with an ACP destination.
+- The ACP busy-worker restart test `0f11c79` and the opt-in smoke runner `e1b378b` reviewed by clad2a (`f38098a`): the
+  test is real (the `partial` boundary failed under four mutations); the runner's free mode passes, live mode fails
+  fast without a key. Findings: the live mode copies `~/.codex/auth.json` into a temp `CODEX_HOME` (0600, removed in a
+  `finally`, but a SIGKILL would leave it): still needs the user's go-ahead, and the cleanup must survive a kill; the
+  `partial` test leaks an orphan worker process; the model names are hard-coded. Coordinator run on `0f11c79`:
+  1,590 in 149 files green (RAM-backed). cod2a to fix, then R4.
+- cod2a's fixes `c1b1c04` (orchestrator): the smoke runner never copies a login file: live mode requires an explicitly
+  supplied disposable `ACP_ORCH_CODEX_HOME` (a login the user creates there themselves); SIGINT/SIGTERM cleanup; the
+  lifecycle fixture exits on stdin EOF; model choices configurable and printed in free mode. Gate (cod2a, RAM-backed):
+  1,590 in 149 files green. clad2a short review. The live run now needs the user to provide that Codex home (or to
+  say the normal Codex home may be used).
+- The user merged `pre-alpha` (`3d96dbd`: the retry and delivery-state follow-up and the spec's Acceptance, Events,
+  Configuration and Limitations updates) into alpha. The live run uses option A: the user logs in to a throwaway Codex
+  home (`/tmp/orch-codex`) themselves; cod2a runs it after R4 step 3, with the caps in the plan.
+- The user logged in (ChatGPT) to a disposable Codex home outside `/tmp`: `$AGENTS_COMMON_ARTIFACTS_DIR/codex_home`
+  (real path `.agents/.artifacts/common/codex_home`; git-ignored through `.agents/.artifacts/`, nothing tracked under
+  `.agents`; `auth.json` mode 0600, the directory 0755; outside `~/.codex`). The live run (O6 step 3) is released to cod2a
+  after the current R4 follow-up, with that `ACP_ORCH_CODEX_HOME`: no agent reads or prints the login; the script never
+  removes the supplied home; the user logs out and deletes it afterwards.
+- **The one live attempt (O6 step 3)** ran with the hardened runner `f73fde1` and is documented in `93d12a1`
+  ([report](reports/11-23-REPORT-O6-live.md)): the native agent on `deepseek/deepseek-v4.1-flash` (OpenRouter), the
+  worker a real Codex conversation on `gpt-6.1-terra`; 82 s, 3 OpenRouter requests, 1 worker submission. Observed live:
+  delegation (the agent said `queued`), the worker's `orch live ok`, the result staged and delivered to the original
+  conversation, the agent reporting it on the notice-driven turn; cleanup verified (`providerDeleted: true`, both
+  native conversations deleted, both temp trees removed; the supplied Codex home untouched, never read). **Not
+  verified live:** the forwarded permission and the redirect: Codex ran the command without asking, so the runner
+  stopped at the first mismatch; Bob's prompt was never sent; no retry. Those paths are covered by the scripted stdio
+  tests and by the capture-backed Codex permission shapes from R2. Whether to try a second attempt (the disposable Codex
+  home configured to always ask) is the user's decision. Sent to clad2a (the runner hardening and the report).
+- Diagnosis of the first live attempt's missing ask: the Codex bridge has its own agent modes; the default is `agent`
+  ("Auto review": only ask for actions detected as potentially unsafe; on-request approvals; workspace-write sandbox),
+  and the worker wrote `result.txt` inside its own working directory, so Codex correctly asked for nothing; the runner's
+  `CODEX_CONFIG` sandbox setting does not win against the bridge's mode. Not a bug in the forwarding. The user
+  authorized one more (the second and last) live attempt with `INITIAL_AGENT_MODE=read-only`, a recorded redacted trace of
+  the worker's permission requests and our responses (for diagnosis), and the same caps.
+- **The second live attempt PASSED** (cod2a, runner `0ab13e9`, report `9c50ffb` on `orchestrator`): 11 s, five
+  OpenRouter requests, two native prompts, two ACP worker submissions. One `execute` request from `w1` reached Alice;
+  Bob's redirect queued while it was open and could not answer it; Alice's `allow_once` produced one approved resolution
+  and one ACP `allow_once` response; the harness recorded one notice from `w1` to Bob. Cleanup verified (provider delete
+  true, both native conversations tombstoned, both temp trees removed; the supplied Codex home untouched). No third
+  attempt. With clad2a for review of the live-run files.
+- Live-run files reviewed by clad2a (`60be735`): no blockers; the hardening, the redacted trace and the key grep checked.
+  **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O6-live.md)): 1,590 in 149 files, nothing under `src/`
+  changed. `pre-alpha` rebuilt with them. Reported to the owner: `.mcp.json` is tracked (since `2b8ff46`) with a bearer
+  token for the local agents hub.

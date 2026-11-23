@@ -37,6 +37,7 @@ let permission: { promptId: unknown; session: string; id: string } | null = null
 
 let buffer = "";
 process.stdin.setEncoding("utf8");
+process.stdin.once("end", () => process.exit(0));
 process.stdin.on("data", (chunk: string) => {
   buffer += chunk;
   let newline: number;
