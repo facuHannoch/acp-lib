@@ -106,3 +106,134 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   haurness-l. **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-R5-2a.md)). `pre-alpha` built with R5 steps 1 and
   2a; the exact SHA goes to haurness-l for confirmation before the user merges. R5 step 2b (`0fdb886`, report `9fb2b2e`;
   coordinator run: 1,639 in 154 files green, sizes unchanged) is with clad2a.
+- haurness-l confirmed the exact `pre-alpha` (`b77c3d7`: R5 steps 1 and 2a and the harness client tests and doc; alpha
+  `173e4e7` fast-forwards; source and tests identical to the tested `2aff51c`); it waits for the user's merge.
+- R5 step 2b (`0fdb886`, report `9fb2b2e`) reviewed by clad2a (`38c5f33`): meets its stated gate (1,639 in 154 files; four
+  new tests 20 of 20; the cursor from persisted evidence with interleaved channels, a restart and a gap; a failed final
+  commit left a write-ahead record committed once, with no double count), **but not approved**: (1) a paid turn's usage
+  can be lost silently: with both the staging write and the commit failing for turn 1, a later prompt gave 220 tokens
+  instead of 330 with nothing flagging it (later closes read only their own turn id); (2) after one gap the cursor never
+  advances; (3) four mutations survive (the cursor advancing without a terminal turn, no dedupe in `record()`, no recovery
+  at close, the cursor ignoring its `channelKey`); (4) `agent-session.ts` 4,495 and `engine.ts` 1,059 grew past the 2a
+  numbers. Decision (coordinator): a row behind the cursor is retired only once its outcome is durably recorded (accounted,
+  or recorded as `unaccountedEarlierCalls`, or recorded as unmeasured for a terminal turn or a closed channel), never on a
+  guess. Follow-up to cod2a; step 4 and R6 held.
+- The user merged `pre-alpha` (`b77c3d7`: R5 steps 1 and 2a, the harness client abort tests and doc) into alpha. R5 2b's
+  follow-up (`3ef44c2`, report `4bbefcb`: the lost-usage fix, the gap-retirement rule, SQLite schema 21; coordinator run
+  1,646 in 154 files green RAM-backed) is with clad2a.
+- R5 step 2b follow-up (`3ef44c2`, report `4bbefcb`) reviewed by clad2a (`d7edd6d`): recommends approval. Verified on a
+  real schema-20 database written by alpha `173e4e7` (an ACP prompt plus a delivered worker assignment) opened twice:
+  versions 20 and 21, one 21 row, every other table byte-identical, the worker delivery state intact; schema 21 adds one
+  nullable column `metering_records.native_metering_proof_json` (idempotent). Probes over real stdio: both writes
+  failing (in-process and after a reopen): the earlier 110 tokens show on turn 2's record as `unaccountedEarlierCalls`
+  and are not repeated on turn 3; eight closes after a gap are bounded; a late-sealed attempt is counted once; a failed
+  save during retirement commits once; two channels closing at once, exact. Nine mutations killed. Design point:
+  those 110 tokens appear in no aggregate (totals 253 = 220 + 33; `unallocatedUsage` empty; coverage partial).
+  Decision (coordinator): accrue earlier-unaccounted tokens once into the existing unallocated accrual, named
+  "unaccounted usage of an earlier turn" (not between-turn support), and cap the proof column; then a short re-check;
+  then step 4 (docs) and R6.
+- R5 step 2b's final follow-up (`c271475`, report `147bd63`) approved by clad2a (`d93d139`, no findings): totals plus
+  unallocated cover everything known to have been spent with no double count (turn 3: 253 attributed plus 110 unallocated
+  = 363 after both writes failed; two channels closing at once exact); the proof cap tested at 127/128/129 ids and at
+  the 32 KiB boundary; nine mutations killed; a record from the intermediate source still reads. **Gate passed**
+  ([gate](../.plan-execution/status/11-23-GATE-R5-2b.md)): 1,649 in 155 files. `pre-alpha` rebuilt with R5 step 2b (the
+  harness tree untouched). Step 4 (docs) and R6 released.
+- R5 step 4 (docs and close-out) in from cod2a: `910b7fd` (the native source, the evidence shape, schema 21, pricing and
+  failure behaviour, the two retention limitations: `CHANGELOG-metering.md`, `CONSUMER_GUIDE.md`), `d6c35b8` (the final gate
+  result in the R5 report: 1,649 in 155 files); alpha `b77c3d7` merged at `9a0e0fd`. Nothing under `src/` or `test/`
+  changed. With clad2a for a docs review; cod2a is writing R6's grounding.
+- R5 step 4 docs reviewed by clad2a (`465552d`): accurate, no overclaim (no between-turn support, no certification,
+  `billing_required` refused; the gate table and line counts exact; nothing under `src/` or `test/` changed; the new
+  guide section is prose), but four sentences are imprecise and several limitations are missing (the harness-dependency
+  list in the guide and changelog; `unallocatedUsage` means unaccounted usage of an earlier turn; a truncated proof can
+  list an already-counted attempt as unmeasured; the schema change is one-way; `MeteringPreflightError`;
+  `earlierEvidencePending`; where `state.totals` is read). Docs-only fix assigned to cod2a; then a short check and the
+  pre-alpha with the whole of R5.
+- R5 docs follow-up (`a9b3ae1`) reviewed by clad2a (`bc0836b`): every note landed accurately, nothing overclaims; two
+  nits (`earlierEvidencePending` means awaiting confirmation that the earlier turn ended; "unavailable host" missing from
+  the changelog's unavailable cases).
+- R6 step 0 (`dd67d45`, [report](reports/11-23-REPORT-R6-grounding.md)) reviewed by clad2a (`ddec61c`): three of the four
+  items are real gaps, the stall clock is not. **Withdrawal is a real defect**: `withdrawWaiting` removes an accepted,
+  unclaimed item and settles the prompt cancelled, but the input is already in the harness inbox, so the harness still
+  runs it; the wire already has `channel/withdraw` (idempotent: withdrawn or taken) and the host calls it, the session
+  never does. Decisions (coordinator): withdrawal is the priority, `not_found` on a pushed submission is UNRESOLVED
+  (the stdio server dispatches concurrently; a withdraw can overtake its push), a durable "withdrawing" intent and a
+  close/reopen test, an audit of `interrupt({clearQueue})`, stop and close, and a `taken` answer follows the turn; the
+  stall clock step is dropped (a regression test only: `stallLimitsFor` returns false limits for backend supervision);
+  receipts and the real-process stream test stand (partial text then the hold tool); a new public event variant needs a
+  changelog, guide and exhaustive-switch check; the size extraction comes first (`agent-session.ts` is at its ceiling).
+  Question to haurness-l: is per-channel order guaranteed between push and withdraw, or a tombstone planned (no harness
+  change needed). cod2a amends the brief and starts step 1.
+- haurness-l answered the R6 ordering question: **option (c)**. The harness wire makes no per-channel ordering guarantee
+  between `channel/push` and `channel/withdraw` for in-flight requests on one connection, and no tombstones for unknown
+  ids will be added. `withdraw` is atomic against take for a committed inbox item; `not_found` means no matching item
+  was committed at lookup time (for an unresolved push: not a cancellation, not proof of non-acceptance); only
+  `withdrawn` confirms cancellation of an accepted item; `taken` reports that take won. Rules for R6: retain the
+  withdraw intent across reconnect, suppress push replay once withdrawal is requested, resolve via the push outcome or a
+  bounded reconcile/retry with the original channel and item id; test the ambiguity with a controlled peer or barrier
+  (no claim of reproducing overtaking on the stock server). Documented as an assumption in R6.
+- R6 step 1 in from cod2a (the amended brief `069efba`/`b13417c`, the pure extraction `5602999`, the withdrawal
+  `592a2c1`, report `81574bc`, the R5 doc nits `e7d90e6`) and reviewed by clad2a (`4240f02`): the withdrawal protocol is
+  correct (intent before the request, push replay suppressed, `taken` follows the turn, `not_found` unresolved, a
+  controlled-client ambiguity test, eight of nine mutations killed; coordinator gate 1,659 in 156 files, sizes at or
+  below ceilings, harness tree untouched). Three fixes before it passes: (1) decision: stop and close must best-effort
+  `channel/withdraw` the conversation's submitted, unclaimed items (bounded, then reject): clad2a measured that after
+  stop an accepted unclaimed input was run by the harness in a new unobserved turn (real spend after stop); document
+  `taken` and a down host; (2) the handle rejection is an untyped error where stop used to settle cancelled results: a
+  typed error or the cancellation result, and a changelog line; (3) the surviving mutation (interrupt clearing
+  submitted native inputs). Minor: clear `withdrawing` once `taken`; the changelog should say the default submission
+  store is memory.
+- R6 complete from cod2a: step 1 `592a2c1` (withdrawal) with the shutdown follow-up `212e462`; receipts `76cd233`; the
+  real-stdio stream gate `ee78c68`; final report `2e1869f` (coordinator gate on `2e1869f`: typecheck clean, 1,668 in 158
+  files green RAM-backed, sizes at or below ceilings, harness tree untouched). clad2a's reviews (`4240f02`, `3466c64`):
+  shutdown re-check clean (a silent host with six unclaimed items takes 1,015 ms: one shared grace); receipts correct
+  (two conversations with interleaved steers: no bleed, no duplicates, monotonic); the stream gate deterministic
+  (50 of 50). One required decision: stop now REJECTS a running native prompt with `NativeInputStoppedError` where it
+  used to settle `{ status: "cancelled" }` with the partial text. Decision (coordinator): narrow the rejection to inputs
+  never taken by a turn; a running (taken) prompt keeps the previous cancelled-result behaviour; changelog accurate;
+  report notes that a real-process strict prefix can't be scripted. Then a short check and the pre-alpha with R5's docs
+  and all of R6.
+- R6 stop narrowing (`ac33f2d`, report `ac09144`) checked by clad2a (`80736cb`; coordinator gate 1,670 in 159 files green,
+  sizes unchanged). The discrepancy: clad2a was wrong, cod2a was right: on `a9b3ae1` a stop mid-turn returned
+  `{ status: "cancelled" }` with EMPTY text, no messages and no metering record (the records had "Partial reply.");
+  `2e1869f` rejected; `ac09144` returns cancelled with "Partial reply.", one message and a cancelled metering record.
+  So it IS a (benign) change from the old behaviour and the changelog must say so (a mid-message stop still returns
+  empty text). Mixed stop and close, a 30-round take-wins race, pre-submission prompts and the typed error only for
+  never-taken inputs all verified. Three fixes: the changelog; a stop racing an in-flight `message_completed` gives
+  `AgentSessionOperationError` where `a9b3ae1` returned cancelled (settle it as cancelled); a test for the `taken`
+  answer during the grace (the `noteTaken` mutation survives).
+- R6's last follow-up (`92a02d2`, report `fde102b`) checked by clad2a (`8e11514`): **R6 approved**, with two small items
+  (coordinator gate 1,671 in 159 files green RAM-backed). Side by side on `a9b3ae1`, `ac09144` and `fde102b`: a stop
+  mid-turn after a completed message now returns cancelled with the partial text and a cancelled metering record (was
+  empty text and no record); a stop with the completion held settles cancelled with empty text (a regression to
+  `AgentSessionOperationError` in `ac09144` fixed); a streamed message stopped halfway is identical on all three;
+  mixed stop and close and a 30-round take-wins race clean. Open: in the held-completion stop, `fde102b` drops a
+  completion arriving after settle, so nothing is persisted although the harness committed the message (the older
+  commits persisted a failed record): asked cod2a to verify that the next open's recovery restores the reply exactly
+  once (test and changelog) or persist it; plus a test for the late-completion guard and the changelog's metering
+  sentence. The pre-alpha waits for that short follow-up.
+- The stopped-reply recovery (`1b1472d`, report `97b44e3`) checked by clad2a (`3aaa53a`): clean for the case it targets, **R6
+  approved**. On `fde102b` a stop with the completion held left only the in-progress snapshot after a reopen though the
+  harness had committed the message (a real loss); now the exact stopped turn is checked within one five-second
+  deadline and the committed reply persisted by provider id (the caller still gets cancelled with empty text). One
+  record across two same-Agent reopens, a late live completion and two new-Agent opens; a silent host: stop 5,009 ms;
+  nothing committed: no record; two conversations: no cross-attribution. A narrower case is not restored at stop (a
+  second conversation's turn whose events were also in flight: restored on a new Agent open); three survivors (the
+  deadline, the provider-id dedupe, the unknown-turn check); the worst-case native stop with a silent host is about 6 s.
+  **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-R6.md)): 1,672 in 159 files. `pre-alpha` built with R5's
+  docs and all of R6.
+- R6's last follow-up (`f45fdab`, report `bb87489`) checked by clad2a (`ee20196`): approved (coordinator gate 1,675 in 160
+  files green RAM-backed). The Bun 1.3.14 issue reproduced: `AbortSignal.timeout(2000)` used by two sequential requests
+  that each add and remove an abort listener never fired in 6 s (exactly 2,000 ms with a listener left attached); the
+  one explicit timer fixes it (5,002 ms across requests); the full-stack worst-case stop took 6,023 ms; the three
+  surviving mutations killed; one more survives (removing `clearTimeout`: a leak test needed). A related finding in R5's
+  ledger reader: `NativeUsageLedger.readTurn` builds its 15 s budget from `AbortSignal.timeout` and uses it for every
+  page, so a hung later page is bounded only by the client's own 30 s timeout. Small fix assigned to cod2a (a single
+  timer, a two-page test, leak tests, drop the "when the submission is still tracked" qualifier, grep for other uses);
+  then the pre-alpha.
+- The ledger deadline fix (`a058cce`, report `6e6930c`) checked by clad2a (`24b26d2`): clean. A 1.5 s budget with page 1 at
+  300 ms and page 2 silent now rejects at 1,502 ms (it never fired in 8 s before); an endless run of slow pages rejects
+  at 1,501 ms; no timer is left (the process exits in 0.07 s); no `AbortSignal.timeout` remains in `src`, `test` or
+  `smoke-tests`; the leak mutations are killed. Coordinator gate on `6e6930c`: 1,678 in 162 files green RAM-backed, sizes
+  unchanged, the harness tree untouched. **Spec 2 (R1 to R6) is complete**; the final `pre-alpha` is built. One nit
+  (a pre-existing metering test hangs instead of failing if the timer regresses) is assigned.
