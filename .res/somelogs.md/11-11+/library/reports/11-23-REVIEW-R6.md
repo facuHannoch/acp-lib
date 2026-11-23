@@ -187,3 +187,40 @@ They now say that only submitted inputs that were never taken reject with `Nativ
 ## Verdict
 
 The narrowing does what was decided and the previous failure (a running prompt rejecting) is gone. Required before release: correct the changelog as above (the partial reply and the metering record are changes from `a9b3ae1`). Recommended: settle the stop-racing-`message_completed` case as `cancelled`, and add the `noteTaken` test.
+
+# Part 6 — the last stop follow-up (`ac09144..fde102b`)
+
+`92a02d2` (runtime, tests, docs) and `fde102b` (report). Clean archive of `fde102b`: typecheck clean, **1,671 pass, 0 fail, 159 files**, 35 snapshots unchanged, A1 unchanged, harness suites 367 pass, no leftover process. Sizes: `agent-session.ts` 4,491, `native/host.ts` 909, `native/controller.ts` 599, the others unchanged. The three new cases (stop with a completion in flight, the take-evidence case, and the strengthened stop-partial case) **20 / 20** in isolation (the take-evidence test replaced the old `take wins` case under a new name, so it counts once), and the three touched files whole-file **20 / 20**.
+
+## The side-by-side probe, all three commits (status, text, messages, metering)
+
+| Case | `a9b3ae1` | `ac09144` | `fde102b` |
+| --- | --- | --- | --- |
+| **(1) Stop (and close) mid-turn after a completed message** | `cancelled`, text `""`, no messages, **no metering** | `cancelled`, `"Partial reply."`, one message, metering `cancelled` | **the same as `ac09144`** |
+| **(2) Stop with the completion frame held** | `cancelled`, `""`, no metering; assistant record `failed "Partial reply."` | **rejects** `AgentSessionOperationError` ("the conversation stopped"); record `failed "Partial reply."` | `cancelled`, **`""`**, metering `cancelled`; **no assistant record** |
+| **(3) A streamed message stopped halfway** | `cancelled`, `""`; the chunk callback had `"Partial "`; only an `in_progress` snapshot persisted | identical | **identical, including the persisted snapshot** |
+| **(4) Mixed (running + an unclaimed steered input), stop and close** | both `cancelled` `""` (no withdrawal; the input ended `seen`) | running `cancelled "Partial reply."`; unclaimed typed rejection; item `withdrawn`; no call on another turn | **identical to `ac09144`** |
+| **(5) Take-wins race, 30 rounds** | `{cancelled, cancelled}` 22, `{completed, completed}` 8 | `{cancelled, typed}` 15, `{completed, completed}` 15 | `{cancelled, typed}` 15, `{completed, completed}` 13, `{completed, typed}` 2; **never stuck, no call on another turn** |
+
+Case (2) is the fix: stop with the completion still in flight now resolves `cancelled` with empty text, the same status and text as `a9b3ae1`. Case (1) is the intended improvement; case (3) is unchanged.
+
+## The changelog, against what I measured
+
+It now says: only never-taken submitted inputs reject `NativeInputStoppedError`; a stopped turn with a completed reply returns that partial text and a `cancelled` metering record, where the caller used to get empty text and no metering record; stopping during the first streamed message still returns `cancelled` with empty text while its completion is outstanding; spend is possible if take won or the host is unavailable or silent. That is **true for (1), (3), (4) and (5)**. Two precisions: in case (2) the metering record is also new (the changelog gives that only for a completed reply), and the guide's "first message" wording is narrower than the behaviour (it applies to whichever message is still streaming, with the earlier completed messages returned).
+
+## One new difference: a reply the harness committed is no longer persisted in case (2)
+
+In case (2), `a9b3ae1` and `ac09144` persisted the reply (`failed "Partial reply."`) because the late completion reached the recording handlers after the stop. `fde102b` drops a completion that arrives after the turn settled (`if (settled) return`), so **nothing is persisted**, although the harness committed the message and the consumer's chunk callback saw its first part. History for that race is shorter than before. It is a narrow race (stop during a completion's flight), and I did not test whether a later reconciliation restores the reply from the harness; please decide whether dropping it is intended, and say so in the changelog.
+
+## Mutations (each reverted; the four native test files, 53 tests)
+
+| Mutation | Result |
+| --- | --- |
+| `noteTaken` dropped (the `taken` answer during the grace) | **fails** `native shutdown keeps partial text when the withdrawal answer is the only take evidence` (was a survivor) |
+| stop rejects instead of resolving `cancelled` | fails the in-flight-completion test |
+| taken prompts rejected on stop (the active-turn exemption removed) | fails four tests |
+| **the late-completion guard (`if (settled) return`) removed** | **passes: a test gap**, and it is exactly what controls the record loss above |
+
+## Verdict
+
+The three items were done and the in-flight-completion case, the `noteTaken` test and the changelog are correct. **R6 is approved** (the whole of it, with Parts 1 to 5), subject to the one decision above (the unpersisted late completion in case (2): intended or not, and in the changelog either way) and one small test to add for the late-completion guard. Neither blocks building the pre-alpha.
