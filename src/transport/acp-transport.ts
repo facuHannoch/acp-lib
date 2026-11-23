@@ -191,10 +191,10 @@ export class AcpTransport {
     return this.conn().initialize(params);
   }
   newSession(params: schema.NewSessionRequest): Promise<schema.NewSessionResponse> {
-    return this.conn().newSession(params);
+    return this.raceExit(this.conn().newSession(params));
   }
   loadSession(params: schema.LoadSessionRequest): Promise<schema.LoadSessionResponse> {
-    return this.conn().loadSession(params);
+    return this.raceExit(this.conn().loadSession(params));
   }
   forkSession(params: schema.ForkSessionRequest): Promise<schema.ForkSessionResponse> {
     return this.conn().unstable_forkSession(params);

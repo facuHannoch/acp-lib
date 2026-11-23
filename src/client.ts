@@ -473,13 +473,13 @@ export class AcpClient implements AgentClient {
     this.replay = { sessionId, onUpdate: options.onUpdate };
     let res: schema.LoadSessionResponse;
     try {
-      res = await transport.raceExit(transport.loadSession({
+      res = await transport.loadSession({
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
         ...this.additionalDirectoriesParam(options.additionalDirectories ?? this.config.additionalDirectories),
-      } as schema.LoadSessionRequest));
-      transport.throwIfClosed();
+      } as schema.LoadSessionRequest);
+      if (this.transport !== transport) throw new ConnectionCancelledError();
     } catch (err) {
       this.abortCommandTransition();
       throw err;
@@ -669,12 +669,12 @@ export class AcpClient implements AgentClient {
     this.beginCommandTransition();
     let res: schema.NewSessionResponse;
     try {
-      res = await transport.raceExit(transport.newSession({
+      res = await transport.newSession({
         cwd,
         mcpServers,
         ...this.additionalDirectoriesParam(additionalDirectories),
-      } as schema.NewSessionRequest));
-      transport.throwIfClosed();
+      } as schema.NewSessionRequest);
+      if (this.transport !== transport) throw new ConnectionCancelledError();
     } catch (err) {
       this.abortCommandTransition();
       throw err;
