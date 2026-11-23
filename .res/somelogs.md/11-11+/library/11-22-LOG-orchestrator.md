@@ -189,3 +189,7 @@ edit to `src/agent-session.ts`.
   collision: the prefix check ran on the untrimmed sender while the worker prompt trims the participant downstream,
   so a sender with a leading space or NBSP became exactly `notice:w1`. One-line fix (trim first) assigned to cod2a;
   then the host hook commit and O3a.
+- The production host hook `41a225d` and the sender trim `0e9c79b` reviewed by clad2a (`cfd831d`): both resolved, no
+  blocking findings (a reconnect uses the new client each time; a callback in flight when the host stops fails closed;
+  no client leak). **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O6a-final.md)): 1,563 tests in 145
+  files green with a RAM-backed `TMPDIR`. `pre-alpha` rebuilt on the new alpha (`0003f20`). cod2a is on O3a.
