@@ -82,7 +82,7 @@ export async function dispatchWithPolicy(options: {
   decide(): ToolDecision; channel: string; turnId: number; call: ToolCall;
   signal: AbortSignal; suspension: AbortSignal; approvals: ReturnType<typeof createApprovalService>;
   /** May resolve with an outcome to record beside the result (decision 0021). */
-  execute(call: ToolCall, signal?: AbortSignal): Promise<string | { content: string; outcome: ToolOutcome }>;
+  execute: import("../../contracts/loop.ts").ExecuteTurnTool;
   recordSkip(content: string, code: string): void; mark(): void; started(): void; beforeDispatch?: () => Promise<void>;
   /** Decision 0021: a reason this call cannot be dispatched (not offered, not
    * available, invalid arguments), or undefined. Read before authorization

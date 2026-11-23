@@ -12,7 +12,7 @@ import type { ChannelChangeResult, PendingChannelChange, TransferLimits } from "
 import { ChannelChangeFault, applyChannelChanges, checkPolicies, parseChannelChanges, sameBatch } from "./channel-changes.ts";
 import type { RpcCallbackCancel, RpcCallbackRequest } from "../../contracts/protocol.ts";
 import type { ToolCatalogInput } from "../../contracts/tools.ts";
-import { CatalogError, parseCatalog, sameCatalog } from "../../capabilities/tools/catalog.ts";
+import { CatalogError, parseCatalog, sameCatalog } from "../../capabilities/tools/runtime/catalog.ts";
 import { ToolFault, createCallbackBridge, isToolMethod, toolMethods, toolRequest } from "./functions.ts";
 
 class Fault extends Error {

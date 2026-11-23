@@ -2,7 +2,7 @@ import { loadScenario } from "../../capabilities/model/scenario-file.ts";
 import { scenarioAttempt } from "../../capabilities/model/scenario-attempt.ts";
 import { bindModelAttempt } from "../../capabilities/model/attempt.ts";
 import type { ModelRequest } from "../../contracts/model-execution.ts";
-import { echoDefinition, executeEcho } from "../../capabilities/tools/echo.ts";
+import { echoDefinition, executeEcho } from "../../capabilities/tools/testing/echo.ts";
 import { createSession } from "../../index.ts";
 
 async function main() {

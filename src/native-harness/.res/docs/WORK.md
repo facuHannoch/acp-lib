@@ -14,28 +14,41 @@ amendment is proposed.
 | [Channel controls](11-19-channel-controls/SPEC.md) | Accepted | Behavior approved at `4d58629`, with closure and documentation at `3428258` on `aiagent/cod1a-native-channel-controls`. |
 | [Configuration and permissions](11-19-config-permissions/SPEC.md) | Accepted | Behavior approved at `626783e`, with closure at `28c6faf` on `aiagent/cod1a-config-permissions`. |
 | [Model execution](model-execution/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `02c96de`, with closure at `49f2974` on `aiagent/cod1a-model-execution`. |
+| [Model execution 0002 · Accounting](model-execution/0002-AMENDMENT-accounting/SPEC.md) | Draft for review | Ground against the final R5 revision before contract approval. Cod1a and Clad1a are the proposed draft and review owners when scheduled. |
 | [acp-client integration contract](acp-client-integration/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `7133c5c`; `acp-client-integration` includes the corrected [closure log](acp-client-integration/0001-DESIGN/11-20-LOG.md) at `b9a96b8`. |
 | [Tools and host callbacks](tools-and-callbacks/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `f4eff94`, with the [closure log](tools-and-callbacks/0001-DESIGN/LOG.md) at `c1c3e88` on `tools-and-callbacks`. |
-| [Operator and consumer controls](operator-controls/0001-DESIGN/SPEC.md) | Ready for Gate 1 | Start the contract gate in the [implementation plan](operator-controls/0001-DESIGN/PLAN.md) on the accepted integration and callbacks base. |
-| [Long-running mock mode](long-running-mock/0001-DESIGN/SPEC.md) | Design reviewed, awaiting dependency | Start Gate 1 of the [implementation plan](long-running-mock/0001-DESIGN/PLAN.md) after operator controls are accepted. |
+| [Tools and callbacks 0002 · Callback policy names](tools-and-callbacks/0002-AMENDMENT-callback-policy/SPEC.md) | Accepted | Behavior approved at `aca1fe5`, closure at `4056d79`, integrated into `aiagent/haurness-l`. Orchestrator worker-rule acceptance remains separate. |
+| [Operator and consumer controls](operator-controls/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `95670a2`, closure at `8f2a139`, merged into `aiagent/haurness-l` at `da59a6c`. |
+| [Long-running mock mode](long-running-mock/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `e13b405`, closure at `448521f`, integrated into `aiagent/haurness-l`. |
+| [Channel messaging 0001 · External notices](channel-messaging/0001-DESIGN-external-notices/SPEC.md) | Generic Gate 2 accepted | Generic behavior approved at `f522072`, closure at `713a76a`. Worker delivery must prove recovery from a committed final ACP worker record and the uncertainty fallback. |
+| [Web tools 0001 · Search and page fetching](web-tools/0001-DESIGN/SPEC.md) | Proposed for M2 | Define the rest of the initial tool set before starting implementation. |
+| [Shell execution 0001 · Shell tool](shell-execution/0001-DESIGN/SPEC.md) | Proposed for M2 | Define the rest of the initial tool set first. Foreground execution precedes runner-managed background jobs. |
+| [Timeline retrieval 0001 · Search and read](timeline-retrieval/0001-DESIGN/SPEC.md) | Proposed for M2 | Build alongside bounded context with shared visibility across native channels in v1. |
+| [Bounded context 0001 · Inference context](bounded-context/0001-DESIGN/SPEC.md) | Gate 1 drafted | Review [decision 0026](../decisions/0026-bounded-context.md) before bounded storage reads in Gate 2. |
+| [Attachments 0001 · Files and image input](attachments/0001-DESIGN/SPEC.md) | Proposed for v1 | Start with managed files and image input. Add the consumer-managed adapter on the same contract. |
+| [Tools and callbacks 0003 · Attachment tools](tools-and-callbacks/0003-DESIGN-attachment-tools/SPEC.md) | Proposed for v1 | `copy_attachment` and `share_attachment` build on the attachment store, tool lifecycle, and shell runner. |
 
 ## Priorities
 
 First, give acp-client a harness it can develop and test against offline:
 
-1. Begin [operator and consumer controls](operator-controls/0001-DESIGN/PLAN.md)
-   at Gate 1 on the accepted callbacks base.
-2. Begin [long-running mock mode](long-running-mock/0001-DESIGN/PLAN.md)
-   at Gate 1 after operator controls are accepted.
+The [M1 implementation sequence](todos/11-22-TODO-harness-m1-sequence.md) records
+the serial handoff order, including the orchestrator-facing amendments.
+
+1. Prove final-record recovery and the uncertainty fallback for [external notices](channel-messaging/0001-DESIGN-external-notices/PLAN.md) Gates 3/4.
 
 The integration checkpoint is a real stdio run from acp-client with two
 conversations on one session, a host tool callback, an approval, interruption
 isolated to one channel, and recovery after restart. A short scripted test
 can start before the long-running mock mode is complete.
 
-After that checkpoint, design bounded context, cross-channel messaging,
-image input, and the policy needed to govern shared history and messaging.
-Broader shared identity for external conversations remains on the v1 list.
+The orchestrator needs the callback policy amendment and external notices.
+External notices are the first channel-messaging slice.
+
+After the checkpoint, build bounded context and image input, and test whether
+the existing cross-channel notice path meets v1 needs. V1 offers no
+cross-channel privacy guarantee. Shared identity for external conversations
+is deferred.
 Skills, MCP, and the broader standalone CLI follow the integration work.
 Skills are the preferred first follow-up among those three.
 

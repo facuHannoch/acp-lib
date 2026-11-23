@@ -19,6 +19,9 @@ HTTP, command, and MCP executors, per-channel tool selection, and
 [user-entered code](../../todos/11-20-TODO-user-entered-tool-code.md) remain
 separate work. Existing built-in tools keep working through the same gate.
 
+The [attachment-tools design](../0003-DESIGN-attachment-tools/SPEC.md) builds
+on this lifecycle for file transfers and channel publication.
+
 ## Tool catalog and availability
 
 The session owns tool definitions. A definition has a unique name, description,

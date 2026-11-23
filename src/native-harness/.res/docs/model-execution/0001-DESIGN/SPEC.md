@@ -146,6 +146,9 @@ when the turn still needs one.
 
 ## Call records and usage
 
+The [accounting amendment](../0002-AMENDMENT-accounting/SPEC.md) proposes the
+additional evidence required for native billing-grade accounting.
+
 Persist one summary per model call, linked to its turn, with one attempt
 summary per provider attempt. Include stable IDs, timing, outcomes, retry
 reason, provider request ID when available, and provider-reported usage.

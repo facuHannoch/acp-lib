@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test";
 import { createSession } from "../src/index.ts";
 import { renderContextEntry } from "../src/capabilities/context/build.ts";
-import { createDashboardWork } from "../src/capabilities/tools/dashboard.ts";
-import { createScenarioTools } from "../src/capabilities/tools/scenario.ts";
+import { executeNotice } from "../src/capabilities/tools/builtin/notify-channel.ts";
 import { ask, turnsEnd } from "./helpers/session.ts";
 
 test("notices during inference keep the turn alive and are consumed once, without a pass limit", async () => {
@@ -53,42 +52,13 @@ test("a notice that arrives as its target turn completes reaches exactly one lat
   expect(session.agent.notify({ channelId: "missing", fromChannelId: "charlie", text: "hello" }).accepted).toBe(false);
 });
 
-test("dashboard is shared, progresses one step per inference and rejects invalid arguments", async () => {
-  let waits = 0;
-  const dashboard = createDashboardWork(async () => { waits++; });
-  const tools = createScenarioTools({ channelId: "alice", turnId: 1 }, dashboard,
-    () => ({ accepted: true, itemId: "auto:1", duplicate: false, milestone: "received" }));
-  expect(JSON.parse(await tools.execute({ id: "invalid", name: "dashboard_work", arguments: '{"seconds":0}' })).ok).toBe(false);
-  for (let i = 1; i <= 5; i++) {
-    tools.beginInference();
-    const step = JSON.parse(await tools.execute({ id: String(i), name: "dashboard_work", arguments: "{}" }));
-    expect(step).toMatchObject({ channelId: "alice", turnId: 1, completedSteps: i, totalSteps: 5 });
-    expect(JSON.parse(await tools.execute({ id: "duplicate", name: "dashboard_work", arguments: "{}" })).ok).toBe(false);
-  }
-  tools.beginInference();
-  expect(JSON.parse(await tools.execute({ id: "done", name: "dashboard_work", arguments: "{}" })).status).toBe("completed");
-  expect(waits).toBe(5);
-});
-
-test("notify tool supplies source identity and returns acceptance without waiting", async () => {
-  const tools = createScenarioTools({ channelId: "charlie", turnId: 7 }, createDashboardWork(), notice => {
-    expect(notice).toEqual({ channelId: "bob", fromChannelId: "charlie", text: "Stop work" });
+test("notify tool returns acceptance without waiting", () => {
+  const receipt = executeNotice({ channelId: "bob", text: "Stop work" }, (channelId, text) => {
+    expect({ channelId, text }).toEqual({ channelId: "bob", text: "Stop work" });
     return { accepted: true, itemId: "auto:3", duplicate: false, milestone: "received" };
   });
-  expect(JSON.parse(await tools.execute({ id: "n", name: "notify_channel", arguments: '{"channelId":"bob","text":"Stop work"}' })))
-    .toEqual({ accepted: true });
-  const refusing = createScenarioTools({ channelId: "charlie", turnId: 7 }, createDashboardWork(),
-    () => ({ accepted: false, code: "not_found", error: "Unknown channel: nobody" }));
-  expect(JSON.parse(await refusing.execute({ id: "n", name: "notify_channel", arguments: '{"channelId":"nobody","text":"hi"}' })))
+  expect(receipt).toEqual({ accepted: true });
+  expect(executeNotice({ channelId: "nobody", text: "hi" }, () =>
+    ({ accepted: false, code: "not_found", error: "Unknown channel: nobody" })))
     .toEqual({ accepted: false, error: "Unknown channel: nobody" });
-});
-
-test("simultaneous dashboard attempts cannot advance the same step twice", async () => {
-  let release!: () => void;
-  const dashboard = createDashboardWork(() => new Promise<void>(resolve => { release = resolve; }));
-  const input = { channelId: "a", turnId: 1 };
-  const pending = dashboard(input);
-  expect(await dashboard({ ...input, channelId: "b" })).toMatchObject({ ok: false, status: "busy", completedSteps: 0 });
-  release();
-  expect(await pending).toMatchObject({ completedSteps: 1, channelId: "a" });
 });

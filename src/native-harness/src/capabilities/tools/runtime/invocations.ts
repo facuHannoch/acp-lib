@@ -1,5 +1,5 @@
-import type { StorageSnapshot } from "../../contracts/storage.ts";
-import type { ToolInvocation } from "../../contracts/tools.ts";
+import type { StorageSnapshot } from "../../../contracts/storage.ts";
+import type { ToolInvocation } from "../../../contracts/tools.ts";
 
 export const invocationId = (turnId: number | string, toolCallId: string) => `${turnId}:${toolCallId}`;
 

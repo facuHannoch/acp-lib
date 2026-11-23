@@ -1,3 +1,4 @@
+import { useFormat3Schema } from "./fixtures/format3-schema.ts";
 import { expect, test } from "bun:test";
 import { validateManagedConfig, LEGACY_POLICY } from "../src/runtime/config/managed.ts";
 import { policyFingerprint, resolvePolicy, toolDecision } from "../src/governance/policy/resolve.ts";
@@ -271,7 +272,7 @@ test("incompatible policy on a format 3 database permits inspection without migr
     created.value.close();
     const db = new Database(path);
     db.query("UPDATE items SET signature = ?").run(legacyItemSignature(input));
-    db.exec("ALTER TABLE items DROP COLUMN external_source; ALTER TABLE entries DROP COLUMN external_source; ALTER TABLE items DROP COLUMN policy_metadata; ALTER TABLE channels DROP COLUMN policy; UPDATE meta SET value = '3' WHERE key = 'formatVersion'");
+    useFormat3Schema(db);
     db.close();
     const { readFileSync } = require("node:fs"), before = readFileSync(path);
     const opened = adapter.open({ mode: "open", identity, config: validateManagedConfig(value) });
@@ -291,7 +292,7 @@ test("format 3 item signatures upgrade to policy-aware identities without reacce
     const input = { kind: "participant_message" as const, channelId: "a", senderId: "u", text: "hi", itemId: "m" };
     if (!created.value.acceptItem(input).ok) throw new Error("setup failed"); created.value.close();
     const db = new Database(path); db.query("UPDATE items SET signature = ?").run(legacyItemSignature(input));
-    db.exec("ALTER TABLE items DROP COLUMN external_source; ALTER TABLE entries DROP COLUMN external_source; ALTER TABLE items DROP COLUMN policy_metadata; ALTER TABLE channels DROP COLUMN policy; UPDATE meta SET value = '3' WHERE key = 'formatVersion'"); db.close();
+    useFormat3Schema(db); db.close();
     const opened = adapter.open({ mode: "open", identity }); if (!opened.ok) throw new Error(opened.error.message);
     expect(opened.value.acceptItem(input)).toMatchObject({ ok: true, value: { duplicate: true, item: { policy: { resolved: LEGACY_POLICY, inherited: [] } } } });
     expect(opened.value.acceptItem({ ...input, explicitPolicy: LEGACY_POLICY })).toMatchObject({ ok: false, error: { code: "item_conflict" } });

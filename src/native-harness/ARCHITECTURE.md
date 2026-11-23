@@ -100,17 +100,24 @@ model-client edge. Preserve opaque reasoning data unchanged for the same provide
 The consumer's system prompt stays verbatim. Sender tags, digests and tool hints
 are conversation content.
 
-The current foundation uses one agent-owned append-only context store. Inputs,
-responses and tool results carry channel, turn and sender attribution. Before
-every inference a pure builder combines a fresh store snapshot with the system
-prompt and current channel. Native tool exchanges stay together within the active
-turn; other turns are rendered as attributed data. No channel's last snapshot
-overwrites the shared record. Tool definitions remain separate request data.
+The durable session timeline holds inputs, responses and tool results with
+channel, turn and sender attribution. At each inference boundary, the session
+context builder reads a bounded set of records at one committed revision. It
+preserves required active inputs, prefers recent local history, and reserves
+space for activity from other channels. Native tool exchanges stay together.
+Other turns are rendered as attributed history. Tool definitions travel
+separately and count toward the request budget. Retries reuse the assembled
+request, and later inferences read a newer revision when work has committed.
 
-This initial rendering includes all events and rebuilds the shared-history prefix;
-scope filtering, context budgets, compaction and cache-friendly delivery remain
-future work. The older spec's per-channel positions and digest delivery below are
-a reference design, not implemented behavior or a final rendering decision.
+The development inspector is a separate reader. Change notifications perform
+no timeline reads. The browser refreshes status and the visible view, and
+requests older Timeline pages and durable model-call summaries on demand.
+Live Context is a bounded session-wide preview. The Channels tab can show
+recent captured requests with their actual revision and trim counts. The
+current model-call store still reads its accumulated model-state record for
+accounting queries and writes.
+
+The position and digest design below describes future work.
 
 The entity has a shared append-only timeline, with provenance and policy scope on
 each event. Channels keep positions in it and receive scoped digests of what
@@ -176,7 +183,14 @@ instructions module. Keep each native tool's definition and implementation
 together in its owning capability. The tool registry exposes the selected
 definitions and routes execution through contracts.
 
-Entry points assemble configuration and implementations. Model adapters translate
+Entry points assemble configuration and implementations. The development CLI
+uses the bundled agent instructions or an explicitly selected Markdown file
+as its configured system text. Bundled Markdown lives under
+`src/capabilities/context/instructions/`, with separate files for the agent,
+the harness, and the agent demo. Custom instruction paths belong to the
+CLI. Durable session configuration keeps the resolved agent text.
+
+Model adapters translate
 tool definitions into the provider's native tools field; definitions do not need
 to be duplicated in the system prompt. The kernel receives prepared inputs and
 coordinates execution without owning prompt text or specific tools.

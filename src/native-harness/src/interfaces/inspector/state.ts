@@ -1,132 +1,90 @@
 import type { Message, ToolDefinition } from "../../contracts/loop.ts";
-import type { ContextEntry } from "../../contracts/context.ts";
-import type { ModelCallSummary } from "../../contracts/model-execution.ts";
-import type { SessionStatus } from "../../contracts/session.ts";
+import type { ContextCapture } from "../../contracts/context.ts";
+import type { InspectionStorageReads } from "../../contracts/inspection.ts";
+import type { StorageResult } from "../../contracts/storage.ts";
+import { composeSystemPrompt } from "../../capabilities/context/load-instructions.ts";
+import { buildSharedContext } from "../../capabilities/context/build.ts";
 
-/** What the session's storage says right now; not a record of past activity. */
-export interface InspectedSession {
-  storage: string;
-  sessionId: string;
-  lifecycle: SessionStatus["lifecycle"];
-  execution: SessionStatus["execution"];
-  revision: number;
-}
-
-export interface InspectedInference {
+interface InspectedInference {
   number: number;
   turnId?: number;
   at: string;
   body: unknown;
-  response?: Extract<Message, { role: "assistant" }>;
+  context?: Pick<ContextCapture, "estimatedInputBytes" | "omitted" | "records"> & { revision: number; offeredTools: string[]; modelCallId?: string };
+  response?: Extract<Message, { role: "assistant" }> | { omitted: true };
 }
 
-export interface InspectedChannel {
-  id: string;
-  pending: number;
-  running: boolean;
-  error?: string;
-  /** `suspended`: a checkpointed turn waits for resume. */
-  turn?: "running" | "suspended";
-  /** IDs of accepted inputs no turn has taken yet. */
-  pendingItems?: string[];
-  /** The channel's latest turn ended failed or interrupted and nothing has run since. */
-  unresolved?: { turnId: number; status: "failed" | "interrupted"; reason: string; uncertainCallIds: string[] };
-  participants: string[];
-  messages: Message[];
-  requests: InspectedInference[];
-  /** Durable call outcomes and per-attempt usage, including after reopen. */
-  modelCalls: ModelCallSummary[];
+const CAPTURE_LIMIT = 8;
+const CAPTURE_BYTES = 128 * 1024;
+function read<T>(result: StorageResult<T>) {
+  if (!result.ok) throw new Error(result.error.message);
+  return { ...result.value, revision: result.revision };
 }
 
-/** Separate, in-memory observation state. Never feeds model context. */
-export function createInspection(systemPrompt: string, tools: readonly ToolDefinition[] = []) {
-  const channels = new Map<string, InspectedChannel>();
-  let entries: ContextEntry[] = [];
-  let base: Message[] = [{ role: "system", content: systemPrompt }];
-  let latestRequest: { channelId: string; number: number; at: string; body: unknown } | null = null;
-  let session: InspectedSession | null = null;
+/** Capture state is process-local. A notification marks the requested view
+ * dirty. Only HTTP reads request data from storage. */
+export function createInspection(systemPrompt: string, tools: readonly ToolDefinition[],
+  reads: InspectionStorageReads, storage: string) {
+  const instructions = composeSystemPrompt(systemPrompt);
+  const captures = new Map<string, { turnId: number; metadata: NonNullable<InspectedInference["context"]> }>();
+  const channels = new Map<string, InspectedInference[]>();
   const listeners = new Set<() => void>();
-  function channel(id: string) {
-    let value = channels.get(id);
-    if (!value) {
-      value = { id, pending: 0, running: false, participants: [],
-        messages: [{ role: "system", content: systemPrompt }], requests: [], modelCalls: [] };
-      channels.set(id, value);
-    }
-    return value;
-  }
-  function publish() { for (const listener of listeners) listener(); }
+  let stopped = false;
+  const invalidate = () => { for (const listener of listeners) listener(); };
   return {
-    snapshot: () => structuredClone({
-      liveContext: { systemPrompt, tools, entries, base, request: latestRequest },
-      channels: [...channels.values()],
-      ...(session ? { session } : {}),
-    }),
-    /** Replace activity fields with the storage's own account, so a reopened
-     * session shows its lifecycle, pending input and unfinished turns at once. */
-    status(status: SessionStatus, storage: string, participants: Record<string, string[]> = {}, modelCalls: readonly ModelCallSummary[] = []) {
-      session = { storage, sessionId: status.sessionId, lifecycle: status.lifecycle, execution: status.execution, revision: status.revision };
-      for (const state of status.channels) {
-        const value = channel(state.channelId);
-        value.turn = state.activeTurn?.status;
-        value.running = state.activeTurn?.status === "running";
-        value.pendingItems = [...state.pendingItemIds];
-        value.pending = state.pendingItemIds.length;
-        value.unresolved = state.unresolvedInterruption ? structuredClone(state.unresolvedInterruption) : undefined;
-        value.error = state.unresolvedInterruption ? `Turn ${state.unresolvedInterruption.turnId} ${state.unresolvedInterruption.status}: ${state.unresolvedInterruption.reason}` : undefined;
-        value.participants = [...participants[state.channelId] ?? value.participants];
-        value.modelCalls = structuredClone(modelCalls.filter(call => call.channel === state.channelId));
-      }
-      publish();
+    invalidate,
+    stopped() { stopped = true; invalidate(); },
+    status() {
+      const { revision, session, channels: status } = read(reads.readInspectionStatus());
+      const execution = stopped ? "stopped" : session.lifecycle !== "running" ? session.lifecycle
+        : status.some(channel => channel.turn === "running" || (channel.lifecycle === "open" && channel.pending > 0)) ? "working" : "idle";
+      return { session: { sessionId: session.sessionId, lifecycle: session.lifecycle, execution, revision, storage },
+        channels: status.map(channel => ({ ...channel, running: channel.turn === "running",
+          ...(channel.unresolved ? { error: `Turn ${channel.unresolved.turnId} ${channel.unresolved.status}: ${channel.unresolved.reason}` } : {}) })) };
     },
-    sharedContext(snapshot: readonly ContextEntry[], renderedBase?: readonly Message[]) {
-      entries = structuredClone([...snapshot]);
-      if (renderedBase) base = structuredClone([...renderedBase]);
-      // Publish the global view and channel projections together so the browser
-      // never sees a new shared entry paired with an older channel history.
-      for (const id of new Set(entries.map((entry) => entry.channelId))) {
-        channel(id).messages = [{ role: "system", content: systemPrompt },
-          ...entries.filter((entry) => entry.channelId === id).map((entry) => entry.message)];
-      }
-      publish();
+    liveContext() {
+      const { entries, unfinished, revision } = read(reads.readInspectionPage());
+      const selected = entries.filter(entry => "message" in entry).reverse();
+      return { revision, entries: selected, tools, base: buildSharedContext(selected, instructions, unfinished) };
+    },
+    timeline(before?: number) {
+      const { entries, next, revision } = read(reads.readInspectionPage(before));
+      return { entries, next, revision };
+    },
+    channel: (id: string) => ({ requests: structuredClone(channels.get(id) ?? []) }),
+    modelCalls(id: string) {
+      const result = reads.readInspectionCalls(id);
+      if (!result.ok) throw new Error(result.error.message);
+      return { modelCalls: result.value };
     },
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
-    accepted(id: string, participant: string) {
-      const value = channel(id);
-      value.pending++;
-      if (!value.participants.includes(participant)) value.participants.push(participant);
-      publish();
+    capture(value: ContextCapture) {
+      const { channelId, turnId, timelineRevision } = value.context;
+      captures.set(channelId, { turnId, metadata: { revision: timelineRevision, estimatedInputBytes: value.estimatedInputBytes,
+        omitted: value.omitted, records: value.records, offeredTools: value.context.tools.map(tool => tool.name) } });
     },
-    running(id: string, running: boolean) { channel(id).running = running; publish(); },
-    history(id: string, messages: readonly Message[]) {
-      // A shallow array copy would still share message objects with the agent.
-      // Deep-copy at capture time so subsequent mutations cannot rewrite a view.
-      channel(id).messages = structuredClone([...messages]); publish();
+    modelCall(channelId: string, turnId: number, callId: string) {
+      const capture = captures.get(channelId);
+      if (capture?.turnId === turnId) capture.metadata.modelCallId = callId;
     },
     request(id: string, body: string, turnId?: number) {
-      const value = channel(id);
-      const request = { number: value.requests.length + 1, turnId, at: new Date().toISOString(), body: JSON.parse(body) };
-      value.requests.push(request);
-      // Select by actual call order across channels, not by channel creation or
-      // response completion. Later store updates must not rewrite this snapshot.
-      latestRequest = { channelId: id, ...request };
-      publish();
+      let requests = channels.get(id);
+      if (!requests) { requests = []; channels.set(id, requests); }
+      const capture = captures.get(id);
+      requests.push({ ...(capture && capture.turnId === turnId ? { context: capture.metadata } : {}),
+        number: (requests.at(-1)?.number ?? 0) + 1, turnId, at: new Date().toISOString(),
+        body: Buffer.byteLength(body) <= CAPTURE_BYTES ? JSON.parse(body) : { omitted: true } });
+      if (requests.length > CAPTURE_LIMIT) requests.shift();
+      invalidate();
     },
     response(id: string, message: Extract<Message, { role: "assistant" }>) {
-      // A channel executes one inference at a time, so its latest request owns
-      // this response even while other channels finish in a different order.
-      const request = channel(id).requests.at(-1);
-      if (request) request.response = structuredClone(message);
-      publish();
-    },
-    finished(id: string, error?: string) {
-      const value = channel(id);
-      value.pending--;
-      if (error) value.error = error;
-      publish();
+      const request = channels.get(id)?.at(-1);
+      if (!request) return;
+      request.response = Buffer.byteLength(JSON.stringify(message)) <= CAPTURE_BYTES ? structuredClone(message) : { omitted: true };
+      invalidate();
     },
   };
 }

@@ -1,13 +1,17 @@
+import { SESSION_INPUT_MAX_BYTES } from "../../contracts/input-limits.ts";
 import { networkInterfaces } from "node:os";
 
 /** Separate LAN surface; the inspector remains bound to loopback. */
 export function serveWebChat(handleChannel: (request: Request) => Promise<Response>, port = 3001, token: string = crypto.randomUUID()) {
+  const page = Bun.file(new URL("./index.html", import.meta.url)).text().then(
+    html => html.replace("__SESSION_INPUT_MAX_BYTES__", String(SESSION_INPUT_MAX_BYTES)),
+  );
   const server = Bun.serve({
     hostname: "0.0.0.0", port, development: false, idleTimeout: 0,
     async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === "/" && request.method === "GET") {
-        return new Response(Bun.file(new URL("./index.html", import.meta.url)), { headers: {
+        return new Response(await page, { headers: {
           "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
         } });
       }

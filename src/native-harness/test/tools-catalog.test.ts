@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { createSession } from "../src/index.ts";
 import { createMemoryStorageAdapter } from "../src/state/storage/memory.ts";
-import { CatalogError, parseCatalog, sameCatalog } from "../src/capabilities/tools/catalog.ts";
-import { CallbackFailure, CallbackLost } from "../src/capabilities/tools/functions.ts";
+import { CatalogError, parseCatalog, sameCatalog } from "../src/capabilities/tools/runtime/catalog.ts";
+import { CallbackFailure, CallbackLost } from "../src/capabilities/tools/runtime/functions.ts";
 import { bindModelAttempt } from "../src/capabilities/model/attempt.ts";
 import { schemaProblem } from "../src/util/schema.ts";
 import type { ManagedConfig } from "../src/contracts/config-permissions.ts";

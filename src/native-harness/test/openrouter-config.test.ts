@@ -1,3 +1,4 @@
+import { useFormat3Schema } from "./fixtures/format3-schema.ts";
 import { expect, test, spyOn } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -5,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { createInProcessHarness } from "../src/testing.ts";
 import { validateManagedConfig } from "../src/runtime/config/managed.ts";
-import { scenarioDefinitions } from "../src/capabilities/tools/scenario.ts";
+import { ask } from "./helpers/session.ts";
 import { createSqliteStorageAdapter } from "../src/state/storage/sqlite.ts";
 import { openDevelopment } from "../src/interfaces/cli/development.ts";
 import { decodeSessionFile } from "../src/state/storage/session-file.ts";
@@ -90,14 +91,14 @@ test("offline OpenRouter export and fresh-home reopen uses named secret without 
 
 test("OpenRouter checkpoint key binds model and contributing policy but not credential reference", async () => {
   const directory = mkdtempSync(join(tmpdir(), "provider-checkpoint-")), path = join(directory, "session.sqlite");
-  const key = createHash("sha256").update(JSON.stringify([config.system, "saved/model", scenarioDefinitions.map(tool => tool.name)])).digest("hex");
+  const key = createHash("sha256").update(JSON.stringify([config.system, "saved/model", ["current_time", "notify_channel"]])).digest("hex");
   const adapter = createSqliteStorageAdapter(path), identity = { sessionId: "development", compatibilityKey: key };
   const r = adapter.open({ mode: "create", identity, config }); if (!r.ok) throw new Error(r.error.message); const store = r.value;
   const must = <T>(v: { ok: true; value: T } | { ok: false; error: { message: string } }) => { if (!v.ok) throw new Error(v.error.message); return v.value; };
   must(store.acceptItem({ kind: "participant_message", channelId: "a", senderId: "u", text: "hi", itemId: "m" }));
   const turn = must(store.beginTurn("a"))!.turn; must(store.beginChannelSuspend("a")); must(store.checkpointTurn(turn.turnId)); must(store.saveConfig(config)); store.close();
-  const changedSystem = validateManagedConfig({ ...config, system: "changed system" });
-  const systemMismatch = await openDevelopment({ systemPrompt: "ignored", database: path, managedConfig: changedSystem, environment, providerFactory: fake([]) });
+  const systemMismatch = await openDevelopment({ systemPrompt: "ignored", instructions: "changed system",
+    database: path, managedConfig: config, environment, providerFactory: fake([]) });
   const unchanged = systemMismatch.session.snapshot();
   expect(systemMismatch.session.channels.resume("a")).toMatchObject({ ok: false, error: { code: "incompatible" } });
   expect(systemMismatch.session.snapshot()).toEqual(unchanged); systemMismatch.close();
@@ -136,7 +137,7 @@ test("legacy OpenRouter checkpoint resumes with its original compatibility key",
   const { Database } = await import("bun:sqlite"), { legacyItemSignature } = await import("../src/state/storage/policy-metadata.ts");
   const directory = mkdtempSync(join(tmpdir(), "provider-legacy-")), path = join(directory, "session.sqlite");
   const legacyConfig = validateManagedConfig({ ...config, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } });
-  const identity = { sessionId: "development", compatibilityKey: createHash("sha256").update(JSON.stringify([config.system, "saved/model", scenarioDefinitions.map(tool => tool.name)])).digest("hex") };
+  const identity = { sessionId: "development", compatibilityKey: createHash("sha256").update(JSON.stringify([config.system, "saved/model", ["current_time", "notify_channel"]])).digest("hex") };
   const adapter = createSqliteStorageAdapter(path), opened = adapter.open({ mode: "create", identity, config: legacyConfig });
   if (!opened.ok) throw new Error(opened.error.message);
   const input = { kind: "participant_message" as const, channelId: "a", senderId: "u", text: "hello", itemId: "m" };
@@ -147,7 +148,7 @@ test("legacy OpenRouter checkpoint resumes with its original compatibility key",
   const db = new Database(path); db.query("UPDATE items SET signature = ?").run(legacyItemSignature(input));
   const raw = db.query<{ state: string }, []>("SELECT state FROM turns").get()!; const state = JSON.parse(raw.state); delete state.checkpoint.policyFingerprint;
   db.query("UPDATE turns SET state = ?").run(JSON.stringify(state));
-  db.exec("ALTER TABLE items DROP COLUMN external_source; ALTER TABLE entries DROP COLUMN external_source; ALTER TABLE items DROP COLUMN policy_metadata; ALTER TABLE channels DROP COLUMN policy; UPDATE meta SET value = '3' WHERE key = 'formatVersion'"); db.close();
+  useFormat3Schema(db); db.close();
   expect(adapter.readSavedConfig()).toMatchObject({ ok: true });
   const calls: { key: string; model: string }[] = [];
   const legacy = await openDevelopment({ systemPrompt: config.system, database: path, provider: { apiKey: secret, model: "saved/model" }, environment: {}, providerFactory: fake(calls) });
@@ -157,4 +158,61 @@ test("legacy OpenRouter checkpoint resumes with its original compatibility key",
   const reopened = await expect(openDevelopment({ systemPrompt: config.system, database: path, provider: { apiKey: secret, model: "saved/model" }, environment: {}, providerFactory: fake(calls) })).rejects.toThrow("OPENROUTER_API_KEY");
   expect(reopened).toBeUndefined();
   rmSync(directory, { recursive: true, force: true });
+});
+
+
+test("development instruction overrides replace saved and sidecar text without offering the demo tool", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "provider-instructions-")), database = join(directory, "session.sqlite");
+  const fallback = { systemPrompt: "bundled instructions", database, environment };
+  const seen: Array<{ prompt: string; tools: string[] }> = [];
+  const providerFactory = (): Model => async (messages, tools) => {
+    seen.push({ prompt: messages[0]!.content!, tools: tools.map(tool => tool.name) });
+    return { role: "assistant", content: "offline reply", calls: [] };
+  };
+  try {
+    const created = await openDevelopment({ ...fallback, create: true, managedConfig: config, providerFactory });
+    created.close();
+    const sidecar = join(directory, "config.json");
+    writeFileSync(sidecar, JSON.stringify({ ...config, system: "sidecar instructions" }));
+    const instructions = "Custom instructions.  \n";
+    const edited = await openDevelopment({ ...fallback, instructions, providerFactory });
+    try {
+      edited.session.start();
+      await ask(edited.session, { channelId: "channel", participantId: "alice", text: "Hello" });
+    } finally { edited.close(); }
+    expect(seen[0]!.prompt.startsWith(instructions + "\n\n")).toBe(true);
+    expect(seen[0]!.tools).toEqual(["current_time", "notify_channel"]);
+    expect(readFileSync(sidecar, "utf8")).toContain("sidecar instructions");
+    rmSync(sidecar);
+    const reopened = await openDevelopment({ ...fallback, providerFactory });
+    try {
+      reopened.session.start();
+      await ask(reopened.session, { channelId: "channel", participantId: "alice", text: "Continue" });
+    } finally { reopened.close(); }
+    expect(seen[1]).toEqual(seen[0]);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("debug mode sends the same composed system message shown in Live Context", async () => {
+  const { loadInstructions } = await import("../src/capabilities/context/load-instructions.ts");
+  const debugInstructions = loadInstructions("agent-demo");
+  let sent: unknown;
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (_url, init) => {
+    sent = JSON.parse(init!.body as string).messages[0];
+    return new Response("Offline test stops after request capture", { status: 400 });
+  }) as typeof fetch);
+  try {
+    const development = await openDevelopment({
+      systemPrompt: "usual instructions", debugInstructions, debugTools: true,
+      provider: { apiKey: "unused-test-key", model: "offline/test" },
+    });
+    try {
+      development.session.start();
+      await expect(ask(development.session, { channelId: "a", participantId: "alice", text: "hello" })).rejects.toThrow();
+      const preview = development.inspection.liveContext().base[0];
+      expect(preview?.content).toContain(debugInstructions.trimEnd());
+      expect(preview?.content).toContain(loadInstructions("harness").trimEnd());
+      expect(sent).toEqual(preview);
+    } finally { development.close(); }
+  } finally { fetchSpy.mockRestore(); }
 });

@@ -1,5 +1,5 @@
-import type { StorageSnapshot } from "../../contracts/storage.ts";
-import type { FunctionCall, FunctionExecutor, ResultReference, ToolLimits, ToolOutcome, ToolRegistration } from "../../contracts/tools.ts";
+import type { StorageSnapshot } from "../../../contracts/storage.ts";
+import type { FunctionCall, FunctionExecutor, ResultReference, ToolLimits, ToolOutcome, ToolRegistration } from "../../../contracts/tools.ts";
 
 /** Adjustable defaults (BUSINESS_RULES.md, tools and callbacks). */
 export const TOOL_LIMITS: Readonly<ToolLimits> = { inlineBytes: 16_384, previewBytes: 1_024, readBytes: 16_384 };

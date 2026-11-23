@@ -1,11 +1,11 @@
 import { messagePosition } from "./util/message-position.ts";
-import { executeNotice, notifyChannelDefinition } from "./capabilities/tools/scenario.ts";
+import { executeNotice, notifyChannelDefinition } from "./capabilities/tools/builtin/notify-channel.ts";
 import type { PersistentSession, PersistentSessionOptions } from "./contracts/session.ts";
 import type { SessionAgent, TurnExecutor } from "./contracts/agent.ts";
 import type { EventSink, SessionEventSink } from "./contracts/events.ts";
 import type { SessionStorage } from "./contracts/storage.ts";
 import { createMemoryStorageAdapter } from "./state/storage/memory.ts";
-import { buildContext } from "./capabilities/context/build.ts";
+import { CONTEXT_LIMITS, createSessionContext } from "./capabilities/context/session.ts";
 import { createChannelScheduler } from "./kernel/channels.ts";
 import { runTurn } from "./kernel/loop.ts";
 import { ModelCallError, runModelCall } from "./capabilities/model/runner.ts";
@@ -15,9 +15,9 @@ import { toolDecision } from "./governance/policy/resolve.ts";
 import type { Message, ToolDefinition } from "./contracts/loop.ts";
 import type { ControlResult, ToolControls } from "./contracts/session.ts";
 import type { FunctionExecutor, ToolAvailability, TurnPhase } from "./contracts/tools.ts";
-import { READ_TOOL_RESULT, createToolCatalog, readToolResultDefinition } from "./capabilities/tools/catalog.ts";
-import { CallbackLost, TOOL_LIMITS, readResult, runFunction } from "./capabilities/tools/functions.ts";
-import { findInvocation, invocationId, turnInvocations } from "./capabilities/tools/invocations.ts";
+import { READ_TOOL_RESULT, createToolCatalog, readToolResultDefinition } from "./capabilities/tools/runtime/catalog.ts";
+import { CallbackLost, TOOL_LIMITS, readResult, runFunction } from "./capabilities/tools/runtime/functions.ts";
+import { findInvocation, invocationId, turnInvocations } from "./capabilities/tools/runtime/invocations.ts";
 import { schemaProblem } from "./util/schema.ts";
 
 function fanout<T>() {
@@ -59,6 +59,8 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   // timeline projection may have changed.
   const identity = store.readSession();
   if (!identity.ok) throw new Error(identity.error.message);
+  const context = createSessionContext(store, identity.value.sessionId, options.systemPrompt, CONTEXT_LIMITS, options.captureContext);
+  const limitError = () => Object.assign(new Error("Required inference material exceeds the context budget"), { outcome: "context_limit" });
   const position = (channel: string, seq: string) => messagePosition(identity.value.sessionId, channel, Number(seq));
   const emit: EventSink = value => {
     const { channel, event } = value;
@@ -86,15 +88,18 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   let agent: SessionAgent;
   const run: TurnExecutor = (turn, port) => {
     const services = options.configureTurn(turn, notice => agent.notify({ ...notice, fromChannelId: turn.channelId, sourceTurnId: turn.turnId }));
-    const policySnapshot = () => [...new Set(read().items.filter(item => item.turnId === turn.turnId)
-      .flatMap(item => item.policy ? [item.policy.resolved, ...item.policy.inherited] : ["__legacy_allow"]))].sort();
+    const policySnapshot = () => {
+      const read = store.readInferencePolicies(turn.turnId, CONTEXT_LIMITS);
+      if (!read.ok) throw new Error(read.error.message);
+      if ("code" in read.value) throw limitError();
+      return read.value;
+    };
     /** The names offered by this turn's latest inference: what a call must match. */
     let offered = new Set<string>();
     /** One snapshot per inference: built-ins and available catalog entries the
      * turn's policy does not deny, the stable group first. The model call runner
      * freezes it, so a retry of the request offers the same list. */
-    const offer = (): { tools: ToolDefinition[]; fixedToolCount?: number } => {
-      const policies = policySnapshot();
+    const offer = (policies: readonly string[]): { tools: ToolDefinition[]; fixedToolCount?: number } => {
       const allowed = <T extends ToolDefinition>(tools: readonly T[]) => tools.filter(tool => toolDecision(config, policies, tool.name) !== "deny");
       const definition = ({ name, description, parameters }: ToolDefinition): ToolDefinition => ({ name, description, parameters });
       const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel"), notifyChannelDefinition]);
@@ -118,12 +123,11 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
     };
     return runTurn({
       signal: port.signal, drainNotices: port.take, finish: port.finish, checkpoint: port.checkpoint, confirm: port.confirm,
-      build() { const view = read(); return buildContext(view.timeline, options.systemPrompt, turn, view.turns); },
       append,
       dispatchTool(call, execute) {
         const registration = catalog?.get(call.name), reader = !!catalog && call.name === READ_TOOL_RESULT;
         const id = invocationId(turn.turnId, call.id);
-        let policies: string[];
+        let policies: readonly string[];
         return dispatchWithPolicy({ channel: turn.channelId, turnId: turn.turnId, call,
           signal: port.signal, suspension: port.suspensionSignal, approvals, beforeDispatch: options.beforeToolDispatch,
           decide: () => toolDecision(config, policies = policySnapshot(), call.name),
@@ -170,20 +174,19 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
             ...(event.type === "tool_call" ? { invocationId: invocationId(turn.turnId, event.id) } : {}),
             ...(event.type === "message_completed" && recorded ? { messageId: String(recorded.seq) } : {}) } });
       },
-    }, async (messages, _tools, signal) => {
-      const { tools, fixedToolCount } = offer();
+    }, async signal => {
+      const built = context.build(turn, offer);
+      if (!built.ok) throw limitError();
+      const { tools, fixedToolCount, messages, takenItemIds, representedItemIds: itemIds } = built.value;
       phase(turn.turnId, "model");
-      const view = read();
-      const taken = view.items.filter(item => item.turnId === turn.turnId);
-      const itemIds = taken.map(item => item.itemId);
-      const previousResponse = view.timeline.findLast(entry => entry.turnId === turn.turnId && entry.message.role === "assistant")?.seq ?? 0;
-      const takenItemIds = taken.filter(item => (item.entrySeq ?? 0) > previousResponse)
-        .sort((a, b) => a.entrySeq! - b.entrySeq!).map(item => item.itemId);
       const binding = getModelAttempt(services.model);
       let draftId: string | undefined;
       try {
       const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools, takenItemIds, ...(fixedToolCount === undefined ? {} : { fixedToolCount }) },
-        started: callId => phase(turn.turnId, "model", callId),
+        started: callId => {
+          phase(turn.turnId, "model", callId);
+          try { options.observeModelCall?.(turn.channelId, turn.turnId, callId); } catch { /* best-effort observation */ }
+        },
         scripted: binding.scripted, store, attempt: binding.create, signal, settings: binding.settings,
         delta: ({ messageId, text }) => { draftId = messageId; emit({ channel: turn.channelId,
           event: { type: "text_delta", turnId: String(turn.turnId), messageId, text } }); },
@@ -205,9 +208,9 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
           event: { type: "text_incomplete", turnId: String(turn.turnId), messageId: draftId, reason: "failed" } });
         throw error;
       }
-    }, services.tools, services.executeTool).finally(() => { phases.delete(turn.turnId); });
+    }, services.executeTool).finally(() => { phases.delete(turn.turnId); });
   };
-  const scheduler = createChannelScheduler(store, options.wrapTurn?.(run) ?? run, emit, lifecycle.publish);
+  const scheduler = createChannelScheduler(store, options.wrapTurn?.(run) ?? run, emit, lifecycle.publish, CONTEXT_LIMITS);
   agent = scheduler.agent;
   /** Status with each running turn's phase, which only this process knows. */
   const status = () => {

@@ -1,10 +1,18 @@
+import { byteLength, entryOverhead, type ContextRow } from "./inference.ts";
 import { checkScriptIdentity } from "./script-identity.ts";
 import type { SessionStorageAdapter, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
 import { Fail, createEngine, failure, recover, referencesCompatible, type ChannelRow, type Meta, type Tables, type TurnRow, type ModelState } from "./engine.ts";
 import { archiveMeta, restoreArchive, storedSession, validateArchive, validateSessionPayload } from "./archive.ts";
 import { validateManagedConfig } from "../../util/config.ts";
 
+type ContextEntry = ContextRow & { entry: TimelineEntry };
+
 interface Data {
+  bySeq: Map<number, ContextEntry>;
+  byTurn: Map<number, ContextEntry[]>;
+  inputs: Map<number, ContextEntry[]>;
+  assistants: Map<number, ContextEntry[]>;
+  turnPolicies: Map<number, Set<string>>;
   revokedTools?: string[];
   modelState?: ModelState;
   config?: import("../../contracts/session-file.ts").PortableSessionConfig;
@@ -12,7 +20,7 @@ interface Data {
   channels: Map<string, ChannelRow>; participants: Set<string>;
   items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[]; conversation: Map<string, TimelineEntry[]>; replies: Map<number, TimelineEntry[]>;
 }
-const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], conversation: new Map(), replies: new Map() });
+const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
 const copy = <T>(value: T): T => structuredClone(value);
 const live = (turn: TurnRow) => turn.state.status === "running" || turn.state.status === "suspended";
 
@@ -21,7 +29,71 @@ const live = (turn: TurnRow) => turn.state.status === "running" || turn.state.st
 function memoryTables(data: Data): Tables {
   let undo: (() => void)[] | undefined;
   const log = (step: () => void) => { undo?.push(step); };
+  const before = (rows: readonly { seq: number }[], seq: number) => {
+    let low = 0, high = rows.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (rows[mid]!.seq < seq) low = mid + 1; else high = mid;
+    }
+    return low;
+  };
+  const recent = <T>(rows: T[], limit: number, end = rows.length) => rows.slice(Math.max(0, end - limit), end).reverse();
+  const header = ({ seq, bytes, kind, entry }: ContextEntry): ContextRow => ({
+    seq, ...(entry.itemId === undefined ? {} : { textBytes: byteLength(data.items.get(entry.itemId)?.text ?? "") }),
+    bytes: bytes + byteLength(data.modelState?.entryIds[String(seq)] ?? entry.messageId ?? ""), kind,
+  });
   return {
+    contextTurnStart(channelId, turnId) {
+      const turn = data.turns.get(turnId);
+      return turn?.channelId === channelId ? turn.startedSeq : undefined;
+    },
+    contextTrigger(turnId) {
+      const first = data.inputs.get(turnId)?.[0];
+      return first && header(first);
+    },
+    contextPreviousResponse: turnId => data.assistants.get(turnId)?.at(-1)?.seq ?? 0,
+    contextInputs(turnId, after, limit) {
+      const rows = data.inputs.get(turnId) ?? [];
+      const start = before(rows, after + 1);
+      return rows.slice(start, start + limit).map(header);
+    },
+    contextActive: (turnId, limit) => recent(data.byTurn.get(turnId) ?? [], limit).map(header),
+    contextLocal(channelId, start, limit) {
+      const rows = data.conversation.get(channelId) ?? [];
+      return recent(rows, limit, before(rows, start)).map(row => header(data.bySeq.get(row.seq)!));
+    },
+    contextRecent(cursor, limit) {
+      return recent(data.entries, limit, before(data.entries, cursor)).map(row => header(data.bySeq.get(row.seq)!));
+    },
+    contextShared(channelId, limit) {
+      return recent(data.entries, limit).filter(row => row.channelId !== channelId &&
+        (row.kind === "participant_message" || (row.message.role === "assistant" && !!row.message.content)))
+        .map(row => header(data.bySeq.get(row.seq)!));
+    },
+    contextPolicies(turnId, limit, budget) {
+      const names = data.turnPolicies.get(turnId);
+      if (!names) return { names: [], bytes: 0 };
+      if (names.size > limit) return undefined;
+      let bytes = 0;
+      for (const name of names) {
+        bytes += byteLength(name) + 1;
+        if (bytes > budget) return undefined;
+      }
+      return { names: [...names].sort(), bytes };
+    },
+    contextUnfinished(turnId, budget) {
+      const turn = data.turns.get(turnId);
+      if (!turn || (turn.state.status !== "failed" && turn.state.status !== "interrupted")) return undefined;
+      const { channelId, state } = turn;
+      const bytes = entryOverhead + byteLength(channelId) + byteLength(JSON.stringify(state));
+      return bytes <= budget ? { outcome: { channelId, turnId, state }, bytes } : undefined;
+    },
+    contextEntry(seq) {
+      const entry = data.bySeq.get(seq)!.entry;
+      const messageId = data.modelState?.entryIds[String(seq)] ?? entry.messageId;
+      // The engine detaches the selected values at the transaction boundary.
+      return messageId ? { ...entry, messageId } : entry;
+    },
     getModelState: () => copy(data.modelState),
     setModelState(state) { const old = data.modelState; log(() => { data.modelState = old; }); data.modelState = copy(state); },
     getRevokedTools: () => copy(data.revokedTools),
@@ -51,9 +123,24 @@ function memoryTables(data: Data): Tables {
       const old = data.items.get(item.itemId);
       log(() => { if (old) data.items.set(item.itemId, old); else data.items.delete(item.itemId); });
       data.items.set(item.itemId, copy(item));
+      if (old?.turnId !== undefined || item.turnId === undefined) return;
+      const turnId = item.turnId;
+      let names = data.turnPolicies.get(turnId);
+      if (!names) {
+        names = new Set();
+        data.turnPolicies.set(turnId, names);
+        log(() => { data.turnPolicies.delete(turnId); });
+      }
+      const policy = item.policy;
+      for (const name of policy ? [policy.resolved, ...policy.inherited] : ["__legacy_allow"]) {
+        if (names.has(name)) continue;
+        const namesForUndo = names;
+        names.add(name);
+        log(() => { namesForUndo.delete(name); });
+      }
     },
-    pendingItems: channelId => copy([...data.items.values()].filter(item => item.channelId === channelId && item.milestone === "received")
-      .sort((a, b) => a.acceptedSeq - b.acceptedSeq)),
+    pendingItems: (channelId, limit) => copy([...data.items.values()].filter(item => item.channelId === channelId && item.milestone === "received")
+      .sort((a, b) => a.acceptedSeq - b.acceptedSeq).slice(0, limit ?? Infinity)),
     itemsOfTurn: turnId => copy([...data.items.values()].filter(item => item.turnId === turnId).sort((a, b) => a.entrySeq! - b.entrySeq!)),
     items: () => copy([...data.items.values()].sort((a, b) => a.acceptedSeq - b.acceptedSeq)),
     turn: id => copy(data.turns.get(id)),
@@ -95,16 +182,26 @@ function memoryTables(data: Data): Tables {
     },
     addEntry(entry) {
       const saved = copy(entry);
-      const append = (rows: TimelineEntry[]) => { rows.push(saved); log(() => { rows.pop(); }); };
-      const indexed = <K>(index: Map<K, TimelineEntry[]>, key: K) => {
+      const append = <T>(rows: T[], row: T) => { rows.push(row); log(() => { rows.pop(); }); };
+      const indexed = <K, T>(index: Map<K, T[]>, key: K, row: T) => {
         let rows = index.get(key);
         if (!rows) { rows = []; index.set(key, rows); log(() => { index.delete(key); }); }
-        append(rows);
+        append(rows, row);
       };
-      append(data.entries);
+      append(data.entries, saved);
+      const kind = saved.message.role === "assistant" ? "assistant" : saved.itemId !== undefined ? "input" : "other";
+      const bytes = entryOverhead + byteLength(JSON.stringify(saved.message)) +
+        byteLength(saved.at) + byteLength(saved.channelId) + byteLength(saved.from) + byteLength(saved.kind ?? "") +
+        byteLength(saved.sourceChannelId ?? "") + byteLength(saved.itemId ?? "") + byteLength(saved.externalSource ?? "");
+      const contextRow: ContextEntry = { entry: saved, seq: saved.seq, bytes, kind };
+      data.bySeq.set(saved.seq, contextRow);
+      log(() => { data.bySeq.delete(saved.seq); });
+      indexed(data.byTurn, saved.turnId, contextRow);
+      if (kind === "input") indexed(data.inputs, saved.turnId, contextRow);
+      if (kind === "assistant") indexed(data.assistants, saved.turnId, contextRow);
       const reply = entry.message.role === "assistant" && !!entry.message.content;
-      if (reply || entry.kind === "participant_message") indexed(data.conversation, entry.channelId);
-      if (reply) indexed(data.replies, entry.turnId);
+      if (reply || entry.kind === "participant_message") indexed(data.conversation, entry.channelId, saved);
+      if (reply) indexed(data.replies, entry.turnId, saved);
     },
     entriesOfTurn: turnId => copy(data.entries.filter(entry => entry.turnId === turnId)),
     entries: () => copy(data.entries),

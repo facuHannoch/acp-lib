@@ -71,9 +71,14 @@
       source.close(); status('Connection lost. Use the startup pairing link and press Connect to reconnect.');
     };
   };
+  const inputMaxBytes = __SESSION_INPUT_MAX_BYTES__;
   $('compose').onsubmit = async event => {
     event.preventDefault(); const text = $('text').value.trim();
     if (!connected || !text) return;
+    if (new TextEncoder().encode(text).length > inputMaxBytes) {
+      add('Error', 'Input exceeds the ' + inputMaxBytes + '-byte UTF-8 limit', 'error');
+      return;
+    }
     const submittedGeneration = generation;
     add(participantId, text, 'you'); $('text').value = ''; pending++; waiting();
     try {

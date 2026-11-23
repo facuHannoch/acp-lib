@@ -1,12 +1,12 @@
 import type { SessionAgent, ActiveTurn, TurnExecutor } from "./agent.ts";
-import type { Model, ExecuteTool, ToolDefinition } from "./loop.ts";
+import type { Model, ExecuteTurnTool, ToolDefinition } from "./loop.ts";
 import type { SharedContextStore } from "./context.ts";
 import type { EventSink, SessionEventSink } from "./events.ts";
 import type {
   ChannelLifecycle, InterruptOutcome, SessionLifecycle, SessionStorage, StorageError, StorageSnapshot, WithdrawOutcome,
 } from "./storage.ts";
 
-export interface TurnServices { model: Model; tools: readonly ToolDefinition[]; executeTool: ExecuteTool }
+export interface TurnServices { model: Model; tools: readonly ToolDefinition[]; executeTool: ExecuteTurnTool }
 /** Derived from one storage snapshot. The session lifecycle, each channel's
  * lifecycle, each turn status and the pending input are reported independently
  * (decision 0014). `working`: a running turn exists, or an item is pending on a
@@ -101,6 +101,9 @@ export interface PersistentSessionOptions {
    * must not collide with the tools `configureTurn` returns. */
   catalog?: import("./tools.ts").ToolCatalogInput;
   toolLimits?: Partial<import("./tools.ts").ToolLimits>;
+  /** Development-only, detached observation of the assembled model request. */
+  observeModelCall?: (channelId: string, turnId: number, callId: string) => void;
+  captureContext?: (value: import("./context.ts").ContextCapture) => void;
   wrapTurn?: (run: TurnExecutor) => TurnExecutor;
 }
 

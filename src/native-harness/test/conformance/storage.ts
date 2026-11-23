@@ -1,6 +1,8 @@
+import { createMemoryStorageAdapter } from "../../src/state/storage/memory.ts";
 import { legacyItemSignature } from "../../src/state/storage/policy-metadata.ts";
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import type { ContextLimits } from "../../src/contracts/context.ts";
 import type { SessionStorage, SessionStorageAdapter, StorageErrorCode, StorageResult } from "../../src/contracts/storage.ts";
 
 /** Shared executable contract for storage revision 3 (decisions 0013, 0014). Each call
@@ -40,6 +42,125 @@ export function storageConformance(name: string, location: () => SessionStorageA
   const begin = (s: SessionStorage, channelId = "c1") => ok(s.beginTurn(channelId))!;
 
   describe(`${name} storage conformance`, () => {
+    const contextLimits: ContextLimits = {
+      maxInputBytes: 8192, maxTakenTextBytes: 8192, maxTakenItems: 16,
+      maxReadBytes: 4096, maxReadRecords: 8, maxSharedCandidates: 5,
+      contextTokens: 16384, outputReserveTokens: 2048, estimationMarginTokens: 1024,
+    };
+
+    test("bounded inference read shares committed history and preserves required input and whole exchanges", () => {
+      const adapter = location();
+      const config = { version: 1 as const, system: "test", model: { protocol: "scripted" as const, script: "fixture" },
+        defaultPolicy: "owner", policies: { owner: { fallback: "allow" as const, tools: {} }, guest: { fallback: "deny" as const, tools: {} } } };
+      const seed = createMemoryStorageAdapter();
+      let s = ok(seed.open({ mode: "create", identity: id(), config }));
+      try {
+        ok(s.createChannel({ channelId: "c1" }));
+        ok(s.createChannel({ channelId: "busy" }));
+        const historical = (channelId: string, text: string) => {
+          ok(msg(s, text, channelId));
+          const { turn } = begin(s, channelId);
+          const reply = say(s, turn.turnId, "older reply");
+          ok(s.finishTurn(turn.turnId, { status: "completed" }));
+          return reply;
+        };
+        const local = historical("c1", "local");
+        for (let i = 0; i < 160; i++) historical("busy", "busy");
+        ok(adapter.importArchive(ok(s.exportArchive())));
+        ok(s.close());
+        s = ok(adapter.open({ mode: "open", identity: id(), config }));
+        ok(msg(s, "trigger", "c1", "trigger"));
+        const active = begin(s);
+        const turnId = active.turn.turnId;
+        const request = { channelId: "c1", turnId, limits: contextLimits };
+        const effect = ok(s.appendMessage(turnId, {
+          role: "assistant", content: null, calls: [{ id: "one", name: "echo", arguments: "{}" }], providerState: { opaque: "state" },
+        }));
+        ok(s.appendMessage(turnId, { role: "tool", callId: "one", content: "☃".repeat(4000) }));
+        ok(s.acceptItem({ kind: "external_notice", itemId: "earlier", channelId: "c1", senderId: "host",
+          text: "☃".repeat(4000), inheritedPolicyNames: ["guest"] }));
+        ok(s.takePending(turnId));
+        const later = call(s, turnId, "two");
+        const result = ok(s.appendMessage(turnId, { role: "tool", callId: "two", content: "complete" }));
+        ok(msg(s, "steer", "c1", "latest"));
+        const steer = ok(s.takePending(turnId)).entries[0]!;
+        ok(s.beginSuspend());
+        ok(s.checkpointTurn(turnId));
+        const revision = s.completeSuspend();
+        ok(revision);
+        s = reopenWithConfig();
+        const snapshot = s.readInferenceContext(request);
+        const read = ok(snapshot);
+        if ("code" in read) throw new Error(read.code);
+        expect(snapshot.ok && snapshot.revision).toBe(revision.ok && revision.revision);
+        expect(read.required.map(e => e.seq)).toEqual([active.entries[0]!.seq, steer.seq]);
+        expect(read.takenItemIds).toEqual(["latest"]);
+        expect(read.optionalTurn.map(e => e.seq)).toEqual([later.seq, result.seq]);
+        expect(read.localHistory.map(e => e.seq)).toContain(local.seq);
+        expect(read.sharedHistory).toEqual([]);
+        expect(read.policyNames).toEqual(["guest", "owner"]);
+        expect(ok(s.readInferenceContext({ ...request, limits: { ...contextLimits, maxReadBytes: 64 } }))).toEqual({ code: "context_limit" });
+        expect(ok(s.readInferenceContext({ ...request, limits: { ...contextLimits, maxReadRecords: 1 } }))).toEqual({ code: "context_limit" });
+        refused(s.readInferenceContext({ ...request, channelId: "busy" }), "not_found");
+        const withShared = ok(s.readInferenceContext({ ...request, limits: { ...contextLimits, maxSharedCandidates: 8 } }));
+        if ("code" in withShared) throw new Error(withShared.code);
+        expect(withShared.sharedHistory.length).toBeGreaterThan(0);
+        expect(withShared.sharedHistory.every(e => e.channelId === "busy")).toBe(true);
+        const wider = ok(s.readInferenceContext({ ...request, limits: { ...contextLimits, maxReadRecords: 24, maxReadBytes: 50_000 } }));
+        if ("code" in wider) throw new Error(wider.code);
+        expect(wider.optionalTurn.find(e => e.seq === effect.seq)?.message).toEqual(effect.message);
+        (read.required[0]!.message as { content: string }).content = "changed";
+        const again = ok(s.readInferenceContext(request));
+        if ("code" in again) throw new Error(again.code);
+        expect(again.required[0]!.message.content).toContain("trigger");
+      } finally { ok(s.close()); }
+
+      function reopenWithConfig() {
+        ok(s.close());
+        return ok(adapter.open({ mode: "open", identity: id(), config }));
+      }
+    });
+
+    test("inference overflows if complete policy evidence cannot fit", () => {
+      const policyName = "é".repeat(4000);
+      const config = { version: 1 as const, system: "test", model: { protocol: "scripted" as const, script: "fixture" },
+        defaultPolicy: policyName, policies: { [policyName]: { fallback: "allow" as const, tools: {} } } };
+      const s = ok(location().open({ mode: "create", identity: id(), config }));
+      try {
+        ok(s.createChannel({ channelId: "c1" }));
+        ok(msg(s, "small message"));
+        const turnId = begin(s).turn.turnId;
+        const request = { channelId: "c1", turnId };
+        expect(ok(s.readInferenceContext({ ...request, limits: contextLimits }))).toEqual({ code: "context_limit" });
+        expect(ok(s.readInferenceContext({ ...request, limits: { ...contextLimits, maxReadBytes: 16_384 } })))
+          .toMatchObject({ policyNames: [policyName], required: [{ kind: "participant_message" }] });
+      } finally { ok(s.close()); }
+    });
+
+    test("inspector pages advance across omitted payloads and pin older positions", () => {
+      const seed = createMemoryStorageAdapter(), source = create(seed).s;
+      ok(msg(source, "start"));
+      const active = begin(source);
+      for (let i = 0; i < 44; i++) say(source, active.turn.turnId, i === 42 ? "é".repeat(32000) : "reply");
+      ok(source.finishTurn(active.turn.turnId, { status: "completed" }));
+      const target = location();
+      ok(target.importArchive(ok(source.exportArchive())));
+      ok(source.close());
+      const s = ok(target.open({ mode: "open", identity: id() }));
+      try {
+        expect(ok(s.readInspectionStatus()).channels).toMatchObject([{ id: "c1", pending: 0 }]);
+        const recent = ok(s.readInspectionPage());
+        expect(recent.entries).toHaveLength(40);
+        expect(recent.entries[1]).toEqual({ seq: recent.entries[0]!.seq - 1, omitted: true });
+        expect(recent.next).toBeDefined();
+        ok(msg(s, "new pending"));
+        const older = ok(s.readInspectionPage(recent.next));
+        expect(older.entries).toHaveLength(5);
+        expect(older.entries.every(row => row.seq < recent.next!)).toBe(true);
+        expect(older.next).toBeUndefined();
+      } finally { ok(s.close()); }
+    });
+
     test("external notice identity, drain admission, inspection and archive round trip", () => {
       const adapter = location();
       const config = { version: 1 as const, system: "test", model: { protocol: "scripted" as const, script: "fixture" },

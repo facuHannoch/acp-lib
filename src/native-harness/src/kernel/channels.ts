@@ -1,3 +1,4 @@
+import type { ContextLimits } from "../contracts/context.ts";
 import type { ActiveTurn, ChannelInput, ChannelNotice, SendResult, SessionAgent, TurnExecutor, TurnPort } from "../contracts/agent.ts";
 import type { EventSink, SessionEventSink } from "../contracts/events.ts";
 import type { ChannelControls, ChannelStatus, ControlResult, LifecycleResult, SessionStatus } from "../contracts/session.ts";
@@ -46,7 +47,7 @@ export function sessionStatus(view: Pick<StorageSnapshot, "revision" | "session"
  * publishes each one after it happens, and keeps the per-process handles
  * (promises and abort controllers) that storage cannot hold. */
 export function createChannelScheduler(
-  storage: SessionStorage, execute: TurnExecutor, emit: EventSink = () => {}, emitSession: SessionEventSink = () => {},
+  storage: SessionStorage, execute: TurnExecutor, emit: EventSink = () => {}, emitSession: SessionEventSink = () => {}, limits?: ContextLimits,
 ): ChannelScheduler {
   const live = new Map<string, { turnId: number; abort: AbortController; suspension: AbortController }>();
   // Channels that may have pending input. Only an optimization and an idle
@@ -107,7 +108,7 @@ export function createChannelScheduler(
   /** Start the channel's next turn if storage has one to start. */
   function pump(channelId: string) {
     if (!started || stopped || lifecycle !== "running" || live.has(channelId)) return;
-    const begun = storage.beginTurn(channelId);
+    const begun = storage.beginTurn(channelId, limits);
     // A suspended or retired channel is not ours to start; its backlog stays
     // pending until its own resume re-queues it.
     if (!begun.ok && (begun.error.code === "channel_suspended" || begun.error.code === "channel_retired")) { waiting.delete(channelId); return; }
@@ -131,7 +132,7 @@ export function createChannelScheduler(
       signal: abort.signal,
       suspensionSignal: suspensionSignal.signal,
       take() {
-        const taken = storage.takePending(turnId);
+        const taken = storage.takePending(turnId, limits);
         if (!taken.ok) { if (taken.error.code !== "not_running" && taken.error.code !== "channel_suspended") fenced(taken.error.message); return; }
         waiting.delete(channelId);
         if (taken.value.items.length) emit({ channel: channelId, revision: taken.revision,
@@ -197,7 +198,7 @@ export function createChannelScheduler(
       if (!known.ok || !known.value.items.some(stored => stored.itemId === item.itemId))
         return { accepted: false, code: "stopped", error: "This process has stopped accepting work" };
     }
-    const result = storage.acceptItem(item);
+    const result = storage.acceptItem(item, limits?.maxInputBytes);
     if (!result.ok) {
       const code = result.error.code;
       return { accepted: false, error: result.error.message, code: code === "invalid_input" || code === "item_conflict"

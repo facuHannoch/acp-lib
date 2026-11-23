@@ -47,7 +47,61 @@
   let channels = [], selected = null, tab = "live";
   let liveContext = { systemPrompt: "", tools: [], entries: [] };
   let connectionStatus = 'connecting';
-  let session = null;
+  let session = null, channelDetails = null, callDetails = null, timeline = [], nextPosition, paging = false;
+  let refreshTimer, refreshing = false, dirty = false, viewVersion = 0, olderLoaded = false, fetchError = '';
+  const endpoint = async path => {
+    const response = await fetch(path, {cache: 'no-store'});
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  };
+  function mergeTimeline(entries) {
+    const rows = new Map(timeline.map(entry => [entry.seq, entry]));
+    for (const entry of entries) rows.set(entry.seq, entry);
+    timeline = [...rows.values()].sort((a, b) => b.seq - a.seq);
+  }
+  function invalidate() {
+    dirty = true;
+    if (!document.hidden && !refreshing && !refreshTimer)
+      refreshTimer = setTimeout(() => { refreshTimer = undefined; void refresh(); }, 60);
+  }
+  async function refresh() {
+    if (document.hidden || refreshing || !dirty) return;
+    dirty = false; refreshing = true;
+    const version = viewVersion, currentTab = tab;
+    try {
+      const status = await endpoint('/state');
+      if (version !== viewVersion) return;
+      channels = status.channels; session = status.session;
+      if (currentTab === 'channels' && !channels.some(channel => channel.id === selected)) selected = channels[0]?.id ?? null;
+      const view = currentTab === 'live' ? await endpoint('/context')
+        : currentTab === 'timeline' ? await endpoint('/timeline')
+        : selected ? await endpoint('/channel?id=' + encodeURIComponent(selected)) : null;
+      if (version !== viewVersion) return;
+      if (currentTab === 'live') liveContext = view;
+      if (currentTab === 'channels') channelDetails = view;
+      if (currentTab === 'timeline') {
+        if (!olderLoaded || (timeline.length && view.entries.at(-1)?.seq > timeline[0].seq)) {
+          timeline = view.entries; nextPosition = view.next; olderLoaded = false;
+        }
+        else mergeTimeline(view.entries);
+      }
+      fetchError = '';
+    } catch (error) { if (version === viewVersion) fetchError = String(error); }
+    finally {
+      refreshing = false;
+      if (version === viewVersion) render();
+      if (dirty) invalidate();
+    }
+  }
+  async function loadOlder() {
+    if (!nextPosition || paging) return;
+    paging = true; render();
+    try {
+      const page = await endpoint('/timeline?before=' + nextPosition);
+      mergeTimeline(page.entries); nextPosition = page.next; olderLoaded = true; fetchError = '';
+    } catch (error) { fetchError = String(error); }
+    finally { paging = false; render(); }
+  }
   const nav = document.querySelector('#channels'), main = document.querySelector('#content');
   function node(tag, text, className) {
     const element = document.createElement(tag);
@@ -80,7 +134,21 @@
     document.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === tab)));
     nav.replaceChildren();
     main.replaceChildren();
-    if (tab === 'timeline') return;
+    if (fetchError) main.append(node('p', fetchError, 'error'));
+    if (tab === 'timeline') {
+      for (const entry of timeline) {
+        if (entry.omitted) { main.append(node('p', 'Position ' + entry.seq + ' · Payload omitted', 'muted')); continue; }
+        const role = entry.kind ?? entry.message.role;
+        main.append(messageCard(entry.message, '#' + entry.seq + ' · ' + entry.channelId + ' · ' + entry.from + ' · ' + role,
+          'timeline:' + entry.seq, expanded));
+      }
+      if (!timeline.length) main.append(node('p', 'No timeline entries.', 'muted'));
+      if (nextPosition) {
+        const more = node('button', 'Load older events'); more.disabled = paging; more.onclick = () => void loadOlder();
+        main.append(more);
+      }
+      return;
+    }
     if (tab === 'live') {
       main.append(node('p', 'Shared base context · ' + liveContext.entries.length + ' events', 'muted'));
       // Use the same rendered base as inference construction, without inventing
@@ -103,39 +171,41 @@
       const button = node('button', channel.id + ' · ' + status);
       button.classList.toggle('working', channel.running && connectionStatus === 'live');
       button.setAttribute('aria-current', String(channel.id === selected));
-      button.onclick = () => { selected = channel.id; render(); };
+      button.onclick = () => { selected = channel.id; channelDetails = null; callDetails = null; fetchError = ''; viewVersion++; render(); invalidate(); };
       nav.append(button);
     }
     const channel = channels.find(c => c.id === selected);
     if (!channel) { main.append(node('p', 'No channels yet.', 'muted')); return; }
     main.append(node('h2', 'Channel ' + channel.id));
-    main.append(node('p', 'Participants: ' + channel.participants.join(', ') + ' · Pending input: ' + channel.pending
-      + (channel.pendingItems?.length ? ' (' + channel.pendingItems.join(', ') + ')' : '')
+    main.append(node('p', 'Pending input: ' + channel.pending
       + (channel.turn === 'suspended' ? ' · A checkpointed turn waits for resume' : ''), 'muted'));
     if (channel.unresolved?.uncertainCallIds.length) main.append(node('p', 'Tool calls with no recorded result (not retried): ' + channel.unresolved.uncertainCallIds.join(', '), 'error'));
     if (channel.error) main.append(node('p', channel.error, 'error'));
+    const loadCalls = node('button', callDetails?.id === selected ? 'Refresh recent model calls' : 'Load recent model calls');
+    loadCalls.onclick = async () => {
+      const id = selected, version = viewVersion;
+      loadCalls.disabled = true;
+      try {
+        const data = await endpoint('/calls?id=' + encodeURIComponent(id));
+        if (version === viewVersion) { callDetails = { id, modelCalls: data.modelCalls }; fetchError = ''; }
+      } catch (error) { if (version === viewVersion) fetchError = String(error); }
+      finally { if (version === viewVersion) render(); }
+    };
+    main.append(loadCalls);
+    const modelCalls = callDetails?.id === selected ? callDetails.modelCalls : [];
     const turns = new Map();
-    // Recorded turn IDs distinguish real prompts from user-role context blocks.
-    for (const entry of liveContext.entries.filter(e => e.channelId === channel.id)) {
-      if (!turns.has(entry.turnId)) turns.set(entry.turnId, []);
-    }
-    for (const request of channel.requests) {
+    for (const request of channelDetails?.requests ?? []) {
       const id = request.turnId ?? 'unknown';
       if (!turns.has(id)) turns.set(id, []);
       turns.get(id).push(request);
     }
-    for (const call of channel.modelCalls ?? []) {
+    for (const call of modelCalls) {
       const id = Number(call.turnId);
       if (!turns.has(id)) turns.set(id, []);
     }
     for (const [turnId, requests] of turns) {
       main.append(node('h2', turnId === 'unknown' ? 'New turn' : 'Turn ' + turnId, 'turn-divider'));
-      const entries = liveContext.entries.filter(e => e.channelId === channel.id && e.turnId === turnId);
-      const prompt = entries.find(e => e.kind !== 'channel_notice' && e.message.role === 'user')?.message.content;
-      const notices = entries.filter(e => e.kind === 'channel_notice').map(e =>
-        'Internal notice from channel ' + JSON.stringify(e.sourceChannelId) + ' to channel ' + JSON.stringify(e.channelId)
-        + ' (another execution of this same agent):\n' + e.message.content);
-      const calls = (channel.modelCalls ?? []).filter(call => call.turnId === String(turnId));
+      const calls = modelCalls.filter(call => call.turnId === String(turnId));
       for (const call of calls) {
         const details = node('details');
         details.dataset.key = channel.id + ':model-call:' + call.callId;
@@ -147,14 +217,25 @@
       for (const [index, request] of requests.entries()) {
         const iteration = node('section', undefined, 'iteration');
         iteration.append(node('p', 'Iteration ' + (index + 1) + ' · ' + request.at, 'muted'));
+        if (request.context) {
+          const { revision, estimatedInputBytes, omitted, records, offeredTools, modelCallId } = request.context;
+          iteration.append(node('p', 'Timeline revision ' + revision + ' · ' + estimatedInputBytes + ' estimated input bytes'
+            + ' · Trimmed records ' + omitted.active + ' active, ' + omitted.local + ' local, ' + omitted.shared + ' shared', 'muted'));
+          const inspection = node('details'); inspection.dataset.key = channel.id + ':selection:' + request.number;
+          inspection.open = expanded.has(inspection.dataset.key);
+          const call = modelCalls.find(call => call.callId === modelCallId);
+          inspection.append(node('summary', 'Request evidence'), json({
+            includedTimelinePositions: records.included, trimmedCandidatePositions: records.trimmed, offeredTools,
+            modelCallId, ...(call ? { outcome: call.outcome, attempts: call.attempts } : {}),
+          }));
+          iteration.append(inspection);
+        }
         const context = node('article', undefined, 'context-card');
         const text = node('pre');
         // Preserve content as literal text, highlighting the active prompt only.
         for (const message of request.body.messages ?? []) {
           if (message.content != null) {
             const content = node('span', typeof message.content === 'string' ? message.content : JSON.stringify(message.content, null, 2));
-            if (message.role === 'user' && message.content === prompt) content.className = 'prompt-highlight';
-            if (message.role === 'user' && notices.includes(message.content)) content.className = 'notice-highlight';
             text.append(content, document.createTextNode('\n\n'));
           }
           const { role, content, ...fields } = message;
@@ -175,13 +256,12 @@
         context.append(raw);
         iteration.append(context);
         if (request.response) {
-          const result = messageCard(request.response, 'Result', channel.id + ':response:' + request.number, expanded);
-          result.classList.add('result-card');
-          const callIds = new Set((request.response.calls ?? []).map(call => call.id));
-          for (const entry of entries.filter(e => e.message.role === 'tool' && callIds.has(e.message.callId))) {
-            result.append(node('p', 'Tool result · ' + entry.message.callId, 'muted'), node('pre', entry.message.content));
+          if (request.response.omitted) iteration.append(node('p', 'Large response omitted from capture.', 'muted'));
+          else {
+            const result = messageCard(request.response, 'Result', channel.id + ':response:' + request.number, expanded);
+            result.classList.add('result-card');
+            iteration.append(result);
           }
-          iteration.append(result);
         } else {
           const result = node('article', undefined, 'result-card');
           result.append(node('strong', 'Result'), node('p', channel.error ? 'Inference failed: ' + channel.error : 'Waiting for response…', 'muted'));
@@ -192,11 +272,12 @@
     }
   }
   document.querySelectorAll('[data-tab]').forEach(button => {
-    button.onclick = () => { tab = button.dataset.tab; render(); };
+    button.onclick = () => { tab = button.dataset.tab; fetchError = ''; viewVersion++; render(); invalidate(); };
   });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) invalidate(); });
   const events = new EventSource('/events');
-  events.onopen = () => { connectionStatus = 'live'; render(); };
+  events.onopen = () => { connectionStatus = 'live'; render(); invalidate(); };
   events.onerror = () => { connectionStatus = 'disconnected'; render(); };
-  events.onmessage = event => { const state = JSON.parse(event.data); channels = state.channels; liveContext = state.liveContext; session = state.session ?? null; render(); };
+  events.onmessage = invalidate;
 </script>
 </html>
