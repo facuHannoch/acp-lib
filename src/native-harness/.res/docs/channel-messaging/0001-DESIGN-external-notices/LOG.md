@@ -409,3 +409,13 @@ repeatedly crashes the harness can exhaust that budget and fail the
 host while its durable record stays available. A continuation of an
 abandoned assignment conflicts. Core's orchestrator must reserve fresh
 work, using atomic replacement where appropriate.
+
+Verified the fix at `1ae9a90963856d5380ae09d92983708a980a00ff` on a clean
+archive with RAM-backed test temporary storage. Both typechecks passed.
+Focused worker, migration and native delivery tests passed 57/0 across
+six files, including the abandoned ACP SIGKILL case. The exact root
+`bun test ./test` passed 1530/0 (141 files, 35 snapshots, 173.44 s).
+The harness `bun test ./test --timeout 30000` passed 360/0 (47 files,
+34.70 s). No timeout settings changed. The earlier failures remain
+recorded above, and this successful gate does not by itself isolate
+machine load from the effect of the temporary filesystem.
