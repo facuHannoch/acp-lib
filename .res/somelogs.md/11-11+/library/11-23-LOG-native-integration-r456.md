@@ -149,3 +149,18 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   list an already-counted attempt as unmeasured; the schema change is one-way; `MeteringPreflightError`;
   `earlierEvidencePending`; where `state.totals` is read). Docs-only fix assigned to cod2a; then a short check and the
   pre-alpha with the whole of R5.
+- R5 docs follow-up (`a9b3ae1`) reviewed by clad2a (`bc0836b`): every note landed accurately, nothing overclaims; two
+  nits (`earlierEvidencePending` means awaiting confirmation that the earlier turn ended; "unavailable host" missing from
+  the changelog's unavailable cases).
+- R6 step 0 (`dd67d45`, [report](reports/11-23-REPORT-R6-grounding.md)) reviewed by clad2a (`ddec61c`): three of the four
+  items are real gaps, the stall clock is not. **Withdrawal is a real defect**: `withdrawWaiting` removes an accepted,
+  unclaimed item and settles the prompt cancelled, but the input is already in the harness inbox, so the harness still
+  runs it; the wire already has `channel/withdraw` (idempotent: withdrawn or taken) and the host calls it, the session
+  never does. Decisions (coordinator): withdrawal is the priority, `not_found` on a pushed submission is UNRESOLVED
+  (the stdio server dispatches concurrently; a withdraw can overtake its push), a durable "withdrawing" intent and a
+  close/reopen test, an audit of `interrupt({clearQueue})`, stop and close, and a `taken` answer follows the turn; the
+  stall clock step is dropped (a regression test only: `stallLimitsFor` returns false limits for backend supervision);
+  receipts and the real-process stream test stand (partial text then the hold tool); a new public event variant needs a
+  changelog, guide and exhaustive-switch check; the size extraction comes first (`agent-session.ts` is at its ceiling).
+  Question to haurness-l: is per-channel order guaranteed between push and withdraw, or a tombstone planned (no harness
+  change needed). cod2a amends the brief and starts step 1.
