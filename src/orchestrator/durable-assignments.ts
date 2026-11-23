@@ -86,6 +86,16 @@ export class DurableWorkerAssignments implements WorkerAssignmentPort {
   latestOutcome(row: WorkerRow) { return this.persistence.workerDelivery!.latestOutcome(row.conversationId); }
   latestResult(row: WorkerRow) { return this.persistence.workerDelivery!.latestOutcome(row.conversationId, "result"); }
 
+  async retryDelivery(row: WorkerRow): Promise<void> {
+    const repository = this.persistence.workerDelivery!;
+    const blocked = await repository.latestOutcome(row.conversationId, "blocked_policy");
+    if (blocked?.delivery.state !== "blocked_policy" || !await repository.transitionDelivery(blocked.delivery.id,
+      { from: "blocked_policy", to: "pending", explicitRetry: true })) {
+      throw new Error(`worker ${row.handle} has no policy-blocked delivery to retry`);
+    }
+    await (blocked.delivery.destination.kind === "native" ? this.flushNative() : this.flushAcp());
+  }
+
   private async destination(scope: PersistenceScope, id: AgentConversationId, kind?: WorkerDestination["kind"]): Promise<WorkerDestination> {
     return { id, kind: (await scope.conversations.get(id))?.controllerKind ?? kind ?? "acp" };
   }

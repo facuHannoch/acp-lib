@@ -88,9 +88,14 @@ for (const legacy of [16, 17, "early 17"] as const) test(`worker repository upgr
     expect(await reopened.redirect(binding.assignmentId, { kind: "native", id: "later" })).toBe(false);
     const { id } = result!.delivery;
     expect(await reopened.transitionDelivery(id, { from: "pending", to: "blocked_policy" })).toBe(true);
+    expect(await reopened.latestOutcome("worker")).toMatchObject({ assignmentId: interrupted.assignmentId });
+    expect(await reopened.latestOutcome("worker", "blocked_policy")).toMatchObject({
+      assignmentId: binding.assignmentId, delivery: { state: "blocked_policy" },
+    });
     expect(await reopened.transitionDelivery(id, { from: "pending", to: "delivered" })).toBe(false);
     expect(await reopened.transitionDelivery(id, { from: "blocked_policy", to: "pending", explicitRetry: true })).toBe(true);
     expect(await reopened.transitionDelivery(id, { from: "pending", to: "delivered" })).toBe(true);
+    expect(await reopened.latestOutcome("worker", "blocked_policy")).toBeUndefined();
     expect(await reopened.transitionDelivery(id, { from: "pending", to: "failed_destination" })).toBe(false);
     expect((await reopened.readStaged(binding.assignmentId))?.delivery).toEqual({ ...result!.delivery, state: "delivered" });
     const failed = (await reopened.stage(undeliverable.assignmentId))!;

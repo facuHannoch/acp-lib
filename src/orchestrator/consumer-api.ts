@@ -5,6 +5,8 @@ import type { Orchestrator } from "./orchestrator.ts";
 export interface WorkerConsumerApi {
   list(): Promise<readonly WorkerSummary[]>;
   check(handle: string): Promise<WorkerSummary>;
+  /** Explicitly retry the worker's newest policy-blocked delivery. */
+  retryDelivery(handle: string): Promise<void>;
   stop(handle: string): Promise<void>;
   /** Removes the worker locally and reports the provider cleanup outcome. */
   delete(handle: string): Promise<DeleteConversationResult>;
@@ -15,6 +17,7 @@ export function workerConsumerApi(orchestrator: Orchestrator): WorkerConsumerApi
   return Object.freeze({
     list: () => orchestrator.list(consumer),
     check: (handle: string) => orchestrator.check(consumer, handle),
+    retryDelivery: (handle: string) => orchestrator.retryDelivery(handle),
     async stop(handle: string) { await orchestrator.stop(consumer, handle); },
     delete: (handle: string) => orchestrator.drop(consumer, handle),
   });

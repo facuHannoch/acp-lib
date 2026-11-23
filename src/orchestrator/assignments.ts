@@ -23,4 +23,5 @@ export interface WorkerAssignmentPort {
   settled?(): Promise<void>;
   latestOutcome?(row: WorkerRow): Promise<StagedWorkerAssignment | undefined>;
   latestResult?(row: WorkerRow): Promise<StagedWorkerAssignment | undefined>;
+  retryDelivery?(row: WorkerRow): Promise<void>;
 }
