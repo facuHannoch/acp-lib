@@ -153,3 +153,10 @@ edit to `src/agent-session.ts`.
 - O4 follow-up in from cod2a, `71b63d8` (consumer workers use `orchestrator.defaults.workerPermissions`; changelog for
   the optional `turnId`, the `source` mark and `WorkerPermissionSource`); 1,540 green on cod2a's run; sent to clad2a.
   O5a step 1 (`a6ec0af`) is in cod2a's gate.
+- O4 follow-up reviewed by clad2a (`4ff1d1c`, resolved). O5a complete from cod2a, HEAD `c092af6`
+  ([report](reports/11-23-REPORT-O5a.md)); review from clad2a, `f997c9b`: meets the brief, no blocking findings, the
+  races clean. **O5a gate passed** ([gate](../.plan-execution/status/11-23-GATE-O5a.md)): 1,546 in 143 files.
+  `pre-alpha` rebuilt to include O2, O4 and O5a (supersedes `c1bef00`).
+- Cod1a's runtime `d78bee1` (on O1 `3c28130`; schema 20; the lifecycle, the flush, ACP filtered) is with Clad1a; their
+  root runs are not green (load deadlines in the audit flush and two fixture watchdogs, each passing in focused
+  reruns). O3a waits for it. O6 step 1 (the route, the actor, the tool catalog) has no dependency on it: given to cod2a.
