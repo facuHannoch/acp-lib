@@ -270,3 +270,13 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   baseline byte for byte and its two runtime tests return to full pass with the documented test-double edit. **Gate
   passed** ([gate](../.plan-execution/status/11-23-GATE-release-docs.md)): 1,678 in 162 files. Combined with cod2a's test
   guard `8ba7662` into `pre-alpha`. Alpha had moved by two docs-only commits (the reminders and routines spec).
+- The user asked to merge `aiagent/haurness-l` (seven commits beyond alpha: context stages 3 and 4, harness instructions and
+  session management, CLI start options and debug tools; 102 files, mostly the harness tree). Trial merge into the release
+  candidate (`merge-haurness-l`, `f32c5a2`; `pre-alpha` stays at `d407820`): one content conflict, in the orchestrator spec's
+  durable native completion paragraph (their side is an older wording; kept this branch's). Coordinator gate on the merge
+  (`TMPDIR` in RAM): typecheck clean; 1,677 pass and **1 deterministic failure** (20 of 20 alone): `test/native/checkpoint.test.ts:1209`
+  "operator stdio reads stay bounded on 10,000 records, catch-up retries from the committed position" expects zero full
+  storage snapshots; it passes on `aiagent/haurness-l` alone (16 of 16 in that file) and on `pre-alpha` alone. Cause (from the
+  RPC trace `push, status, push, modelCalls, status`): acp-client's R5 turn-close pull calls `session/model-calls`, whose
+  harness handler makes the storage take a full snapshot (O(history)), which their bounded-reads work forbids. The fix
+  belongs on the harness side (a focused, paged `session/model-calls` read). Harness suite on the merge: 381 pass, 0 fail.
