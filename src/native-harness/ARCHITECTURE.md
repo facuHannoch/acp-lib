@@ -184,9 +184,11 @@ together in its owning capability. The tool registry exposes the selected
 definitions and routes execution through contracts.
 
 Entry points assemble configuration and implementations. The development CLI
-loads a bundled or explicitly selected Markdown file and passes its contents
-as the configured system text. File paths belong to the CLI. Durable session
-configuration keeps the resolved text.
+uses the bundled agent instructions or an explicitly selected Markdown file
+as its configured system text. Bundled Markdown lives under
+`src/capabilities/context/instructions/`, with separate files for the agent,
+the harness, and the agent demo. Custom instruction paths belong to the
+CLI. Durable session configuration keeps the resolved agent text.
 
 Model adapters translate
 tool definitions into the provider's native tools field; definitions do not need

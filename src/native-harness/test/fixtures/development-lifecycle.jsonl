@@ -1,0 +1,10 @@
+{"type":"scenario","version":1,"name":"development-lifecycle"}
+{"type":"model","channelId":"channel1","content":"Test: I will send a verification notice to Bob’s channel.","calls":[{"id":"notify-1","name":"notify_channel","arguments":{"channelId":"channel2","text":"Verification notice from channel1."}}]}
+{"type":"model","channelId":"channel1","content":"Test: the harness accepted the notice for Bob’s channel.","calls":[]}
+{"type":"model","channelId":"channel1","content":"Test: I am invoking the hold tool.","calls":[{"id":"hold-1","name":"test_hold","arguments":{}}]}
+{"type":"model","channelId":"channel1","content":"Test: the hold tool finished.","calls":[]}
+{"type":"model","channelId":"channel1","content":"Alice, the session is running again.","calls":[]}
+{"type":"model","channelId":"channel2","content":"Hello Bob.","calls":[]}
+{"type":"model","channelId":"channel2","content":"Noted: the design is approved.","calls":[]}
+{"type":"model","channelId":"channel2","content":"Bob, I received your later message.","calls":[]}
+{"type":"model","channelId":"channel2","content":"Bob, the session is running again.","calls":[]}

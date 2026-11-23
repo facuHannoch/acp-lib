@@ -218,9 +218,17 @@
         const iteration = node('section', undefined, 'iteration');
         iteration.append(node('p', 'Iteration ' + (index + 1) + ' · ' + request.at, 'muted'));
         if (request.context) {
-          const { revision, estimatedInputBytes, omitted } = request.context;
+          const { revision, estimatedInputBytes, omitted, records, offeredTools, modelCallId } = request.context;
           iteration.append(node('p', 'Timeline revision ' + revision + ' · ' + estimatedInputBytes + ' estimated input bytes'
             + ' · Trimmed records ' + omitted.active + ' active, ' + omitted.local + ' local, ' + omitted.shared + ' shared', 'muted'));
+          const inspection = node('details'); inspection.dataset.key = channel.id + ':selection:' + request.number;
+          inspection.open = expanded.has(inspection.dataset.key);
+          const call = modelCalls.find(call => call.callId === modelCallId);
+          inspection.append(node('summary', 'Request evidence'), json({
+            includedTimelinePositions: records.included, trimmedCandidatePositions: records.trimmed, offeredTools,
+            modelCallId, ...(call ? { outcome: call.outcome, attempts: call.attempts } : {}),
+          }));
+          iteration.append(inspection);
         }
         const context = node('article', undefined, 'context-card');
         const text = node('pre');

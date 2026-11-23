@@ -61,8 +61,7 @@ Ctrl+C stops at once: running turns are recorded as interrupted, so run
 `suspend` and `resume` talk to the running agent over its Unix socket; they are
 not available from the LAN chat. `--script <file>` replaces the provider with
 a scripted model for offline runs without a key; the file is one script, or
-`{ "channels": { "<id>": script }, "default": script }`. The simulated
-dashboard job is process state and starts over in each process.
+`{ "channels": { "<id>": script }, "default": script }`.
 
 Leave the agent running. In separate terminals, from this directory:
 
@@ -88,7 +87,7 @@ phone needs network access to that port. The inspector stays local-only on port
 3000. Its Live Context tab shows a bounded preview across the session. Timeline
 pages older events on request, and Channels shows recent captured requests
 and can load recent durable model-call summaries. For an offline capture run,
-use `HARNESS_CAPTURE_SCRIPT_REQUESTS=1 bun run start --script test/fixtures/development-scenario.jsonl`.
+use `HARNESS_CAPTURE_SCRIPT_REQUESTS=1 bun run start --script ./test-script.jsonl`.
 New messages and notices have an 8 KiB UTF-8 text limit. Web chat currently shows future
 replies, without replay or persistent browser history. Browser connections do not
 automatically reconnect after a network loss; press Connect again.
@@ -160,7 +159,7 @@ experimental local interface, not the eventual host protocol.
 `src/kernel/channels.ts` owns channels and queues; `src/kernel/loop.ts` coordinates
 turns; `src/capabilities/model/openrouter.ts` translates provider messages. The
 time tool owns its definition, validation and execution in
-`src/capabilities/tools/current-time.ts`. The startup command selects the
+`src/capabilities/tools/builtin/current-time.ts`. The startup command selects the
 development tools in `src/capabilities/tools/scenario.ts`. Transport code lives in
 `src/interfaces/protocol/local.ts`. Inspection wrappers live in
 `src/interfaces/inspector/observe.ts`, keeping observation out of the kernel.
@@ -219,8 +218,10 @@ Explicit notices do. The development CLI saves the session across restarts.
 
 ## Development instructions and notices
 
-Live development defaults to the general-purpose [instructions](src/interfaces/cli/instructions.md)
-and offers `current_time` and `notify_channel`. To use your own Markdown, run
+Live development defaults to the general-purpose [agent instructions](src/capabilities/context/instructions/agent.md)
+and offers `current_time` and `notify_channel`. The harness rules and scripted
+agent demo each have their own Markdown file in the same directory. To
+override the agent instructions with your own Markdown, run
 `bun run start --instructions ./my-instructions.md`. For a saved session, add
 `--db <path>`. The explicit file replaces the selected config's `system` text
 for that open. SQLite saves the resolved text with the session, and a present
@@ -228,12 +229,8 @@ for that open. SQLite saves the resolved text with the session, and a present
 flag. Restart the harness to load edits. A changed prompt or tool list can make
 a suspended turn incompatible with the new configuration.
 
-Scripted development runs keep the dashboard demo. In that demo,
-`dashboard_work({})` advances a shared job by one of five simulated steps. Only one
-dashboard call per inference can advance work. Concurrent attempts return busy;
-after five steps, additional calls report completion without advancing. No work
-runs between calls. A running step is not interrupted; the model decides whether
-to request another step after reading updated context.
+Scripted development uses the generic test-agent instructions. A fixture
+defines the model responses for a particular check.
 
 `notify_channel({ channelId, text })` requests attention from an existing channel.
 The source channel is supplied by the executor. Notices and messages share one
@@ -253,11 +250,29 @@ Notice-generated idle responses appear in the inspector and in subscribed
 terminal clients for the target channel.
 A notice to a channel that has never received a message is refused with an actionable tool result.
 
-To try the scenario, open `channel1 alice` and ask Alice's channel to finish the
-dashboard for launch. During a step, tell `channel2 bob` that the design is not
-approved, work must stop, and it should notify channel1. Inspect the notice and
-subsequent iterations. Whether the model recognizes the update and chooses to
-stop is behavior to evaluate, not hard-coded cancellation.
+## Tool layout
+
+- `tools/builtin/` contains standard tools for time and channel notices.
+- `tools/debug/` contains the opt-in tools for interactive debugging.
+- `tools/testing/` contains offline fixture tools such as echo, record and hold.
+- `tools/runtime/` contains catalog validation and availability, execution of
+  host callbacks, and invocation inspection. It also implements
+  `read_tool_result` for paged reads of a host tool's stored result.
+
+## Debug tools
+
+Run `bun run start --debug` to use the bundled test-agent prompt and expose
+three development tools. The prompt override applies only to the running
+process. Use `--debug-tools` to keep your usual prompt with the same tools,
+or `--debug --instructions <path>` to select custom instructions. Ask the
+agent to call `test_echo` with short text, `test_wait` to hold a turn for up to
+30 seconds, or `test_fail` to return a deliberate failure and observe how the
+agent continues. Tool policies still apply. Pass the flag again when reopening
+a session to enable the tools for that process.
+
+In the inspector’s Channels tab, expand **Request evidence** to see included
+timeline positions, trimmed candidates, offered tools and the model-call ID.
+Use **Load recent model calls** to see that request’s outcome and attempts.
 
 ## Offline scripted model
 

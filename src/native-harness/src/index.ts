@@ -1,5 +1,5 @@
 import { messagePosition } from "./util/message-position.ts";
-import { executeNotice, notifyChannelDefinition } from "./capabilities/tools/scenario.ts";
+import { executeNotice, notifyChannelDefinition } from "./capabilities/tools/builtin/notify-channel.ts";
 import type { PersistentSession, PersistentSessionOptions } from "./contracts/session.ts";
 import type { SessionAgent, TurnExecutor } from "./contracts/agent.ts";
 import type { EventSink, SessionEventSink } from "./contracts/events.ts";
@@ -15,9 +15,9 @@ import { toolDecision } from "./governance/policy/resolve.ts";
 import type { Message, ToolDefinition } from "./contracts/loop.ts";
 import type { ControlResult, ToolControls } from "./contracts/session.ts";
 import type { FunctionExecutor, ToolAvailability, TurnPhase } from "./contracts/tools.ts";
-import { READ_TOOL_RESULT, createToolCatalog, readToolResultDefinition } from "./capabilities/tools/catalog.ts";
-import { CallbackLost, TOOL_LIMITS, readResult, runFunction } from "./capabilities/tools/functions.ts";
-import { findInvocation, invocationId, turnInvocations } from "./capabilities/tools/invocations.ts";
+import { READ_TOOL_RESULT, createToolCatalog, readToolResultDefinition } from "./capabilities/tools/runtime/catalog.ts";
+import { CallbackLost, TOOL_LIMITS, readResult, runFunction } from "./capabilities/tools/runtime/functions.ts";
+import { findInvocation, invocationId, turnInvocations } from "./capabilities/tools/runtime/invocations.ts";
 import { schemaProblem } from "./util/schema.ts";
 
 function fanout<T>() {
@@ -183,7 +183,10 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       let draftId: string | undefined;
       try {
       const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools, takenItemIds, ...(fixedToolCount === undefined ? {} : { fixedToolCount }) },
-        started: callId => phase(turn.turnId, "model", callId),
+        started: callId => {
+          phase(turn.turnId, "model", callId);
+          try { options.observeModelCall?.(turn.channelId, turn.turnId, callId); } catch { /* best-effort observation */ }
+        },
         scripted: binding.scripted, store, attempt: binding.create, signal, settings: binding.settings,
         delta: ({ messageId, text }) => { draftId = messageId; emit({ channel: turn.channelId,
           event: { type: "text_delta", turnId: String(turn.turnId), messageId, text } }); },

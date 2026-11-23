@@ -1,4 +1,4 @@
-import type { ExecuteTool, Message } from "../contracts/loop.ts";
+import type { ExecuteTurnTool, Message } from "../contracts/loop.ts";
 import type { TurnContext } from "../contracts/context.ts";
 
 /** Run a live turn to its next durable resting point: completed, or
@@ -6,7 +6,7 @@ import type { TurnContext } from "../contracts/context.ts";
 export async function runTurn(
   context: TurnContext,
   infer: (signal?: AbortSignal) => Promise<Extract<Message, { role: "assistant" }>>,
-  executeTool: ExecuteTool,
+  executeTool: ExecuteTurnTool,
 ): Promise<"completed" | "suspended"> {
   const signal = context.signal;
   while (true) {

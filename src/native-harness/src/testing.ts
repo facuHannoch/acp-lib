@@ -14,14 +14,14 @@ export { loadScenario, parseScenario } from "./capabilities/model/scenario-file.
 import { bindModelAttempt } from "./capabilities/model/attempt.ts";
 import { openRouterAttempt } from "./capabilities/model/openrouter-stream.ts";
 import { openRouter } from "./capabilities/model/openrouter.ts";
-import { scenarioDefinitions } from "./capabilities/tools/scenario.ts";
-import { echoDefinition, executeEcho } from "./capabilities/tools/echo.ts";
-import { createHoldTool, createRecordTool, holdDefinition, recordDefinition } from "./capabilities/tools/record.ts";
+import { notifyChannelDefinition } from "./capabilities/tools/builtin/notify-channel.ts";
+import { echoDefinition, executeEcho } from "./capabilities/tools/testing/echo.ts";
+import { createHoldTool, createRecordTool, holdDefinition, recordDefinition } from "./capabilities/tools/testing/record.ts";
 import { createMemoryStorageAdapter } from "./state/storage/memory.ts";
 import { createSqliteStorageAdapter } from "./state/storage/sqlite.ts";
 import { validateSessionPayload } from "./state/storage/archive.ts";
 import { createProtocolServer, SessionOpenError } from "./interfaces/protocol/server.ts";
-import { parseCatalog } from "./capabilities/tools/catalog.ts";
+import { parseCatalog } from "./capabilities/tools/runtime/catalog.ts";
 import { HarnessClient, createInProcessTransport } from "./client.ts";
 import { chooseManagedConfig, managedSessionPaths } from "./runtime/config/paths.ts";
 import { resolveCredential } from "./runtime/config/managed.ts";
@@ -101,7 +101,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const credential = config.model.protocol === "openrouter" ? resolveCredential(config.model, options.environment ?? process.env) : undefined;
     const compatibilityKey = script ? scriptedCompatibilityKey(script.modelDigest, config.system)
       : createHash("sha256").update(JSON.stringify([config.system, config.model.protocol === "openrouter" && config.model.model,
-        scenarioDefinitions.map(tool => tool.name)])).digest("hex");
+        [...BUILTINS, notifyChannelDefinition].map(tool => tool.name)])).digest("hex");
     if (mode === "create" && paths) mkdirSync(paths.directory, { recursive: true });
     const opened = adapter.open({ mode, identity: { sessionId, compatibilityKey }, config, requiredScriptDigest: script?.modelDigest });
     if (!opened.ok) {

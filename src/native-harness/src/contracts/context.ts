@@ -1,4 +1,4 @@
-import type { Message, ToolCall, ExecuteTool, ToolDefinition } from "./loop.ts";
+import type { Message, ToolCall, ExecuteTurnTool, ToolDefinition } from "./loop.ts";
 import type { LoopEvent } from "./events.ts";
 import type { StorageResult, StoredTurn, TimelineEntry } from "./storage.ts";
 
@@ -46,6 +46,8 @@ export interface InferenceStorageReads {
 export interface ContextCapture {
   context: InferenceContext;
   estimatedInputBytes: number;
+  /** Sequence numbers of selected and trimmed candidates from the bounded read. */
+  records: { included: number[]; trimmed: number[] };
   omitted: { active: number; local: number; shared: number };
 }
 
@@ -95,7 +97,7 @@ export interface TurnContext {
    * invokes before publishing started to prevent reentrant cancellation, and
    * returns a paired skipped result for denial or closed approval. A test
    * barrier resolves before the last cancellation check. */
-  dispatchTool(call: ToolCall, execute: ExecuteTool): Promise<{ content: string; dispatched: boolean;
+  dispatchTool(call: ToolCall, execute: ExecuteTurnTool): Promise<{ content: string; dispatched: boolean;
     /** Decision 0021: recorded with the paired result of a dispatched call. */
     outcome?: import("./tools.ts").ToolOutcome }>;
   /** Take pending inbox items (messages and notices) into this turn. */

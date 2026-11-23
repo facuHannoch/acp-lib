@@ -1,4 +1,4 @@
-import type { ExecuteTool, ToolDefinition } from "../../contracts/loop.ts";
+import type { ExecuteTool, ToolDefinition } from "../../../contracts/loop.ts";
 
 export const currentTimeDefinition: ToolDefinition = {
   name: "current_time",

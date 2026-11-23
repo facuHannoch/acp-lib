@@ -1,7 +1,7 @@
 import type { RpcCallbackCancel, RpcCallbackRequest, RpcCallbackResponse } from "../../contracts/protocol.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import type { FunctionExecutor, FunctionResult, ResultPage } from "../../contracts/tools.ts";
-import { CallbackFailure, CallbackLost } from "../../capabilities/tools/functions.ts";
+import { CallbackFailure, CallbackLost } from "../../capabilities/tools/runtime/functions.ts";
 import { MAX_FRAME_BYTES } from "./framing.ts";
 
 /** A refused tool request, with a stable protocol code. */

@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync } from "node:fs";
-import type { ExecuteTool, ToolDefinition } from "../../contracts/loop.ts";
+import type { ExecuteTool, ToolDefinition } from "../../../contracts/loop.ts";
 
 /** Offline scenarios only: a tool with an effect outside the session, so a test
  * can count how many times a call really ran across process restarts. */

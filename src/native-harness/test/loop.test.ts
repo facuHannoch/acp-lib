@@ -2,9 +2,12 @@ import { expect, test } from "bun:test";
 import type { Message, Model } from "../src/contracts/loop.ts";
 import { runTurn } from "../src/kernel/loop.ts";
 import { openRouter } from "../src/capabilities/model/openrouter.ts";
-import type { ExecuteTool, ToolCall } from "../src/contracts/loop.ts";
+import type { ExecuteTurnTool, ToolCall } from "../src/contracts/loop.ts";
 
-const dispatchTool = async (call: ToolCall, execute: ExecuteTool) => ({ content: await execute(call), dispatched: true });
+const dispatchTool = async (call: ToolCall, execute: ExecuteTurnTool) => {
+  const result = await execute(call);
+  return { ...(typeof result === "string" ? { content: result } : result), dispatched: true };
+};
 
 test("continues through multiple tools and retains history for the next turn", async () => {
   const messages: Message[] = [{ role: "system", content: "Test" }];

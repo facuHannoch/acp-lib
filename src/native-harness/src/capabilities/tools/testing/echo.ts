@@ -1,4 +1,4 @@
-import type { ExecuteTool, ToolDefinition } from "../../contracts/loop.ts";
+import type { ExecuteTool, ToolDefinition } from "../../../contracts/loop.ts";
 
 /** Test setup registers this explicitly; normal agent startup never does. */
 export const echoDefinition: ToolDefinition = {

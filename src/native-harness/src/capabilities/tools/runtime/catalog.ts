@@ -1,5 +1,5 @@
-import type { ToolDefinition } from "../../contracts/loop.ts";
-import type { ToolAvailability, ToolCatalogInput, ToolRegistration } from "../../contracts/tools.ts";
+import type { ToolDefinition } from "../../../contracts/loop.ts";
+import type { ToolAvailability, ToolCatalogInput, ToolRegistration } from "../../../contracts/tools.ts";
 
 /** A catalog the open must refuse, or a runtime operation on the wrong entry. */
 export class CatalogError extends Error {

@@ -4,6 +4,7 @@ import { serveInspector } from "../inspector/server.ts";
 import { createChannelHandler, serveLocal } from "../protocol/local.ts";
 import { createChannelOutputs, publishChannelEvent } from "../protocol/output.ts";
 import { serveWebChat } from "../web-chat/server.ts";
+import { loadInstructions } from "../../capabilities/context/load-instructions.ts";
 import { openDevelopment } from "./development.ts";
 import { bindLocalSocket, bindWebPort } from "./listeners.ts";
 import { homedir } from "node:os";
@@ -12,7 +13,7 @@ import { existsSync } from "node:fs";
 import { createSqliteStorageAdapter } from "../../state/storage/sqlite.ts";
 import { chooseManagedConfig, managedSessionPaths } from "../../runtime/config/paths.ts";
 
-export interface StartOptions { database?: string; sessionId?: string; create?: boolean; resume?: boolean; script?: string; instructions?: string }
+export interface StartOptions { database?: string; sessionId?: string; create?: boolean; resume?: boolean; script?: string; instructions?: string; debug?: boolean; debugTools?: boolean }
 
 export async function start(options: StartOptions = {}) {
   if (options.database !== undefined && options.sessionId !== undefined)
@@ -25,9 +26,7 @@ export async function start(options: StartOptions = {}) {
   if (!create && !existsSync(database)) throw new Error(`No session database at ${database}. Pass --create to create it.`);
 
   const instructions = options.instructions === undefined ? undefined : await readFile(options.instructions, "utf8");
-  const systemPrompt = instructions ?? await readFile(
-    new URL(options.script ? "./dashboard-demo.md" : "./instructions.md", import.meta.url), "utf8",
-  );
+  const systemPrompt = instructions ?? loadInstructions(options.script ? "agent-demo" : "agent");
   let managedConfig;
   if (options.script) managedConfig = { version: 1 as const, system: systemPrompt,
     model: { protocol: "scripted" as const, script: resolve(options.script) }, defaultPolicy: "__legacy_allow",
@@ -50,6 +49,8 @@ export async function start(options: StartOptions = {}) {
   if (config.managedDirectory) await mkdir(config.managedDirectory, { recursive: true, mode: 0o700 });
   if (managed && create) await mkdir(managed.directory, { recursive: true, mode: 0o700 });
   const development = await openDevelopment({ systemPrompt, database, sessionId, create, script, managedConfig, instructions,
+    debugTools: options.debug || options.debugTools,
+    debugInstructions: options.debug && instructions === undefined ? loadInstructions("agent-demo") : undefined,
     provider: script || managedConfig ? undefined : { apiKey: config.apiKey, model: config.model } });
   const { session, inspection, local } = development;
   const outputs = createChannelOutputs();

@@ -192,3 +192,27 @@ test("development instruction overrides replace saved and sidecar text without o
     expect(seen[1]).toEqual(seen[0]);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("debug mode sends the same composed system message shown in Live Context", async () => {
+  const { loadInstructions } = await import("../src/capabilities/context/load-instructions.ts");
+  const debugInstructions = loadInstructions("agent-demo");
+  let sent: unknown;
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (_url, init) => {
+    sent = JSON.parse(init!.body as string).messages[0];
+    return new Response("Offline test stops after request capture", { status: 400 });
+  }) as typeof fetch);
+  try {
+    const development = await openDevelopment({
+      systemPrompt: "usual instructions", debugInstructions, debugTools: true,
+      provider: { apiKey: "unused-test-key", model: "offline/test" },
+    });
+    try {
+      development.session.start();
+      await expect(ask(development.session, { channelId: "a", participantId: "alice", text: "hello" })).rejects.toThrow();
+      const preview = development.inspection.liveContext().base[0];
+      expect(preview?.content).toContain(debugInstructions.trimEnd());
+      expect(preview?.content).toContain(loadInstructions("harness").trimEnd());
+      expect(sent).toEqual(preview);
+    } finally { development.close(); }
+  } finally { fetchSpy.mockRestore(); }
+});

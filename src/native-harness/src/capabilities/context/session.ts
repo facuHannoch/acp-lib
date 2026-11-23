@@ -3,7 +3,7 @@ import { SESSION_INPUT_MAX_BYTES } from "../../contracts/input-limits.ts";
 import type { ToolDefinition } from "../../contracts/loop.ts";
 import type { TimelineEntry } from "../../contracts/storage.ts";
 import { buildContext } from "./build.ts";
-import { harnessInstructions } from "./instructions.ts";
+import { composeSystemPrompt } from "./load-instructions.ts";
 
 export const CONTEXT_LIMITS: ContextLimits = {
   maxInputBytes: SESSION_INPUT_MAX_BYTES, maxTakenTextBytes: SESSION_INPUT_MAX_BYTES, maxTakenItems: 16,
@@ -21,7 +21,7 @@ export function createSessionContext(storage: InferenceStorageReads, sessionId: 
   const budget = limits.contextTokens - limits.outputReserveTokens - limits.estimationMarginTokens;
   if (budget <= 0 || limits.maxInputBytes > limits.maxTakenTextBytes || limits.maxTakenItems < 1)
     throw new Error("Invalid context budget");
-  const instructions = [systemPrompt, harnessInstructions].filter(Boolean).join("\n\n");
+  const instructions = composeSystemPrompt(systemPrompt);
   return {
     build(turn: { channelId: string; turnId: number }, offerTools: (policies: readonly string[]) => Offer): ContextBuildResult {
       const overflow = { ok: false, code: "context_limit", message: "Required inference material exceeds the context budget" } as const;
@@ -69,10 +69,17 @@ export function createSessionContext(storage: InferenceStorageReads, sessionId: 
         representedItemIds: active.sort(order).flatMap(row => row.itemId === undefined ? [] : [row.itemId]), takenItemIds };
       // Diagnostics must not be able to mutate or prevent the provider request.
       if (capture) {
-        try { capture(structuredClone({ context: value, estimatedInputBytes: size(), omitted: {
-          active: optionalTurn.length + required.length - active.length, local: localHistory.length - local.length,
-          shared: sharedHistory.length - shared.length,
-        } })); } catch { /* best-effort observation */ }
+        try {
+          const included = [...active, ...local, ...shared].map(row => row.seq).sort((a, b) => a - b);
+          const kept = new Set(included);
+          const trimmed = [...optionalTurn, ...localHistory, ...sharedHistory].map(row => row.seq)
+            .filter(seq => !kept.has(seq)).sort((a, b) => a - b);
+          capture(structuredClone({ context: value, estimatedInputBytes: bytes({ messages: value.messages, tools: value.tools }),
+            records: { included, trimmed }, omitted: {
+              active: optionalTurn.length + required.length - active.length,
+              local: localHistory.length - local.length, shared: sharedHistory.length - shared.length,
+            } }));
+        } catch { /* best-effort observation */ }
       }
       return { ok: true, value };
     },

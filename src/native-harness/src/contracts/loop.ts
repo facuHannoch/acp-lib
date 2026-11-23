@@ -26,4 +26,6 @@ export type Model = (
 
 /** Executes only permitted tools; returns serialized successes or errors. Stop
  * aborts `signal`; a call already in flight may still have had its effect. */
-export type ExecuteTool = (call: ToolCall, signal?: AbortSignal) => Promise<string>;
+export interface ToolExecutionResult { content: string; outcome: import("./tools.ts").ToolOutcome }
+export type ExecuteTool<Result = string> = (call: ToolCall, signal?: AbortSignal) => Promise<Result>;
+export type ExecuteTurnTool = ExecuteTool<string | ToolExecutionResult>;

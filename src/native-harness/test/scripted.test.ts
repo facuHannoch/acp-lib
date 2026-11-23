@@ -1,4 +1,4 @@
-import { notifyChannelDefinition } from "../src/capabilities/tools/scenario.ts";
+import { notifyChannelDefinition } from "../src/capabilities/tools/builtin/notify-channel.ts";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createScriptedModel } from "../src/capabilities/model/scripted.ts";
@@ -6,7 +6,7 @@ import { bindModelAttempt } from "../src/capabilities/model/attempt.ts";
 import { scenarioAttempt } from "../src/capabilities/model/scenario-attempt.ts";
 import { loadScenario } from "../src/testing.ts";
 import type { ModelRequest } from "../src/contracts/model-execution.ts";
-import { echoDefinition, executeEcho } from "../src/capabilities/tools/echo.ts";
+import { echoDefinition, executeEcho } from "../src/capabilities/tools/testing/echo.ts";
 import { createSession } from "../src/index.ts";
 import { ask } from "./helpers/session.ts";
 import type { Message } from "../src/contracts/loop.ts";
