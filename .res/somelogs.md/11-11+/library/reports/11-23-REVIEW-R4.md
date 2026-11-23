@@ -108,3 +108,44 @@ The test calls `checkpointing.request()` just before closing the first agent, so
 **Fix for the test (cod2a):** for the first-use variant, don't compare with the early checkpoint's id. Assert that the recovery checkpoint id is one of the stored checkpoints and that its `coveredSequence` is at least the early one's; or wait for the queued checkpoint to complete before closing the first agent (so there is only one candidate); or drop the `request()` for that variant. The eager variant needs no change. Also consider asserting `recoveredThroughSequence` for the first-use variant, which it currently skips.
 
 **Process lesson (mine):** run each *new* test of a commit about 20 times in isolation, and the touched test files repeatedly, as well as the full suite. A test that depends on a background task racing the code under test passes on a quiet full run and fails under other timing. I'll do this from now on.
+
+# Part 4 — the R4 follow-up (`ec298c5..cb6f959`)
+
+`491cf66` (code and tests) and `cb6f959` (report). I used a clean `git archive cb6f959` (`/tmp/clad2a-r4g`, `TMPDIR` on `/dev/shm`) and didn't check out the branch.
+
+**Verdict: every note is addressed and the changed tests are stable in isolation. One new finding: a test from step 1 now fails occasionally when its whole file runs, which was not the case before this follow-up.**
+
+## My notes
+
+| Note | Result |
+| --- | --- |
+| **A second equivalent start loses its observer** | **Fixed.** `ConnectionAttempt` now keeps the progress it has reported and a set of observers; a joining caller gets the earlier stages replayed, then the rest live. A throwing observer is caught and logged per observer. Test `an equivalent start replays prior progress…`: the joiner is attached from inside the first caller's `initialized` event and sees exactly the same two stages (`initialized`, `internal_session_acquired`), and `second` is the same promise as `first`. An observer joining a cancelled attempt gets nothing further |
+| **A superseding start tears down a healthy live connection** | **Documented as intentional**, with a regression: `superseding a fresh session on the live transport stops it before reconnecting` (hung `session/new` on a live connection, then `start()`): the old child is dead, there were exactly two launches, the replacement loads the **original recorded session** (`resumed: true`) and the conversation prompts. This is in the test and the report, but **not in the changelog**, which only says a superseding attempt rejects with `ConnectionCancelledError`; add a line there |
+| **Lazy conversations and authentication** | **Documented.** The changelog now says a failed session creation on first use closes the connection and reports the provider error, and to use eager startup when the connection must stay available for authentication. (I had also asked whether the flag stays on after first use; the report doesn't say. The documented behaviour is the safe reading.) |
+| **First-use recovery outcome only visible later** | **Documented** in the changelog (recovery progress, `provider_reconnected`, persisted records) and **tested**: the first-use variant now subscribes before the prompt and asserts one `provider_reconnected` with `via: "recovered"` |
+| **Handoff-grace test margins** | **Widened.** Source grace 2,000 → **8,000 ms**, target grace stays 30 ms, bound `< 1000` → **`< 4000` ms** on `performance.now()`, test timeout 15 s. It still discriminates: a target that wrongly used the source's grace would take ≥ 8 s |
+| **Recovery test race (core-p's gate)** | **Fixed in the test only.** The first-use variant now takes the checkpoint id from the recovery's own `completed` progress event and checks the stored checkpoint belongs to the conversation, covers at least the early checkpoint's sequence, and that the provider attachment records `previousInternalSessionId` and `recoveredThroughSequence` equal to the latest sequence. The eager variant keeps its exact assertion. No source change |
+| Changelog line | Present (`CHANGELOG-controller-interface.md`) |
+
+## Every new or changed test, 20 isolated runs each
+
+| Test (file) | Failures |
+| --- | --- |
+| `recovery.test.ts` > "… (first use)" (`-t`) | **0 / 20** |
+| `recovery.test.ts` > "… (on open)" (`-t`) | **0 / 20** |
+| `recovery.test.ts`, the whole file | **0 / 20** |
+| `acp-connect-cancellation.test.ts` > "an equivalent start replays…" | **0 / 20** |
+| `acp-connect-cancellation.test.ts` > "superseding a fresh session…" | **0 / 20** |
+| `operation-lifecycle.test.ts` > "a stalled handoff target…" | **0 / 20** |
+
+## New finding: a step 1 test is flaky in a whole-file run
+
+I also ran the whole `acp-connect-cancellation.test.ts` file 20 times: **1 failure in 20** (`stop cancels ACP setMode and reaps its process`), then **2 in 30** on a second batch. The failure is the same each time (test line 47): `await rejected` is `undefined` where a `ConnectionCancelledError` is expected, after about 1.7 s.
+
+| Version, same method | Whole-file failures |
+| --- | --- |
+| `2f83270` (step 1) | **0 / 30** |
+| `ec298c5` (steps 2–3) | **0 / 30** |
+| `cb6f959` (this follow-up) | **3 / 50** |
+
+The `setMode` test alone passed 40 / 40 on `cb6f959` and on `2f83270`. With the rejection printed and the `-t "stop cancels ACP"` cases run in six parallel loops (72 runs) I could not reproduce it, so the trigger seems to depend on the earlier tests in the file. The only source files changed between `ec298c5` and `cb6f959` are `connection-attempt.ts`, `controller-connection.ts` and `controller.ts` (the observer and progress change), so I suspect that change: `setMode` now routes through the same attempt with its `ConnectionAttempt<ControllerStartEvent>`, and a stop that arrives at the right moment settles the promise with `undefined` instead of rejecting. I did not find the exact cause. **Ask cod2a to look at it** before the gate counts it as green; `controller.setMode`'s settle path under `stop()` is where I would start. It is the kind of flake a single clean full run hides (core-p's 1,616 run was green).
