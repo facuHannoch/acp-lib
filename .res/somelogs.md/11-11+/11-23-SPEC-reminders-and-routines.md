@@ -62,14 +62,42 @@ through the library.
 - **Lists with the harness stopped** show the cached confirmed reminders plus pending intents, marked pending.
 - A cancel racing a firing: the harness decides and reports which happened.
 
+## Routines
+
+A routine is a reminder whose schedule produces many due times (added 2026-11-23). Ownership, storage, the notice
+path, the wake contract and the intents don't change; it adds:
+
+- **A schedule instead of `dueAt`:** `{ at }` (one-off), `{ every, startAt? }` (an interval), or
+  `{ cron, timezone }` (calendar rules). Local times are computed in the routine's timezone, so "9:00 every day"
+  stays 9:00 across daylight-saving changes.
+- **An id per occurrence:** the routine's id plus the scheduled time. It deduplicates a retried wake, or the
+  harness's timer racing acp-client's wake, per occurrence.
+- **The next occurrence** is computed by the harness after each firing; the session's next due time, and so the
+  wake index, is the earliest occurrence across all reminders and routines.
+- **Missed runs** (acp-client closed or the harness stopped through several occurrences): **coalesce** by default:
+  run once at the next open, telling the agent how many were missed and when the last was scheduled. Also `skip`
+  (wait for the next) and `each` (rarely right: a burst of turns).
+- **Overlap:** an occurrence due while the previous one is still waiting or running is **skipped** by default
+  (recorded as skipped); `queue` is the alternative. A routine never piles up behind itself.
+- **End and control:** optional `until` or `count`; pause and resume without deleting; edit the schedule or the
+  text. While the harness is stopped, an edit, a pause or a resume is a durable intent ("update routine"), like
+  create and cancel.
+- **Where it runs:** each run is a turn on its channel, so runs add to that channel's context (a daily summary can
+  say "since yesterday…"). For a noisy routine the consumer gives it a dedicated channel (its own conversation),
+  keeping the user's chat clean. Documented, no mechanism.
+- **Unattended runs:** the harness's unattended-turn guard (harness v1, not built yet) caps turns with no human
+  input; the routine's policy is recorded at creation; costs are metered as usual and limits stay the consumer's
+  (the spending cap is a TODO).
+
 ## First version
 
 1. **Harness reminders while running:** one-off reminders owned by channels, the agent's tools (create, cancel,
    list), the requests, firing as notices, past-due reminders at open. Useful with no waking at all.
 2. **acp-client wakes and controls:** the wake index and timer, the next-due event, the two intent kinds on R1's
    repository, `conversation.reminders` and `agent.reminders`, idle stop with reminders.
-3. **Later:** repeating routines (an interval, daily, cron-style); waking a little early to hide the cold start, with
-   the harness holding the turn until it's due.
+3. **Routines** (Routines, above): schedules, occurrence ids, next-occurrence computation, missed-run and overlap
+   rules, pause, resume and edit, also as intents.
+4. **Later:** waking a little early to hide the cold start, with the harness holding the turn until it's due.
 
 Depends on: the harness's external notices (firing reuses the inbox notice path) and integration brief R1 (the
 intents repository).
@@ -88,5 +116,6 @@ intents repository).
 
 ## Open
 
-- [ ] Names: reminders vs. routines in the public API; whether one-off reminders and routines share one object.
+- [ ] Names: reminders vs. routines in the public API (one object with a schedule is assumed here).
+- [ ] Defaults to confirm: coalesce for missed runs, skip for overlap.
 - [ ] Whether a reminder created by the consumer runs under the channel's policy or a policy the consumer names.
