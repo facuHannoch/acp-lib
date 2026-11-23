@@ -20,6 +20,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { randomUUID } from "node:crypto";
 
 const file = process.env.LIFECYCLE_STATE;
+if (process.env.LIFECYCLE_IGNORE_SIGTERM === "1") process.on("SIGTERM", () => {});
 const sessions: Record<string, string[]> = file && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
 
 const save = () => {
@@ -56,7 +57,10 @@ function handle(m: any): void {
     pending = null;
     return;
   }
-  if (process.env.LIFECYCLE_HANG_CONTROL === m.method) return;
+  if (process.env.LIFECYCLE_HANG_CONTROL === m.method) {
+    if (process.env.LIFECYCLE_REPORT_HANG === "1") console.error(`hang:${m.method}:${process.pid}`);
+    return;
+  }
   const holdFile = process.env.LIFECYCLE_HOLD_FILE;
   if (holdFile && process.env.LIFECYCLE_HOLD_CONTROL === m.method && !existsSync(holdFile)) {
     setTimeout(() => handle(m), 5);

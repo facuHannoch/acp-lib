@@ -49,6 +49,7 @@ export type {
   CreateAgentConversationConfig,
   OpenAgentConversationConfig,
   OpenOwnedAgentConversationResult,
+  ProviderStart,
   AdoptProviderSessionConfig,
   ClearTranscriptOptions,
   ClearTranscriptResult,
@@ -726,7 +727,7 @@ export type {
 } from "./metering/catalog/index.ts";
 export type { UsageNormalization } from "./metering/usage.ts";
 
-export { ProcessCrashError, NotConnectedError, TimeoutError, UnsupportedError } from "./errors.ts";
+export { ConnectionCancelledError, ProcessCrashError, NotConnectedError, TimeoutError, UnsupportedError } from "./errors.ts";
 export { restartConversation } from "./conversation-controller/index.ts";
 export type {
   BackendCapabilities,

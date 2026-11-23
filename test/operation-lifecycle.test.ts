@@ -502,19 +502,19 @@ test("a prompt that fails before reaching the provider holds nothing", async () 
 
 test("a stalled handoff target uses its own adapter cancellation grace", async () => {
   const value = await conversation({
-    adapter: { command, cancelGraceMs: 2000 },
+    adapter: { command, cancelGraceMs: 8000 },
     operationLifecycle: { internalInference: { firstOutputMs: 30, nextOutputMs: 30 } },
   });
-  const start = Date.now();
+  const start = performance.now();
   const error = await value.handoff({
     continuation: { kind: "none" },
     target: { adapterId: "other", adapter: { command, cancelGraceMs: 30 } },
     targetPrompt: "[lifecycle:silent]",
   }).catch((error) => error);
   expect(error.cause?.code).toBe("stalled");
-  expect(Date.now() - start).toBeLessThan(1000);
+  expect(performance.now() - start).toBeLessThan(4000);
   expect((await value.prompt("source still works")).status).toBe("completed");
-});
+}, 15_000);
 
 test("an unanswered session/list during a running turn neither fails nor stops the turn", async () => {
   const directory = await tempDir("acp-lifecycle-");

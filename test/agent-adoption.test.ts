@@ -61,6 +61,7 @@ async function setup(options: {
   noLoad?: boolean;
   failRecap?: boolean;
   noList?: boolean;
+  lazy?: boolean;
   pageSize?: number;
   identity?: boolean;
   /** Checkpointing without a running schedule (the milestone is far away). */
@@ -86,7 +87,7 @@ async function setup(options: {
     persistence: { kind: "sqlite", path: options.path ?? join(directory, "agent.sqlite") },
     adapters: { replay: { command: ["bun", REPLAY_AGENT] } },
     defaultAdapterId: "replay",
-    conversationDefaults: { metering: { pricing: false } },
+    conversationDefaults: { metering: { pricing: false }, ...(options.lazy ? { providerStart: "on_first_use" as const } : {}) },
     ...(options.conversationPersistence ? { conversationPersistence: options.conversationPersistence } : {}),
     // Checkpoint-backed identity needs checkpointing enabled; the milestone is far away so none runs here.
     ...(options.identity
@@ -106,10 +107,11 @@ const messages = (list: readonly ConversationRecord[]) =>
   list.filter((record): record is Extract<ConversationRecord, { kind: "message" }> => record.kind === "message");
 
 describe("adopting a provider session", () => {
-  test("creates a conversation around the session and attaches it", async () => {
-    const { agent } = await setup();
+  test("adoption attaches eagerly even with lazy defaults", async () => {
+    const { agent } = await setup({ lazy: true });
     const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1" } });
     expect(conversation.internalSessionId).toBe("ses-1");
+    expect(conversation.connection.isConnected).toBe(true);
     const summary = await agent.conversations.get(conversation.id);
     expect(summary).toMatchObject({ adopted: true, adoptProviderSessionId: "ses-1" });
     const active = await agent.persistence.providerSessions.active(conversation.id);

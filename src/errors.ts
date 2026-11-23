@@ -1,5 +1,15 @@
 // Library error types. Kept minimal — surface protocol facts, don't over-classify.
 
+/** An ACP connection attempt was stopped or superseded. */
+export class ConnectionCancelledError extends Error {
+  readonly code = "connection_cancelled";
+
+  constructor(message = "ACP connection was cancelled") {
+    super(message);
+    this.name = "ConnectionCancelledError";
+  }
+}
+
 /** The agent process exited unexpectedly (not via stop()). */
 export class ProcessCrashError extends Error {
   constructor(

@@ -2,6 +2,8 @@
 
 **Outcome.** The authorized single run verified live delegation and delivery to the original giving conversation. The forwarded-permission and redirect gate remains open. The worker finished before a forwarded permission reached the runner. Its result went to Alice, so I stopped the run with SIGTERM. Bob's prompt was never sent. There was no retry.
 
+At the time, `INITIAL_AGENT_MODE` was unset. The installed bridge selected its default `agent` mode (Auto review), with on-request approvals and a workspace-write sandbox. The worker wrote inside its own working directory, where the bridge can permit the write without asking. The bridge applies its own mode to the turn, so the runner's `CODEX_CONFIG` sandbox setting did not select read-only.
+
 ## Configuration and counts
 
 Ran the hardened runner at `f73fde1` on `orchestrator` with the approved disposable Codex home. The native model was `deepseek/deepseek-v4.1-flash` through OpenRouter. The worker was configured for `gpt-6.1-terra` through the installed Codex ACP bridge. The runner used an eight-minute supervising limit and ran for 82 seconds. It recorded three OpenRouter requests and one ACP worker submission. The Codex CLI did not report a count of its internal model calls. The runner issued one native prompt. Alice's subsequent notice triggered a native turn.

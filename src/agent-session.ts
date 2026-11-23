@@ -11,11 +11,14 @@
 
 import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
 import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
-import { UnsupportedError } from "./errors.ts";
+import { ConnectionCancelledError, UnsupportedError } from "./errors.ts";
+import type { AgentSessionConfig, AgentSessionOpenConfig } from "./agent-session-config.ts";
+import { withStartupCancellation } from "./conversation-startup.ts";
+export type { AgentSessionConfig, AgentSessionOpenConfig } from "./agent-session-config.ts";
 import { SubscriptionHub } from "./observation/subscription-hub.ts";
 import { validatePermissionConsumerConfig } from "./permissions/consumer-config.ts";
 import { ConversationPermissions } from "./permissions/conversation.ts";
-import { ownPermissions, type ConversationPermissionConfig } from "./permissions/policy.ts";
+import { ownPermissions } from "./permissions/policy.ts";
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor, type SupervisedProvider } from "./operations/supervisor.ts";
 import type { HarnessController, AgentControllerConfig, ControllerStartEvent, AgentMode } from "./controller.ts";
@@ -23,7 +26,7 @@ import { normalizeHandoffContinuation, ownHandoffOptions } from "./handoff-optio
 import {
   acpCapabilitiesOf, availableCommandsOf, createController, harnessControllerOf, isDegradedController, listAgentSessions,
   reloadProviderSession, requireFreshContext, requireMember, stallLimitsFor,
-  type ConversationCapabilities, type ConversationController, type NativeControllerBinding,
+  type ConversationCapabilities, type ConversationController,
 } from "./conversation-controller/index.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import { join } from "node:path";
@@ -95,7 +98,6 @@ import type {
 } from "./types.ts";
 import {
   resolveDirectPersistence,
-  type AgentSessionPersistenceOptions,
   type ResolvedAgentSessionPersistence,
 } from "./persistence/config.ts";
 import { resolveSessionLogPaths } from "./persistence/paths.ts";
@@ -323,118 +325,6 @@ export interface AgentSessionOpenResult {
   readonly repairs: readonly PersistenceRepair[];
 }
 
-export interface AgentSessionConfig extends ConversationPermissionConfig {
-  /** The resolved adapter this conversation talks to. */
-  adapter: Adapter;
-  /** Stable adapter id for the catalog/display (e.g. "codex"). */
-  adapterId: string;
-  /** Talk over ACP ("normal") or scrape a pty ("degraded"). Default "normal". */
-  mode?: AgentMode;
-  /** Runtime-specific launcher shared by normal ACP and degraded PTY modes. */
-  launcher?: AgentControllerConfig["launcher"];
-  /**
-   * Binds this conversation to a channel of a shared native harness instead of an external harness
-   * process. Opt-in: absent for every ACP conversation. `adapter` is then display only.
-   */
-  native?: NativeControllerBinding;
-  /** @internal Resolves native routes in the owning Agent. */
-  isNativeAdapter?: (adapterId: string) => boolean;
-  /** @deprecated Use launcher. */
-  execPrefix?: string[];
-  /** @deprecated Use launcher and its exact spawnEnv. */
-  env?: Record<string, string>;
-  cwd?: string;
-  /** Additional absolute directories declared to the provider. */
-  additionalDirectories?: string[];
-  /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
-  mcpServers?: schema.McpServer[];
-  /**
-   * How a prompt sent while a turn is running waits when the prompt does not say. `queue` runs it after
-   * the turn ends; `steer` delivers it at the next tool boundary. Default `steer`.
-   */
-  busyDelivery?: PromptDelivery;
-  clientInfo?: { name: string; title?: string; version?: string };
-  /** What we let the agent do through us (terminals, filesystem). All on by default. */
-  clientCapabilities?: AgentControllerConfig["clientCapabilities"];
-  /** Client-side ACP implementations; their presence determines advertisement. */
-  clientHandlers?: AgentControllerConfig["clientHandlers"];
-  logger?: Logger;
-  /** Raw protocol traffic for debugging — see `AcpClientConfig.wire`. */
-  wire?: (entry: WireEntry) => void;
-  /** Optional catalog. When present, the session records itself here. */
-  sessions?: SessionManager;
-  /** New v2 persistence. Direct sessions remain persistence-free when omitted. */
-  persistence?: false | AgentSessionPersistenceOptions;
-  /** Stable creation transaction/incarnation ID; required by direct v2 persistence. */
-  creationId?: string;
-  /**
-   * Absolute path to an append-only transcript file. This selects history storage only;
-   * file existence never selects the provider thread. Omitted means no transcript.
-   */
-  transcriptPath?: string;
-  /**
-   * Directory for `<encoded-agentSessionId>.jsonl`. This selects history storage only;
-   * the directory is not a session catalog and is not scanned during creation.
-   */
-  transcriptDir?: string;
-  /**
-   * Also record activity (thinking, tool calls and their output, plans) as `t:"activity"`
-   * lines. Off by default — it makes transcripts larger, and `readTranscript()` ignores
-   * them either way; read them with `readTranscriptLines()`.
-   *
-   * Lines are SETTLED records, not raw deltas: the session folds the delta stream and
-   * writes checkpoints (announced → input → settled), typically 2–3 lines per tool call
-   * instead of one per notification. Fold them back with `foldRecords()`, last-wins on
-   * `recordId`. `true` selects the defaults below.
-   */
-  transcriptActivity?: boolean | TranscriptActivityConfig;
-  /** Stable logical identity. Minted if omitted; always available on the created object. */
-  agentSessionId?: string;
-  /** Provider-thread startup intent. Default `{ kind: "new" }`. */
-  providerSession?: ProviderSession;
-  /** Stale limits per operation kind (turns, internal inference, recap). */
-  operationLifecycle?: OperationLifecycleConfig;
-  /**
-   * Token/cost metering policy. Optional: omitting it selects best-effort enforcement
-   * with the pinned models.dev catalog and no restored state. Metering is not something a
-   * consumer must turn on merely to see protocol facts.
-   */
-  metering?: MeteringConfig;
-  /**
-   * @deprecated Use `providerSession: { kind: "load", internalSessionId, onFailure }`.
-   * Retains the historical fallback-to-new behavior for compatibility.
-   */
-  internalSessionId?: string;
-  title?: string;
-  /** Stable conversation identity when this runtime is owned by an Agent. */
-  agentConversationId?: AgentConversationId;
-  /** Stable owning agent identity. Omitted for detached compatibility conversations. */
-  ownerAgentSessionId?: AgentSessionId;
-  /** Other sides of this conversation. The owning agent is implied. */
-  participants?: readonly ParticipantRef[];
-  /** @internal Installed by AgentConversationManager. */
-  ownerLifecycle?: AgentConversationOwnerLifecycle;
-}
-
-/** Direct restoration input. Phase 5A intentionally supports the safe recorded-thread path. */
-export interface AgentSessionOpenConfig extends Omit<
-  AgentSessionConfig,
-  | "agentSessionId"
-  | "creationId"
-  | "providerSession"
-  | "internalSessionId"
-  | "mode"
-  | "persistence"
-  | "sessions"
-> {
-  /** Required for directory/default path resolution; exact-file inference is a later slice. */
-  agentSessionId: string;
-  persistence: AgentSessionPersistenceOptions;
-  /** Optional consumer copy must exactly match transcript authority in this first slice. */
-  checkpoint?: AgentSessionCheckpoint;
-  continuation?: OpenContinuationOptions;
-}
-
 interface AgentSessionOpenBootstrap {
   readonly transcript: PersistenceStateRuntime;
   readonly transcriptPath: string;
@@ -543,6 +433,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private managedInitializationReported = false;
   private readonly operationLifecycle: OperationLifecycleConfig;
   private reconnecting = false;
+  private deferredProviderStart: boolean;
+  private connecting = 0;
+  private handoffTarget?: ConversationController;
   private detachControllerConnection: (() => void) | null = null;
   private activeSupervisor: OperationSupervisor | null = null;
   /**
@@ -658,6 +551,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this._cwd = config.cwd;
     this._title = config.title;
     this._internalSessionId = requestedInternalSessionId ?? null;
+    this.deferredProviderStart = config.deferProviderStart === true && this.ownerAgentSessionId !== undefined &&
+      !config.native && this._mode === "normal" && this.persistence === false;
     this.meteringConfig = Object.freeze({ ...(config.metering ?? {}) });
     this.metering = new MeteringEngine({
       agentSessionId: this.agentSessionId,
@@ -705,6 +600,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (providerSession.kind === "load") this.sessionLoadFailure = providerSession.onFailure ?? "error";
     this.controller = this.createController(config.adapter, config.adapterId, this._mode, {
       sessionId: requestedInternalSessionId,
+      requireStartupSession: this.deferredProviderStart,
       sessionLoadFailure: providerSession.kind === "load"
         ? providerSession.onFailure ?? "error"
         : undefined,
@@ -719,7 +615,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     adapter: Adapter,
     adapterId: string,
     mode: AgentMode,
-    startup: Pick<AgentControllerConfig, "sessionId" | "sessionLoadFailure" | "onSessionReplay"> = {},
+    startup: Pick<AgentControllerConfig, "sessionId" | "sessionLoadFailure" | "onSessionReplay" | "requireStartupSession"> = {},
   ): ConversationController {
     return createController({
       ...this.controllerDefaults,
@@ -879,7 +775,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     }
     const session = new AgentConversation(config);
     try {
-      await session.start();
+      await withStartupCancellation(config.signal, () => session.stop(), () => session.start());
       return session;
     } catch (error) {
       await session.stop().catch(() => {});
@@ -901,7 +797,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       throw error;
     }
     try {
-      await session.start();
+      await withStartupCancellation(config.signal, () => session.stop(), () => session.start());
       return session;
     } catch (error) {
       await session.stop().catch(() => undefined);
@@ -969,7 +865,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     session.v2Transcript = audit ? new AuditedPersistenceRuntime(primary, audit) : primary;
     session.managedAuditLog = audit?.identity ?? null;
     try {
-      const result = await session.controller.start((event) => session.reportManagedControllerProgress(event));
+      const result = await withStartupCancellation(config.signal, () => session.stop(), () => session.startController());
       if (!result.resumed || !result.sessionId) {
         throw new Error("adapter did not confirm loading the recorded internal session");
       }
@@ -1073,22 +969,24 @@ export class AgentConversation implements AgentClient, Bridgeable {
       session.managedAuditLog = audit?.identity ?? null;
 
       try {
-        const continuation = await session.acquireOpeningContinuation(checkpoint, strategies);
-        if (continuation.outcome.kind === "unavailable") {
-          throw new ContinuationUnavailableError(continuation);
-        }
-        const configuration = continuation.outcome.kind === "loaded"
-          ? await session.restoreOpeningConfiguration()
-          : session._configurationRestore;
-        session._configurationRestore = configuration;
-        session.emitStateIfChanged();
-        return Object.freeze({
-          session,
-          continuation,
-          recovery: structuredClone(session._recovery),
-          configuration: structuredClone(configuration),
-          promptability: session.promptability,
-          repairs: transcript.openingRepairs,
+        return await withStartupCancellation(config.signal, () => session.stop(), async () => {
+          const continuation = await session.acquireOpeningContinuation(checkpoint, strategies);
+          if (continuation.outcome.kind === "unavailable") {
+            throw new ContinuationUnavailableError(continuation);
+          }
+          const configuration = continuation.outcome.kind === "loaded"
+            ? await session.restoreOpeningConfiguration()
+            : session._configurationRestore;
+          session._configurationRestore = configuration;
+          session.emitStateIfChanged();
+          return Object.freeze({
+            session,
+            continuation,
+            recovery: structuredClone(session._recovery),
+            configuration: structuredClone(configuration),
+            promptability: session.promptability,
+            repairs: transcript.openingRepairs,
+          });
         });
       } catch (error) {
         await session.stop().catch(() => undefined);
@@ -1100,12 +998,37 @@ export class AgentConversation implements AgentClient, Bridgeable {
     }
   }
 
+  private async connectProvider<T>(connect: () => Promise<T>): Promise<T> {
+    this.assertConnectionOpen();
+    this.connecting++;
+    try {
+      const result = await connect();
+      this.assertConnectionOpen();
+      return result;
+    } finally {
+      this.connecting--;
+    }
+  }
+
+  private assertConnectionOpen(): void {
+    if (this.phase === "stopped") throw new ConnectionCancelledError();
+  }
+
+  private startController(fresh = false): Promise<ConnectResult> {
+    const progress = (event: ControllerStartEvent) => this.reportManagedControllerProgress(event);
+    return this.connectProvider(() => fresh ? this.controller.startFresh(progress) : this.controller.start(progress));
+  }
+
   private async start(): Promise<void> {
     if (this.persistence !== false) {
       await this.startPersistent();
       return;
     }
-    const result = await this.controller.start();
+    if (this.deferredProviderStart) {
+      if (this._internalSessionId) this.installProviderAttachment(this._internalSessionId, "recorded", false);
+      return;
+    }
+    const result = await this.startController();
     // A resumed thread's counters did not start at zero, so it needs restored state to
     // be attributable.
     const internalSessionId = result.sessionId || this._internalSessionId;
@@ -1138,7 +1061,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       this.v2Transcript = this.openBootstrap.transcript;
       this.v2TranscriptPath = this.openBootstrap.transcriptPath;
       this._recovery = this.v2Transcript.recovery;
-      const result = await this.controller.start((event) => this.reportManagedControllerProgress(event));
+      const result = await this.startController();
       if (!result.resumed || !result.sessionId) {
         throw new Error("adapter did not confirm loading the recorded internal session");
       }
@@ -1176,7 +1099,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     }
     if (!paths.transcriptPath || persistence.transcript === false) {
       try {
-        const result = await this.controller.start((event) => this.reportManagedControllerProgress(event));
+        const result = await this.startController();
         this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
         if (this.managedCreation) {
         const now = new Date().toISOString();
@@ -1247,7 +1170,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       header,
       writerLock: this.managedCreation?.transcriptLock,
       initializeCheckpoint: async () => {
-        const result = await this.controller.start((event) => this.reportManagedControllerProgress(event));
+        const result = await this.startController();
         this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
         if (this._internalSessionId) {
           this.installProviderAttachment(
@@ -1378,7 +1301,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           continue;
         }
         try {
-          const loaded = await this.controller.start((event) => this.reportManagedControllerProgress(event));
+          const loaded = await this.startController();
           if (!loaded.resumed || !loaded.sessionId) {
             throw new Error("adapter did not confirm loading the recorded internal session");
           }
@@ -1400,6 +1323,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             activeInternalSessionId: loaded.sessionId,
           });
         } catch (error) {
+          if (error instanceof ConnectionCancelledError) throw error;
           recordedThreadAvailability = "unavailable";
           attempts.push(Object.freeze({
             strategy: strategy.kind,
@@ -1460,7 +1384,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         reasonCode: "continuation_reconstruction",
       });
       try {
-        const created = await this.controller.startFresh((event) => this.reportManagedControllerProgress(event));
+        const created = await this.startController(true);
         if (!created.sessionId) throw new Error("harness returned no session id for reconstructed continuation");
         if (created.sessionId === checkpoint.internalSessionId && checkpoint.adapterId === this.adapterId) {
           throw new Error("harness did not create a replacement internal session");
@@ -1575,6 +1499,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         }).catch((persistenceError) => {
           this.log.warn("continuation_failure_transcript_failed", { error: String(persistenceError) });
         });
+        if (error instanceof ConnectionCancelledError) throw error;
         attempts.push(Object.freeze({
           strategy: strategy.kind,
           status: "failed",
@@ -1591,9 +1516,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // Nothing was ever selected to continue, so there is nothing a reconstruction could
       // rebuild from. Starting fresh is the whole continuation, and the new thread stays
       // runtime-only until a completed turn earns it a place in the checkpoint.
-      const created = await this.controller.startFresh(
-        (event) => this.reportManagedControllerProgress(event),
-      );
+      const created = await this.startController(true);
       if (!created.sessionId) {
         throw new Error("harness returned no session id for an unattached conversation");
       }
@@ -2621,7 +2544,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       resolvedTargetAdapter = adapter;
       targetController = this.createController(adapter, targetAdapterId, targetMode);
-      const created = await targetController.startFresh();
+      const candidate = this.handoffTarget = targetController;
+      const created = await this.connectProvider(() => candidate.startFresh());
       if (!created.sessionId) throw new Error("harness returned no session id for handoff");
       toInternalSessionId = created.sessionId;
       // A target naming the source's thread cannot supersede it: the provider mapping and
@@ -2759,6 +2683,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         throw error;
       }
 
+      this.assertConnectionOpen();
       const previousController = this.controller;
       this.controller = targetController;
       this.activeAdapter = resolvedTargetAdapter;
@@ -2911,6 +2836,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       });
       // A rejected handoff cannot return a HandoffResult, but the summary/seed prompts it
       // already ran consumed real tokens; their records travel on the error.
+      if (err instanceof ConnectionCancelledError && records.length === 0) throw err;
       throw new AgentSessionHandoffError(item.handoffId, records, err, {
         fromInternalSessionId,
         ...(toInternalSessionId ? { toInternalSessionId } : {}),
@@ -2919,6 +2845,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
         ...(summary !== undefined ? { summary } : {}),
         ...(targetResult ? { targetResult } : {}),
       });
+    } finally {
+      this.handoffTarget = undefined;
     }
   }
 
@@ -3295,9 +3223,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   private async runSetMode(item: ModeQueueItem): Promise<ConnectResult> {
     await this.ensureProvider();
-    if (item.mode === this._mode) return await requireMember(this.controller, "setMode", "switching modes")(item.mode);
+    if (item.mode === this._mode) return await this.connectProvider(() => requireMember(this.controller, "setMode", "switching modes")(item.mode));
     if (!this.v2Transcript) {
-      const result = await requireMember(this.controller, "setMode", "switching modes")(item.mode);
+      const result = await this.connectProvider(() => requireMember(this.controller, "setMode", "switching modes")(item.mode));
       this._mode = this.controller.currentMode ?? this._mode;
       const nextInternalSessionId = result.sessionId || null;
       if (nextInternalSessionId) {
@@ -3330,7 +3258,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       reasonCode: "mode_change",
     });
     try {
-      const result = await requireMember(this.controller, "setMode", "switching modes")(item.mode);
+      const result = await this.connectProvider(() => requireMember(this.controller, "setMode", "switching modes")(item.mode));
       const targetMode = this.controller.currentMode ?? item.mode;
       const targetInternalSessionId = result.sessionId || null;
       const transitionAt = new Date().toISOString();
@@ -3593,7 +3521,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   async restartProviderFresh(): Promise<void> {
     requireFreshContext(this.controller, "restarting on a fresh provider session");
     await this.controller.forceStop();
-    const result = await this.controller.startFresh();
+    const result = await this.startController(true);
     if (!result.sessionId) throw new Error("provider returned no fresh session");
     this.installProviderAttachment(result.sessionId, "runtime_only", true);
   }
@@ -3616,20 +3544,22 @@ export class AgentConversation implements AgentClient, Bridgeable {
     let via: "loaded" | "recovered" | "fresh" = "loaded";
     try {
       try {
-        if (!sessionId) await this.controller.startFresh();
-        else await reloadProviderSession(this.controller, sessionId); // no reconnect: recovery decides
+        if (!sessionId) await this.startController(true);
+        else await this.connectProvider(() => reloadProviderSession(this.controller, sessionId)); // no reconnect: recovery decides
       } catch (error) {
-        if (!sessionId) throw error;
+        if (!sessionId || error instanceof ConnectionCancelledError) throw error;
         via = await this.continueWithoutProviderSession(sessionId, error);
       }
       if (this.state.phase === "stopped") {
         await this.controller.forceStop();
-        throw new Error("conversation stopped during reconnect");
+        throw new ConnectionCancelledError();
       }
       const loadedId = this.controller.currentSessionId;
       if (via === "loaded" && loadedId && loadedId !== this._internalSessionId) {
         this.installProviderAttachment(loadedId, "runtime_only", !sessionId);
       }
+      if (this.deferredProviderStart && !sessionId) via = "fresh";
+      this.deferredProviderStart = false;
       this.emit({ kind: "provider_reconnected", via, internalSessionId: this._internalSessionId! });
     } catch (error) {
       await this.controller.forceStop().catch(() => {});
@@ -3686,7 +3616,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       return "recovered";
     }
     if (this.sessionLoadFailure === "error") unavailable(loadFailed("provider_session_missing"));
-    const created = await this.controller.startFresh();
+    const created = await this.startController(true);
     if (!created.sessionId) throw new Error("harness returned no session id for a replacement session");
     this.installProviderAttachment(created.sessionId, "runtime_only", true);
     return "fresh";
@@ -4001,11 +3931,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
     // A stop closes the connection, so its turn fails and `endedBy` is never reported for it.
     this.steering.interrupted();
     if (options?.clearQueue) {
+      const cancellation = reason === "stop" && (this.reconnecting || this.connecting > 0)
+        ? new ConnectionCancelledError() : undefined;
       const dropped = settleClearedBackendTurns(this.operations.clear(), reason === "stop", (turn) => { this.operations.enqueue(turn); void this.pump(); });
       // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
       // metering record is minted (§16).
       // On stop, messages already handed to a backend-scheduled controller, still waiting for their turn, are dropped too.
-      this.steering.dropped([...dropped.filter((item): item is PromptQueueItem => item.kind === "prompt"), ...this.backendTurns.clear(reason === "stop")]);
+      this.steering.dropped([...dropped.filter((item): item is PromptQueueItem => item.kind === "prompt"), ...this.backendTurns.clear(reason === "stop")], cancellation);
       for (const item of dropped) {
         if (item.kind === "prompt") continue;
         const label = item.kind === "handoff"
@@ -4015,7 +3947,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             : item.kind === "resolve_recovery"
               ? "recovery resolution"
               : "mode change";
-        item.reject(new Error(`${label} cancelled before it started`));
+        item.reject(cancellation ?? new Error(`${label} cancelled before it started`));
       }
       this.emitStateIfChanged();
     }
@@ -4029,10 +3961,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.phase = "stopped";
     const failures: unknown[] = [];
     const completion = Promise.resolve().then(async () => {
-      try {
-        await this.controller.stop();
-      } catch (error) {
-        failures.push(error);
+      const controllers = new Set([this.controller, this.handoffTarget]);
+      for (const result of await Promise.allSettled([...controllers].map(async controller => controller?.stop()))) {
+        if (result.status === "rejected") failures.push(result.reason);
       }
       // Closing the provider can reject an active prompt. Its catch/finally path may
       // enqueue final message and metering writes, so the pre-stop write tail is not

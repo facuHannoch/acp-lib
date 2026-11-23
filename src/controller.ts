@@ -10,7 +10,7 @@ import type {
   UsageListener,
 } from "./conversation-controller/contracts.ts";
 import {
-  AcpClient,
+  type AcpClient,
   type AcpClientConfig,
   type ConnectResult,
   type SessionLoadFailure,
@@ -35,6 +35,8 @@ import type {
 import { NotConnectedError } from "./errors.ts";
 import { conversationCapabilitiesOf, type ConversationCapabilities } from "./conversation-controller/capabilities.ts";
 import type { ClientPrompt } from "./agent-client.ts";
+import { ConnectionAttempts, type ConnectionAttempt } from "./connection-attempt.ts";
+import { bringUp, observeStartProgress, type ReadyConnection } from "./controller-connection.ts";
 
 const NO_AVAILABLE_COMMANDS: readonly InternalSessionCommand[] = Object.freeze([]);
 
@@ -72,6 +74,8 @@ export interface AgentControllerConfig extends PermissionPolicyConfig {
   sessionId?: string;
   /** Policy when sessionId cannot be loaded. Default "new" for compatibility. */
   sessionLoadFailure?: SessionLoadFailure;
+  /** @internal First use of a deferred Agent conversation must surface session creation errors. */
+  requireStartupSession?: boolean;
   /** Receives the history a loaded `sessionId` replays (raw `session/update` notifications). */
   onSessionReplay?: (notification: unknown) => void;
   /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
@@ -137,6 +141,7 @@ export class HarnessController implements AgentClient, ConversationController {
   private readonly connectionListeners = new Set<() => void>();
   private detachDisconnect: (() => void) | null = null;
   private stopping: Promise<void> = Promise.resolve();
+  private readonly connections = new ConnectionAttempts<ConnectResult, ControllerStartEvent>();
   private current: AgentClient | null = null;
   private acp: AcpClient | null = null;
   private mode: AgentMode;
@@ -177,18 +182,18 @@ export class HarnessController implements AgentClient, ConversationController {
     }
   }
 
-  async reconnect(sessionId: string): Promise<ConnectResult> {
-    await this.stopping;
-    await this.stop();
-    const brought = await this.bringUp(this.mode, sessionId, undefined, "error");
-    this.current = brought.client;
-    this.acp = brought.acp;
-    this.attachAvailableCommandSource();
-    if (!brought.result.resumed || brought.result.sessionId !== sessionId) {
-      await this.stop();
-      throw new Error("provider did not load the requested session");
-    }
-    return brought.result;
+  reconnect(sessionId: string): Promise<ConnectResult> {
+    return this.connections.run(`reconnect:${sessionId}`, async attempt => {
+      await this.stopCurrent();
+      attempt.throwIfCancelled();
+      const brought = await bringUp(this.config, attempt, this.mode, sessionId, "error");
+      attempt.throwIfCancelled();
+      if (!brought.result.resumed || brought.result.sessionId !== sessionId) {
+        await brought.client.stop();
+        throw new Error("provider did not load the requested session");
+      }
+      return this.installConnection(attempt, brought);
+    });
   }
 
   get cancelGraceMs(): number | undefined { return this.config.adapter.cancelGraceMs; }
@@ -262,30 +267,42 @@ export class HarnessController implements AgentClient, ConversationController {
     return () => this.outputListeners.delete(listener);
   }
 
-  async start(onProgress?: (event: ControllerStartEvent) => void): Promise<ConnectResult> {
-    await this.stopping;
-    if (this.current && !this.isConnected) await this.stop();
-    if (this.current) {
-      return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
-    }
-    const brought = await this.bringUp(this.mode, this.config.sessionId, onProgress);
-    this.current = brought.client;
-    this.acp = brought.acp;
-    this.attachAvailableCommandSource();
-    return brought.result;
+  start(onProgress?: (event: ControllerStartEvent) => void): Promise<ConnectResult> {
+    return this.startConnection(false, onProgress);
   }
 
   /** Explicitly create a fresh provider thread, ignoring any startup load target. */
-  async startFresh(onProgress?: (event: ControllerStartEvent) => void): Promise<ConnectResult> {
-    await this.stopping;
-    if (this.current && !this.isConnected) await this.stop();
-    if (this.current) {
-      if (!this.acp) throw new Error("fresh provider sessions require ACP normal mode");
-      return await this.newSession();
-    }
-    const brought = await this.bringUp(this.mode, undefined, onProgress);
+  startFresh(onProgress?: (event: ControllerStartEvent) => void): Promise<ConnectResult> {
+    return this.startConnection(true, onProgress);
+  }
+
+  private startConnection(fresh: boolean, onProgress?: (event: ControllerStartEvent) => void): Promise<ConnectResult> {
+    return this.connections.run(fresh ? "fresh" : "start", async attempt => {
+      await this.stopping;
+      if (this.current && !this.isConnected) await this.stopCurrent();
+      attempt.throwIfCancelled();
+      if (this.current && !fresh) return this.existingConnection();
+      if (this.current) {
+        if (!this.acp) throw new Error("fresh provider sessions require ACP normal mode");
+        attempt.own(() => this.stopCurrent());
+        const result = await this.newSession();
+        attempt.throwIfCancelled();
+        return result;
+      }
+      const brought = await bringUp(this.config, attempt, this.mode, fresh ? undefined : this.config.sessionId);
+      return this.installConnection(attempt, brought);
+    }, observeStartProgress(this.config, onProgress));
+  }
+
+  private existingConnection(): ConnectResult {
+    return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
+  }
+
+  private installConnection(attempt: ConnectionAttempt<ControllerStartEvent>, brought: ReadyConnection, mode = this.mode): ConnectResult {
+    attempt.throwIfCancelled();
     this.current = brought.client;
     this.acp = brought.acp;
+    this.mode = mode;
     this.attachAvailableCommandSource();
     return brought.result;
   }
@@ -407,6 +424,10 @@ export class HarnessController implements AgentClient, ConversationController {
   }
 
   async stop(): Promise<void> {
+    await Promise.all([this.connections.cancel(), this.stopCurrent()]);
+  }
+
+  private async stopCurrent(): Promise<void> {
     const client = this.current;
     this.current = null;
     this.acp = null;
@@ -434,18 +455,18 @@ export class HarnessController implements AgentClient, ConversationController {
    * current leaf and brings up a fresh one in the new mode (sessions do NOT carry across —
    * the two transports are unrelated). Returns the new leaf's connect result.
    */
-  async setMode(mode: AgentMode): Promise<ConnectResult> {
-    if (mode === this.mode && this.current) {
-      return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
-    }
-    const previous = this.current;
-    const brought = await this.bringUp(mode);
-    this.current = brought.client;
-    this.acp = brought.acp;
-    this.mode = mode;
-    this.attachAvailableCommandSource();
-    if (previous) await previous.stop();
-    return brought.result;
+  setMode(mode: AgentMode): Promise<ConnectResult> {
+    return this.connections.run(`mode:${mode}`, async attempt => {
+      await this.stopping;
+      attempt.throwIfCancelled();
+      if (mode === this.mode && this.current) return this.existingConnection();
+      const previous = this.current;
+      const brought = await bringUp(this.config, attempt, mode);
+      const result = this.installConnection(attempt, brought, mode);
+      if (previous) await previous.stop();
+      attempt.throwIfCancelled();
+      return result;
+    });
   }
 
   /** Authenticate the connection. Available whenever connected over ACP (with or without a session). */
@@ -618,103 +639,6 @@ export class HarnessController implements AgentClient, ConversationController {
         arguments: [],
       }, this.mode === "degraded", "already in normal ACP mode"),
     ];
-  }
-
-  /**
-   * Bring up a fresh leaf for the configured adapter in `mode`. normal → AcpClient
-   * (connect + new/load session); degraded → PtyClient (spawn interactive CLI). PtyClient
-   * is dynamically imported so the normal-mode path never loads the degraded subpath.
-   */
-  private async bringUp(
-    mode: AgentMode,
-    sessionId?: string,
-    onProgress?: (event: ControllerStartEvent) => void,
-    loadFailure = this.config.sessionLoadFailure,
-  ): Promise<{ client: AgentClient; acp: AcpClient | null; result: ConnectResult }> {
-    const adapter = this.config.adapter;
-    if (mode === "degraded") {
-      const { PtyClient } = await import("./degraded/index.ts");
-      const client = new PtyClient({
-        adapter,
-        launcher: this.config.launcher,
-        execPrefix: this.config.execPrefix,
-        env: this.config.env,
-        cwd: this.config.cwd,
-        logger: this.config.logger,
-      });
-      try {
-        await client.start();
-      } catch (err) {
-        await client.stop();
-        throw err;
-      }
-      return { client, acp: null, result: { sessionId: "", resumed: false } };
-    }
-
-    const client = new AcpClient({
-      adapter,
-      launcher: this.config.launcher,
-      execPrefix: this.config.execPrefix,
-      env: this.config.env,
-      cwd: this.config.cwd,
-      additionalDirectories: this.config.additionalDirectories,
-      sessionId,
-      sessionLoadFailure: loadFailure,
-      permissions: this.config.permissions, permissionRule: this.config.permissionRule,
-      clientInfo: this.config.clientInfo,
-      clientCapabilities: this.config.clientCapabilities,
-      clientHandlers: this.config.clientHandlers,
-      logger: this.config.logger,
-      wire: this.config.wire,
-    });
-    // connect() is fatal (no connection = nothing to do). startSession() is NOT: an
-    // unauthenticated agent may refuse session/new, but we keep the connection up so the
-    // user can /login and then create a session. (Auth state is opaque — see SPEC.)
-    try {
-      const capabilities = await client.connect();
-      this.reportStartProgress(onProgress, { stage: "initialized", capabilities });
-    } catch (err) {
-      await client.stop();
-      throw err;
-    }
-    let result: ConnectResult;
-    try {
-      result = await client.startSession({
-        mcpServers: this.config.mcpServers,
-        additionalDirectories: this.config.additionalDirectories,
-        loadFailure: loadFailure,
-        ...(this.config.onSessionReplay ? { onReplayUpdate: this.config.onSessionReplay } : {}),
-      });
-    } catch (err) {
-      if (sessionId && loadFailure === "error") {
-        await client.stop();
-        throw err;
-      }
-      this.config.logger?.warn("session_start_failed", { error: String(err) });
-      result = { sessionId: "", resumed: false };
-    }
-    if (result.sessionId) {
-      this.reportStartProgress(onProgress, {
-        stage: "internal_session_acquired",
-        internalSessionId: result.sessionId,
-        disposition: result.resumed ? "resumed" : "created",
-      });
-    }
-    return { client, acp: client, result };
-  }
-
-  private reportStartProgress(
-    listener: ((event: ControllerStartEvent) => void) | undefined,
-    event: ControllerStartEvent,
-  ): void {
-    if (!listener) return;
-    try {
-      listener(event);
-    } catch (error) {
-      this.config.logger?.warn("controller_start_progress_listener_failed", {
-        error: String(error),
-      });
-    }
   }
 
   private requireCurrent(): AgentClient {

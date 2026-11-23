@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "../../src/agent.ts";
+import type { ConversationRecoveryCheckpointId } from "../../src/checkpointing/contracts.ts";
 import type { ConversationRecoveryProgress } from "../../src/checkpointing/recovery.ts";
 import {
   classifyProviderSessionLoadError,
@@ -69,7 +70,7 @@ describe("checkpoint recovery", () => {
     });
   });
 
-  test("creates and seeds a new provider session when the recorded one is missing", async () => {
+  for (const deferred of [false, true]) test(`creates and seeds a new provider session when the recorded one is missing (${deferred ? "first use" : "on open"})`, async () => {
     const root = await mkdtemp(join(tmpdir(), "acp-checkpoint-recovery-"));
     roots.push(root);
     const path = join(root, "agent.sqlite");
@@ -105,18 +106,31 @@ describe("checkpoint recovery", () => {
     const reopenedAgent = await Agent.open(config);
     const [opened, concurrentOpen] = await Promise.all([
       reopenedAgent.conversations.open(conversationId, {
+        ...(deferred ? { runtime: { providerStart: "on_first_use" as const } } : {}),
         onRecoveryProgress: (event) => progress.push(event),
       }),
       reopenedAgent.conversations.open(conversationId),
     ]);
 
-    expect(opened.providerSession).toBe("recovered");
+    expect(opened.providerSession).toBe(deferred ? "deferred" : "recovered");
     expect(concurrentOpen.conversation).toBe(opened.conversation);
-    expect(concurrentOpen.providerSession).toBe("recovered");
-    expect(opened.recovery?.checkpointId).toBe(checkpoint?.checkpointId);
-    expect(opened.recovery?.previousInternalSessionId).toBe(oldSessionId);
-    expect(opened.recovery?.recoveredThroughSequence).toBe(latestSequence);
-    expect(opened.recovery!.recoveredThroughSequence).toBeGreaterThan(checkpoint!.coveredSequence);
+    expect(concurrentOpen.providerSession).toBe(opened.providerSession);
+    if (deferred) {
+      expect(progress).toEqual([]);
+      expect(opened.conversation.internalSessionId).toBe(oldSessionId);
+      expect(opened.conversation.connection.isConnected).toBe(false);
+      const reconnects: string[] = [];
+      opened.conversation.subscribe(({ event }) => {
+        if (event.kind === "provider_reconnected") reconnects.push(event.via);
+      });
+      expect((await opened.conversation.prompt("first use after reopen")).status).toBe("completed");
+      expect(reconnects).toEqual(["recovered"]);
+    } else {
+      expect(opened.recovery?.checkpointId).toBe(checkpoint?.checkpointId);
+      expect(opened.recovery?.previousInternalSessionId).toBe(oldSessionId);
+      expect(opened.recovery?.recoveredThroughSequence).toBe(latestSequence);
+      expect(opened.recovery!.recoveredThroughSequence).toBeGreaterThan(checkpoint!.coveredSequence);
+    }
     expect(progress.map(({ stage }) => stage)).toEqual([
       "load_failed",
       "loading_checkpoint",
@@ -128,8 +142,19 @@ describe("checkpoint recovery", () => {
     const sessions = await reopenedAgent.persistence.providerSessions.list(conversationId);
     expect(sessions).toHaveLength(2);
     expect(sessions[0]?.deactivatedAt).toBeDefined();
-    expect(JSON.parse(sessions[1]?.metadata ?? "null")?.recoveryCheckpointId)
-      .toBe(checkpoint?.checkpointId);
+    const recovered = JSON.parse(sessions[1]?.metadata ?? "null");
+    if (deferred) {
+      // The request queued across shutdown can publish a newer checkpoint before first use.
+      const checkpointId = progress.find(event => event.stage === "completed")?.checkpointId;
+      if (!checkpointId) throw new Error("Recovery completion did not identify its checkpoint");
+      expect(recovered).toMatchObject({ recoveryCheckpointId: checkpointId,
+        previousInternalSessionId: oldSessionId, recoveredThroughSequence: latestSequence });
+      const selected = await reopenedAgent.persistence.recoveryCheckpoints!.get(checkpointId as ConversationRecoveryCheckpointId);
+      expect(selected?.agentConversationId).toBe(conversationId);
+      expect(selected!.coveredSequence).toBeGreaterThanOrEqual(checkpoint!.coveredSequence);
+    } else {
+      expect(recovered?.recoveryCheckpointId).toBe(checkpoint?.checkpointId);
+    }
     const actions = await reopenedAgent.persistence.records.list(conversationId, {
       kinds: ["native_action"],
     });

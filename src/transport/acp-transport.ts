@@ -5,7 +5,8 @@
 
 import * as acp from "@agentclientprotocol/sdk";
 import type * as schema from "@agentclientprotocol/sdk";
-import { ProcessCrashError } from "../errors.ts";
+import { ConnectionCancelledError, ProcessCrashError } from "../errors.ts";
+import { untilAborted } from "../connection-attempt.ts";
 import { onceDispose, type PreparedLaunch } from "../launcher.ts";
 import type { WireEntry } from "../types.ts";
 
@@ -67,6 +68,7 @@ export class AcpTransport {
   private proc: ReturnType<typeof Bun.spawn> | null = null;
   private connection: acp.ClientSideConnection | null = null;
   private stopping = false;
+  private readonly closed = new AbortController();
   private tap?: (dir: WireEntry["dir"], line: string) => void;
   private readonly disposeLaunch: () => Promise<void>;
 
@@ -114,13 +116,19 @@ export class AcpTransport {
       this.tap = tap;
       const handler = new ClientHandler(this.opts);
       this.connection = new acp.ClientSideConnection(() => handler, stream);
-      this.connection.signal.addEventListener("abort", () => this.opts.onDisconnect?.(), { once: true });
+      const disconnected = () => {
+        this.closeUnexpectedly(proc.exitCode);
+        this.opts.onDisconnect?.();
+      };
+      if (this.connection.signal.aborted) disconnected();
+      else this.connection.signal.addEventListener("abort", disconnected, { once: true });
 
       if (proc.stderr) this.pumpStderr(proc.stderr as ReadableStream<Uint8Array>);
 
       proc.exited
         .then(async (code) => {
           if (this.proc === proc && !this.stopping) {
+            this.closeUnexpectedly(code);
             this.proc = null;
             this.connection = null;
             await this.disposeLaunch().catch(() => {});
@@ -128,6 +136,7 @@ export class AcpTransport {
           }
         }, async () => {
           if (this.proc === proc && !this.stopping) {
+            this.closeUnexpectedly(null);
             this.proc = null;
             this.connection = null;
             await this.disposeLaunch().catch(() => {});
@@ -143,6 +152,7 @@ export class AcpTransport {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.closed.abort(new ConnectionCancelledError());
     const proc = this.proc;
     this.proc = null;
     this.connection = null;
@@ -181,10 +191,10 @@ export class AcpTransport {
     return this.conn().initialize(params);
   }
   newSession(params: schema.NewSessionRequest): Promise<schema.NewSessionResponse> {
-    return this.conn().newSession(params);
+    return this.raceExit(this.conn().newSession(params));
   }
   loadSession(params: schema.LoadSessionRequest): Promise<schema.LoadSessionResponse> {
-    return this.conn().loadSession(params);
+    return this.raceExit(this.conn().loadSession(params));
   }
   forkSession(params: schema.ForkSessionRequest): Promise<schema.ForkSessionResponse> {
     return this.conn().unstable_forkSession(params);
@@ -213,17 +223,17 @@ export class AcpTransport {
     return this.conn().setSessionConfigOption(params);
   }
 
-  /** Race a promise against process exit — catches dead/unauthenticated binaries early. */
+  /** Observe transport close even if the SDK leaves a request pending. */
   raceExit<T>(p: Promise<T>): Promise<T> {
-    if (!this.proc) return p;
-    const exit = this.proc.exited.then((code) => {
-      throw new ProcessCrashError(
-        code ?? null,
-        `ACP server exited (code ${code ?? "?"}) before the operation completed — ` +
-          `verify the provider binary is installed and authenticated`,
-      );
-    });
-    return Promise.race([p, exit as Promise<never>]);
+    return untilAborted(p, this.closed.signal);
+  }
+
+  throwIfClosed(): void { this.closed.signal.throwIfAborted(); }
+
+  private closeUnexpectedly(code: number | null): void {
+    this.closed.abort(new ProcessCrashError(code,
+      `ACP server exited (code ${code ?? "?"}) or closed the connection before the operation completed — ` +
+      "verify the provider binary is installed and authenticated"));
   }
 
   private async pumpStderr(stream: ReadableStream<Uint8Array>): Promise<void> {

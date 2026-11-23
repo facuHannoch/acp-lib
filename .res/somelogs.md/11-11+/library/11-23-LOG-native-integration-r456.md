@@ -49,3 +49,19 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   parity gate works on the existing wire; native `billing_required` certification needs harness work (token category
   semantics, reported cost, a sealed per-turn manifest, between-turn ownership). Heads-up sent to haurness-l; with clad2a
   for review.
+- clad2a reviewed the R4 follow-up (`195e929`): every note addressed, every new or changed test 20 of 20 isolated; new
+  finding: `test/acp-connect-cancellation.test.ts` > "stop cancels ACP setMode and reaps its process" failed 3 of 50
+  whole-file runs on `cb6f959` (0 of 60 earlier). cod2a found the cause: the ACP leaf rejected with
+  `ConnectionCancelledError`, then the outer attempt signal was aborted but its reason (and `throwIfAborted`'s thrown
+  value) was undefined (the progress observer was not in the path); fixed in `d752262` (the typed cancellation is kept
+  on the attempt; report `c2ba881`). Coordinator gate on `c2ba881`: 0 failing runs of 50, typecheck clean, 1,617 in 151
+  files green RAM-backed; sizes unchanged (session 4,495, client 1,046, controller 764, manager 1,012). With clad2a.
+- cod2a amended R5's brief per clad2a's five gaps (`f4d9fab`) and starts R5 step 1.
+- The user merged `pre-alpha` (`ae71995`: the live-run files, the smoke runner hardening and the ACP busy-worker restart
+  test) into alpha. Pending for the next one: R4 (`c2ba881`), the orchestrator follow-up (`1a769da`) and R5's brief
+  amendment; R5 step 1 (`47e2750`, report `7e537af`; coordinator run `7e537af`: typecheck clean, 1,624 in 152 files
+  green RAM-backed, sizes unchanged) awaits clad2a's review.
+- R4 final reviews by clad2a (`1cc3984`: the cancellation fix holds: 0 of 50 whole-file runs, 84 random stops across
+  seven paths, mutation-checked) and the orchestrator follow-up (`2cdc35e`: no findings). **R4 gate passed**
+  ([gate](../.plan-execution/status/11-23-GATE-R4.md)): 1,618 in 151 files. `pre-alpha` rebuilt with R4, the orchestrator
+  follow-up and R5's amended brief (R5 step 1 awaits clad2a's review).

@@ -9,7 +9,7 @@ import type { OutputListener, ProviderOutput } from "./operations/contracts.ts";
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
 import type * as schema from "@agentclientprotocol/sdk";
 import type { Adapter } from "./adapters.ts";
-import { AcpTransport, type TerminalHandlers } from "./transport/acp-transport.ts";
+import { AcpTransport } from "./transport/acp-transport.ts";
 import { prepareLaunch, type AcpLauncher } from "./launcher.ts";
 import {
   parseCapabilities,
@@ -23,7 +23,10 @@ import { ResponseAccumulator } from "./response.ts";
 import { normalizeTokenUsage } from "./metering/usage.ts";
 import { TerminalRegistry } from "./terminals.ts";
 import { readTextFile, writeTextFile } from "./fs-access.ts";
-import { NotConnectedError } from "./errors.ts";
+import { ConnectionCancelledError, NotConnectedError, ProcessCrashError } from "./errors.ts";
+import { ConnectionAttempts, untilAborted } from "./connection-attempt.ts";
+import { resolveClientHandlers, type ResolvedClientHandlers, type AcpClientHandlers } from "./acp-client-handlers.ts";
+export type { AcpClientHandlers, FilesystemHandlers } from "./acp-client-handlers.ts";
 import { noopLogger, type Logger } from "./logger.ts";
 import type { AgentClient, InterruptOptions } from "./agent-client.ts";
 import type {
@@ -88,51 +91,6 @@ export interface AcpClientConfig extends PermissionPolicyConfig {
    * included, so where it goes is the caller's call. `createWireLog()` builds a sink.
    */
   wire?: (entry: WireEntry) => void;
-}
-
-export interface FilesystemHandlers {
-  readTextFile?: (
-    params: schema.ReadTextFileRequest,
-  ) => Promise<schema.ReadTextFileResponse>;
-  writeTextFile?: (
-    params: schema.WriteTextFileRequest,
-  ) => Promise<schema.WriteTextFileResponse>;
-}
-
-export interface AcpClientHandlers {
-  terminal?: TerminalHandlers | false;
-  filesystem?: FilesystemHandlers | false;
-}
-
-interface ResolvedClientHandlers {
-  terminal: "builtin" | TerminalHandlers | false;
-  readTextFile: "builtin" | NonNullable<FilesystemHandlers["readTextFile"]> | false;
-  writeTextFile: "builtin" | NonNullable<FilesystemHandlers["writeTextFile"]> | false;
-}
-
-function resolveClientHandlers(
-  handlers: AcpClientHandlers | undefined,
-  legacy: ClientCapabilityConfig | undefined,
-): ResolvedClientHandlers {
-  const terminal = handlers?.terminal !== undefined
-    ? handlers.terminal
-    : legacy?.terminal === false ? false : "builtin";
-
-  if (handlers?.filesystem === false) {
-    return { terminal, readTextFile: false, writeTextFile: false };
-  }
-  if (handlers?.filesystem) {
-    return {
-      terminal,
-      readTextFile: handlers.filesystem.readTextFile ?? false,
-      writeTextFile: handlers.filesystem.writeTextFile ?? false,
-    };
-  }
-  return {
-    terminal,
-    readTextFile: legacy?.fs?.readTextFile === false ? false : "builtin",
-    writeTextFile: legacy?.fs?.writeTextFile === false ? false : "builtin",
-  };
 }
 
 export interface StartSessionOptions {
@@ -200,6 +158,7 @@ interface CommandTransition {
 
 export class AcpClient implements AgentClient {
   private transport: AcpTransport | null = null;
+  private readonly connections = new ConnectionAttempts<Capabilities>();
   private _capabilities: Capabilities | null = null;
   private _configOptions: ConfigOptions = new Map();
   private _availableCommands: readonly InternalSessionCommand[] = Object.freeze([]);
@@ -345,10 +304,25 @@ export class AcpClient implements AgentClient {
    * create a session — call startSession() (or just prompt(), which lazily starts one),
    * or listSessions() to pick an existing one first.
    */
-  async connect(): Promise<Capabilities> {
-    if (this.transport) return this.capabilities;
+  connect(): Promise<Capabilities> {
+    return this.connections.run("connect", ({ signal }) => this.initialize(signal));
+  }
 
-    const launch = await prepareLaunch("acp", this.config.launcher, this.config);
+  private async initialize(signal: AbortSignal): Promise<Capabilities> {
+    await this.stopPromise;
+    signal.throwIfAborted();
+    if (this.transport?.isConnected) return this.capabilities;
+
+    const preparing = prepareLaunch("acp", this.config.launcher, this.config);
+    const launch = await untilAborted(preparing.then(async prepared => {
+      if (signal.aborted) await prepared.dispose?.();
+      signal.throwIfAborted();
+      return prepared;
+    }), signal);
+    if (signal.aborted) {
+      await launch.dispose?.();
+      signal.throwIfAborted();
+    }
     const caps = this.clientCapabilities;
     this.terminals = this.handlers.terminal === "builtin"
       ? new TerminalRegistry({
@@ -385,10 +359,12 @@ export class AcpClient implements AgentClient {
         this.authStderrSink?.(line);
       },
       onDisconnect: () => {
+        if (this.transport !== transport) return;
         this.cancelPendingPermissions();
         this.notifyDisconnected();
       },
       onCrash: (code) => {
+        if (this.transport !== transport) return;
         this.cancelPendingPermissions();
         this.terminals?.releaseAll();
         this.terminals = null;
@@ -402,8 +378,9 @@ export class AcpClient implements AgentClient {
     });
     try {
       this.log.info("connect", { command: launch.command });
-      await transport.start();
       this.transport = transport;
+      await transport.start();
+      signal.throwIfAborted();
 
       const init = await transport.raceExit(
         transport.initialize({
@@ -416,6 +393,8 @@ export class AcpClient implements AgentClient {
           },
         } as schema.InitializeRequest),
       );
+      signal.throwIfAborted();
+      transport.throwIfClosed();
       this._capabilities = parseCapabilities(init, caps);
       this.log.info("initialized", {
         agent: this._capabilities.agentInfo?.name,
@@ -425,7 +404,7 @@ export class AcpClient implements AgentClient {
       this.log.debug("initialize_response", { response: init });
       return this._capabilities;
     } catch (error) {
-      this.transport = null;
+      if (this.transport === transport) this.transport = null;
       await transport.stop().catch((cleanupError) => {
         this.log.warn("launch_cleanup_failed", { error: String(cleanupError) });
       });
@@ -459,6 +438,7 @@ export class AcpClient implements AgentClient {
         sessionId = result.sessionId;
         resumed = result.resumed;
       } catch (err) {
+        if (err instanceof ConnectionCancelledError || err instanceof ProcessCrashError) throw err;
         this.log.warn("session_load_failed", { sessionId: resumeId, error: String(err) });
         if (loadFailure === "error") throw err;
         sessionId = await this.newSessionInternal(transport, cwd, mcpServers, additionalDirectories);
@@ -499,6 +479,7 @@ export class AcpClient implements AgentClient {
         mcpServers: options.mcpServers ?? [],
         ...this.additionalDirectoriesParam(options.additionalDirectories ?? this.config.additionalDirectories),
       } as schema.LoadSessionRequest);
+      if (this.transport !== transport) throw new ConnectionCancelledError();
     } catch (err) {
       this.abortCommandTransition();
       throw err;
@@ -693,6 +674,7 @@ export class AcpClient implements AgentClient {
         mcpServers,
         ...this.additionalDirectoriesParam(additionalDirectories),
       } as schema.NewSessionRequest);
+      if (this.transport !== transport) throw new ConnectionCancelledError();
     } catch (err) {
       this.abortCommandTransition();
       throw err;
@@ -721,6 +703,7 @@ export class AcpClient implements AgentClient {
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     this.cancelPendingPermissions();
+    const connecting = this.connections.cancel();
     const t = this.transport;
     this.transport = null;
     this._sessionId = null;
@@ -728,8 +711,9 @@ export class AcpClient implements AgentClient {
     this.setAvailableCommands([]);
     this.terminals?.releaseAll();
     this.terminals = null;
-    const pending = t ? t.stop() : Promise.resolve();
-    this.stopPromise = pending.finally(() => {
+    if (t) this.notifyDisconnected();
+    const pending = Promise.all([connecting, t?.stop()]);
+    this.stopPromise = pending.then(() => undefined).finally(() => {
       this.stopPromise = null;
       this.log.info("stopped", {});
     });

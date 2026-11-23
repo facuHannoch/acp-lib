@@ -54,15 +54,22 @@ type OwnerControlledConversationKey =
   | "ownerLifecycle"
   | "isNativeAdapter"
   | "providerSession"
+  | "signal"
+  | "deferProviderStart"
   | "persistence"
   | "transcriptPath"
   | "transcriptDir"
   | "sessions";
 
+export type ProviderStart = "on_open" | "on_first_use";
+
 export type AgentConversationRuntimeDefaults = Omit<
   AgentConversationConfig,
   OwnerControlledConversationKey
->;
+> & {
+  /** Normal ACP only. Defaults to starting the provider when the conversation opens. */
+  readonly providerStart?: ProviderStart;
+};
 
 export interface AgentConfig extends PermissionPolicyConfig {
   readonly orchestrator?: OrchestratorConfig;
@@ -179,7 +186,7 @@ export interface ClearTranscriptResult {
 
 export interface OpenOwnedAgentConversationResult {
   readonly conversation: AgentConversation;
-  readonly providerSession: "already_open" | "loaded" | "new" | "recovered";
+  readonly providerSession: "already_open" | "loaded" | "new" | "recovered" | "deferred";
   readonly recovery?: ConversationRecoveryResult;
 }
 
