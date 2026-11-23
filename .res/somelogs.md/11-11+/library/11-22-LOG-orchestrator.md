@@ -208,3 +208,13 @@ edit to `src/agent-session.ts`.
   ([gate](../.plan-execution/status/11-23-GATE-O3a.md)): 1,576 in 147 files. `pre-alpha` rebuilt with O3a.
   Decision (spec, follow-up for cod2a): a steer that loses the race against the worker's natural completion reserves a
   fresh assignment (the worker is idle), as after a restart.
+- O3a follow-up `d030961` reviewed by clad2a (`1520f80`): all four resolved, no blocking findings (a steer racing
+  natural completion runs once as a new assignment; a refused first dispatch notifies the sender; the invisible-id
+  guard is `[\s\p{Default_Ignorable_Code_Point}]+`; `check` and `list` show `latestResult`). It adds an optional
+  `kind` parameter to `latestOutcome` in two of Cod1a's files (backward compatible; Cod1a told). Gate: 1,581 in 147
+  files green (clad2a and the coordinator, RAM-backed). Clad2a's note for the integration slice: confirm a NATIVE
+  destination gets the old result promptly after an `old_settled` (only `replaced` triggers the flush).
+- The integration slice (O3b, O5b and O6 step 2: native delivery, restart recovery, the route end to end over stdio)
+  is in from cod2a, HEAD `bc974ce`, `8db2c67` plus eight stdio tests; coordinator run RAM-backed: typecheck clean,
+  1,589 tests in 149 files green, snapshot unchanged. With clad2a for review. O6 step 3, the live run, is held for
+  the user.
