@@ -2,8 +2,13 @@ import { ForcedStopError, OperationStalledError } from "../operations/errors.ts"
 import type { PromptEndedBy } from "../steering/contracts.ts";
 import type { WorkerAssignmentFailure } from "./worker-delivery-contract.ts";
 
+export const REFUSED_STEER_REASONS = {
+  conflict: "worker refused: assignment conflict",
+  hook_error: "worker refused: dispatch hook failed",
+} as const;
+
 const reasons = {
-  failed: ["worker failed", "worker stalled", "worker produced no saved result"],
+  failed: ["worker failed", "worker stalled", "worker produced no saved result", ...Object.values(REFUSED_STEER_REASONS)],
   interrupted: ["worker interrupted", "worker forcibly stopped", "worker interrupted by request", "worker interrupted by steering"],
 } as const;
 

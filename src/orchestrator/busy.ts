@@ -8,6 +8,8 @@ export function planAssignment(
   const fresh = () => ({ id: actor.kind === "conversation" ? actor.invocationId : crypto.randomUUID(), destination });
   if (!running) return { kind: "start", assignment: fresh() };
   if (destination !== running.destination && !input.redirect) return;
-  if (input.assignment === "new") return { kind: "replace", previous: running, assignment: fresh() };
+  if (input.assignment === "new" || (!running.destination && destination)) {
+    return { kind: "replace", previous: running, assignment: fresh() };
+  }
   return { kind: "continue", previous: running, assignment: { ...running, destination } };
 }

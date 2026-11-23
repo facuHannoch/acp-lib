@@ -11,6 +11,15 @@
 - `orchestrator.workers.idleStopMs` defaults to ten minutes and accepts `false` to keep idle
   providers connected. An idle stop emits `worker_stopped` with reason `idle`; the next send reloads the worker.
 
+## ACP worker results
+
+- Worker assignments reserve their dispatch identity before the provider runs. ACP destinations receive
+  the saved worker reply or failure in an out-of-band message with a stable delivery ID and worker
+  metadata. The next prompt carries the message to the destination's provider.
+- `agent.workers.check` and `list` include the latest staged outcome, including when its destination
+  was deleted. A steer refused after enqueue emits `worker_failed` with reason `refused`, its cause and
+  the conversation that sent the steer.
+
 ## Worker permission forwarding
 
 - A forwarded `permission_requested` event carries a `source` with the worker handle and conversation ID.

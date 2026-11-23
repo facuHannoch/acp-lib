@@ -1,4 +1,6 @@
 import { withDelegationTools } from "./orchestrator/native-delegation.ts";
+import { AcpWorkerDelivery } from "./orchestrator/acp-delivery.ts";
+import { DurableWorkerAssignments } from "./orchestrator/durable-assignments.ts";
 import { workerConsumerApi, type WorkerConsumerApi } from "./orchestrator/consumer-api.ts";
 import { Orchestrator } from "./orchestrator/orchestrator.ts";
 import { validateOrchestrator } from "./orchestrator/config.ts";
@@ -113,6 +115,7 @@ export class Agent {
   readonly conversations: AgentConversationManager;
   /** @internal Delegation routes use this pool. */
   readonly orchestrator?: Orchestrator;
+  private readonly acpWorkerDelivery?: AcpWorkerDelivery;
   readonly workers?: WorkerConsumerApi;
   readonly internalInferences?: InternalInferenceManager;
   readonly checkpointing?: ConversationCheckpointCoordinator;
@@ -242,9 +245,13 @@ export class Agent {
       const adapterId = workerOptions.adapterId ?? config.defaultAdapterId ?? adapters.list()[0]?.id;
       if (!adapterId || adapters.native(adapterId)) throw new Error("orchestrator workers require an ACP adapter");
       adapters.require(adapterId);
+      const acpDelivery = this.acpWorkerDelivery = new AcpWorkerDelivery(persistence.workerDelivery!,
+        (id, input, stableId) => this.manager.appendAssistantMessage(id, input, stableId), logger);
+      const assignments = new DurableWorkerAssignments(persistence, () => acpDelivery.flush(),
+        () => this.nativeHarness?.flushWorkerDelivery());
       this.orchestrator = new Orchestrator(persistence.workers!, this.conversations, { ...workerOptions, adapterId,
         defaultPermissions: config.orchestrator.defaults?.workerPermissions }, logger,
-        event => this.eventBus.publishWorker(event), undefined, id => this.manager.liveConversation(id));
+        event => this.eventBus.publishWorker(event), assignments, id => this.manager.liveConversation(id));
       this.workers = workerConsumerApi(this.orchestrator);
     }
     if (checkpointing?.enabled) {
@@ -434,6 +441,7 @@ export class Agent {
         audit,
       );
       await agent.recordAgentAuditObservation("agent_lifecycle", "opened");
+      await agent.acpWorkerDelivery?.flush();
       return agent;
     } catch (error) {
       await audit?.close().catch(() => undefined);
@@ -472,6 +480,8 @@ export class Agent {
       const observationError = this.auditObservationError;
       await this.orchestrator?.close();
       await this.manager.stopAll();
+      await this.orchestrator?.waitForCompletions();
+      await this.acpWorkerDelivery?.flush();
       // The shared harness process is the Agent's: it stops with it, after its conversations.
       await this.nativeHarness?.stop();
       // Every authorized shutdown write has finished; nothing may be observed after this.

@@ -52,7 +52,7 @@ export function withDelegationTools(
     const sender = await context.takenSender();
     signal.throwIfAborted();
     return {
-      kind: "conversation", conversationId: channel, sender, invocationId, policyNames: [...policyNames],
+      kind: "conversation", conversationId: channel, destinationKind: "native", sender, invocationId, policyNames: [...policyNames],
       policy: composeDelegationPolicy(applicable.map(policy => policy.delegation)),
       workerPermissions: applicable.map(policy => policy.permissions),
       isOwner: policyNames.length > 0 && policyNames.every(name => ownerPolicies.has(name)),

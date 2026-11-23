@@ -1,3 +1,4 @@
+import { appendAssistantMessage } from "./append-assistant-message.ts";
 import { inheritPermissionConfig, validateConversationPermissionConfig, type ConversationPermissionConfig } from "../permissions/policy.ts";
 import { writeConversationError } from "./error-record-writer.ts";
 import { randomUUID } from "node:crypto";
@@ -26,10 +27,7 @@ import {
 } from "../persistence/backend.ts";
 import { ProviderSessionError, ProviderSessionInUseError } from "../agent-conversation-errors.ts";
 import { UnsupportedError } from "../errors.ts";
-import {
-  OUT_OF_BAND_MESSAGE_ORIGIN,
-  type AppendAssistantMessageInput,
-} from "../out-of-band-messages.ts";
+import type { AppendAssistantMessageInput } from "../out-of-band-messages.ts";
 import type {
   ProviderAttachmentCommitAcknowledgement,
 } from "../persistence/provider-attachment.ts";
@@ -42,9 +40,7 @@ import {
 
 import type { ManagerSettings } from "./manager-settings.ts";
 import {
-  updateConversationIdentity,
   persistConversationObservations,
-  persistObservationsInTransaction,
   normalizeParticipants,
   internalInferenceMeteringKind,
   appendCanonicalRecord,
@@ -88,10 +84,7 @@ import {
 } from "./adoption/index.ts";
 import { NoopAgentIdentityRuntime } from "../identity.ts";
 import { conversationPersistenceContext } from "./persistence-policy/context.ts";
-import { forgetPendingParts, pendingOutOfBandParts } from "../media/pending.ts";
-import { resolveParts } from "../media/store.ts";
-import { persistParts } from "../media/content.ts";
-import { isMediaPart, promptParts, partsText } from "../media/parts.ts";
+import { forgetPendingParts } from "../media/pending.ts";
 import { createConversationWithChannel, deleteConversationWithChannel, initialChannelDesire } from "./native-channel-lifecycle.ts";
 
 export class DefaultAgentConversationManager implements AgentConversationManager {
@@ -667,70 +660,9 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     return result;
   }
 
-  async appendAssistantMessage(
-    id: AgentConversationId,
-    input: AppendAssistantMessageInput,
-  ): Promise<MessageRecord> {
-    const parts = promptParts(input) ?? [{ kind: "text" as const, text: input.text ?? "" }];
-    const hasMedia = parts.some((part) => part.kind !== "text" && part.kind !== "pasted");
-    if (!partsText(parts).trim() && !hasMedia) {
-      throw new Error("assistant message text cannot be blank");
-    }
-    const summary = await this.agent.persistence.conversations.get(id);
-    if (!summary || summary.deletedAt) throw new Error(`unknown active conversation: ${id}`);
-    const settings = this.writeSettings(summary);
-    const level = settings.capture.message;
-    if (!hasMedia && level !== "content" && level !== "raw") {
-      throw new Error(
-        `appending an assistant message requires message capture "content" or "raw", not "${level}"`,
-      );
-    }
-    // No agent reads the parts yet: every kind is accepted now, and delivery names what the agent of
-    // the next turn cannot take.
-    const resolved = await resolveParts(parts, {
-      cwd: this.live.get(id)?.cwd ?? this.settings.defaults.cwd ?? process.cwd(),
-      capabilities: { image: true, audio: true, embeddedContext: true },
-      thresholds: this.agent.media.thresholds,
-      owner: id,
-      store: this.agent.media.store ?? this.agent.persistence.media,
-    });
-    const appendId = `append-${randomUUID()}`;
-    const persisted: ConversationRecord[] = [];
-    const recordId = `${appendId}:assistant`;
-    await this.agent.persistence.transaction(async (scope) => {
-      const content = await persistParts(resolved, id, this.agent.media.store ?? scope.media, settings.capture.media);
-      await persistObservationsInTransaction(settings, scope, [{
-        recordId,
-        agentSessionId: this.agent.id,
-        agentConversationId: id,
-        kind: "message",
-        timestamp: new Date().toISOString(),
-        // A standalone message at its observed sequence, without a provider operation.
-        role: "assistant",
-        logicalMessageId: `message:${appendId}:assistant`,
-        ...(input.consumerMetadata !== undefined ? { consumerMetadata: input.consumerMetadata } : {}),
-        content,
-        status: "completed",
-        metadata: JSON.stringify({ origin: OUT_OF_BAND_MESSAGE_ORIGIN, appendId }),
-      }], true, persisted);
-    });
-    const record = persisted[0];
-    if (record?.kind !== "message") throw new Error("assistant message was not persisted");
-    // The next turn delivers the message from its record. When the record cannot restore it (a part
-    // not recorded, media left out by capture, a copy not kept, text not captured), its parts wait in
-    // memory instead.
-    const blocks = Array.isArray(record.content) ? record.content : [];
-    const media = resolved.filter(isMediaPart);
-    const restorable = (level === "content" || level === "raw")
-      && resolved.every((part) => part.record !== false)
-      && blocks.filter((block) => block.type === "media").length === media.length
-      && blocks.filter((block) => block.type === "media" && block.ref).length
-        === media.filter((part) => part.mode === "copy").length;
-    if (!restorable) pendingOutOfBandParts(this.agent).set(recordId, { owner: id, parts: resolved });
-    this.agent.publishCommittedRecords(persisted);
-    if (settings.auditLog) this.agent.audit?.notifyPending();
-    await updateConversationIdentity(this.agent, settings, id, [record]);
-    return record;
+  appendAssistantMessage(id: AgentConversationId, input: AppendAssistantMessageInput, stableId?: string): Promise<MessageRecord> {
+    return appendAssistantMessage(this.agent, id, input, this.live.get(id)?.cwd ?? this.settings.defaults.cwd ?? process.cwd(),
+      summary => this.writeSettings(summary), stableId);
   }
 
   async stopAll(): Promise<void> {
