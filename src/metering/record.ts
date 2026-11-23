@@ -116,11 +116,21 @@ export interface NativeEarlierCallEvidence {
   readonly reason?: string;
 }
 
+/** Compact evidence when the operation index cannot retain all earlier call detail. */
+export interface NativeEarlierCallSummary {
+  readonly truncated: true;
+  readonly callCount: number;
+  readonly attemptCount: number;
+  readonly unmeasured: number;
+  readonly tokens?: TokenUsage;
+}
+
 export type NativeOperationUsage = {
   readonly channel: string;
   readonly turnId: string | null;
   readonly accountedAttemptIds?: readonly string[];
   readonly unaccountedEarlierCalls?: readonly NativeEarlierCallEvidence[];
+  readonly unaccountedEarlierSummary?: NativeEarlierCallSummary;
   readonly earlierEvidencePending?: true;
 } & (
   | { readonly status: "observed"; readonly calls: readonly NativeCallEvidence[]; readonly unmeasured: number }

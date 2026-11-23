@@ -2,7 +2,7 @@ import type { WorkerPersistence } from "./workers.ts";
 import type { WorkerDeliveryRepository } from "./worker-delivery-contract.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { CancelOutcome, CancelReason } from "../operations/contracts.ts";
-import type { NativeEarlierCallEvidence, OperationMeteringRecord } from "../metering/record.ts";
+import type { NativeEarlierCallEvidence, NativeEarlierCallSummary, OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 import type { ConversationRecoveryCheckpointRepository } from "../checkpointing/contracts.ts";
@@ -702,8 +702,11 @@ export interface MeteringOperationIdentity {
   readonly completedAt: number;
   /** Attested measured attempt IDs, retained even when operation detail is pruned. */
   readonly nativeAccountedAttemptIds?: readonly string[];
+  readonly nativeAccountedAttemptCount?: number;
+  readonly nativeAccountedAttemptsTruncated?: true;
   /** Earlier calls reported outside the operation's totals, retained with its cursor proof. */
   readonly unaccountedEarlierCalls?: readonly NativeEarlierCallEvidence[];
+  readonly unaccountedEarlierSummary?: NativeEarlierCallSummary;
 }
 
 export interface MeteringPersistence {

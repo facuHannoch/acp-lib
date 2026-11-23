@@ -76,7 +76,8 @@ export async function recoverNativeClose(
     startedAt: existing.completedAt, completedAt: existing.completedAt, agentSessionId: state.agentSessionId,
     internalSessionId: open.internalSessionId, provider: { adapterId: existing.adapterId, providerId: null, model: null },
     nativeUsage: { channel: open.nativeChannel!, turnId: null, status: "unavailable", reason: "metering detail was pruned",
-      ...(existing.unaccountedEarlierCalls ? { unaccountedEarlierCalls: existing.unaccountedEarlierCalls } : {}) },
+      ...(existing.unaccountedEarlierCalls ? { unaccountedEarlierCalls: existing.unaccountedEarlierCalls } : {}),
+      ...(existing.unaccountedEarlierSummary ? { unaccountedEarlierSummary: existing.unaccountedEarlierSummary } : {}) },
     provenance: { source: "none", measurement: "unavailable", routing: "unknown", attribution: "unavailable" },
     usage: { status: "usage_unavailable", reason: "native metering was already committed and its detail was pruned" },
     pricingStatus: "not_attributable", contextAfter: null, providerCostAfter: null,
@@ -95,8 +96,12 @@ export function withNativeAccounting(
     async accountedAttempts(turnId) {
       const found = await recovery.find(`native-turn-${turnId}`);
       if (!found) return null;
-      if (!("usage" in found)) return found.nativeAccountedAttemptIds;
-      return accountedNativeAttempts(found);
+      if (!("usage" in found)) {
+        const ids = found.nativeAccountedAttemptIds;
+        return ids && { ids, truncated: found.nativeAccountedAttemptsTruncated };
+      }
+      const ids = accountedNativeAttempts(found);
+      return ids && { ids };
     },
   };
 }

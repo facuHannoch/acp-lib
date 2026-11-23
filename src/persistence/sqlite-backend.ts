@@ -1,4 +1,4 @@
-import { accountedNativeAttempts } from "../metering/native/retirement.ts";
+import { serializeNativeMeteringProof } from "../metering/native/proof.ts";
 import { SqliteWorkers } from "./sqlite-workers.ts";
 import { randomUUID } from "node:crypto";
 import { SqliteWorkerDelivery } from "./sqlite-worker-delivery.ts";
@@ -1224,10 +1224,6 @@ class SqliteMeteringPersistence implements MeteringPersistence {
         );
       }
 
-      const nativeProof = input.record.nativeUsage && {
-        nativeAccountedAttemptIds: accountedNativeAttempts(input.record),
-        unaccountedEarlierCalls: input.record.nativeUsage.unaccountedEarlierCalls,
-      };
       runSql(this.database,
         `INSERT INTO metering_records(
           agent_conversation_id, operation_id, internal_session_id, adapter_id,
@@ -1241,7 +1237,7 @@ class SqliteMeteringPersistence implements MeteringPersistence {
         input.record.outcome,
         input.record.completedAt,
         input.meteringRecords === "none" ? null : serializedRecord,
-        nativeProof ? JSON.stringify(nativeProof) : null,
+        serializeNativeMeteringProof(input.record),
       );
 
       const revision = (current?.revision ?? 0) + 1;

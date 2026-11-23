@@ -1,5 +1,5 @@
 import type { CloseOperationInput, OpenOperation } from "../engine.ts";
-import type { AgentSessionMeteringState } from "../state.ts";
+import type { AgentSessionMeteringState, UnallocatedUsageAccrual } from "../state.ts";
 import { sumNativeTokens, evaluateNativeRetirement } from "./retirement.ts";
 import { UNAVAILABLE_PROVENANCE, type MeteringProvenance, type MeteringUsageResult, type NativeOperationUsage } from "../record.ts";
 import { unpricedUsage, type AttributableUsage } from "../rating.ts";
@@ -17,6 +17,7 @@ interface NativeMeasurement {
   readonly ratingFailureReason: string;
   readonly accountedThrough?: string;
   readonly partial?: boolean;
+  readonly unallocated?: readonly UnallocatedUsageAccrual[];
 }
 
 const observedProvenance: MeteringProvenance = Object.freeze({
@@ -41,9 +42,10 @@ export function advanceNativeCursor(state: AgentSessionMeteringState, channelKey
 export async function measureNativeTurn(channel: string, metering?: NativeTurnMetering, after?: string): Promise<NativeMeasurement> {
   const identity = { channel, turnId: metering?.turnId ?? null };
   const base = { applicability: null, ratingComplete: false, ratingFailureReason: nativeRouteUnavailable } as const;
-  const unavailable = (reason: string, evidence: NativeOperationUsage, accountedThrough?: string): NativeMeasurement => ({
+  const unavailable = (reason: string, evidence: NativeOperationUsage, accountedThrough?: string,
+    unallocated?: readonly UnallocatedUsageAccrual[]): NativeMeasurement => ({
     ...base, usage: { status: "usage_unavailable", reason }, attributable: null,
-    provenance: UNAVAILABLE_PROVENANCE, evidence, accountedThrough,
+    provenance: UNAVAILABLE_PROVENANCE, evidence, accountedThrough, unallocated,
   });
   if (!metering) {
     const reason = "the native turn was not prepared";
@@ -54,14 +56,14 @@ export async function measureNativeTurn(channel: string, metering?: NativeTurnMe
     const read = await metering.read({ after });
     const { calls, unmeasured, inferences } = read;
     const terminal = metering.isTerminal?.() === true;
-    const { through, earlier, pendingEarlier } = await evaluateNativeRetirement(metering, read, terminal);
+    const { through, earlier, unallocated, pendingEarlier } = await evaluateNativeRetirement(metering, read, terminal);
     const evidence: NativeOperationUsage = { ...identity, status: "observed", calls, unmeasured,
       ...(inferences.length ? { accountedAttemptIds: inferences.map(inference => inference.attemptId) } : {}),
       ...(earlier.length ? { unaccountedEarlierCalls: earlier } : {}),
       ...(pendingEarlier ? { earlierEvidencePending: true } : {}),
     };
     if (!inferences.length) {
-      return unavailable(calls.length ? "native model-call usage is incomplete" : "native ledger has no calls for this turn", evidence, through);
+      return unavailable(calls.length ? "native model-call usage is incomplete" : "native ledger has no calls for this turn", evidence, through, unallocated);
     }
 
     const summed = sumNativeTokens(inferences);
@@ -72,7 +74,7 @@ export async function measureNativeTurn(channel: string, metering?: NativeTurnMe
       : earlier.length ? "earlier native model-call evidence is recorded separately from this turn's total"
       : undefined;
     return {
-      ...base, evidence, provenance: observedProvenance, attributable, accountedThrough: through, partial: !!reason,
+      ...base, evidence, provenance: observedProvenance, attributable, accountedThrough: through, partial: !!reason, unallocated,
       usage: { status: "metered", reportedCumulative: summed, attributable,
         ...(reason ? { reason } : {}) },
     };

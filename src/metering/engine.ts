@@ -465,14 +465,10 @@ export class MeteringEngine {
       applicability,
       baseline: nextBaseline,
       partial: native?.partial,
-      ...(foreign.length > 0 || this.lateArrivals.length > 0
-        ? {
-            unallocated: [
-              ...foreign.map((inference) => toUnallocated(inference, "foreign")),
-              ...this.lateArrivals.map((inference) => toUnallocated(inference, "late")),
-            ],
-          }
-        : {}),
+      unallocated: native?.unallocated ?? [
+        ...foreign.map((inference) => toUnallocated(inference, "foreign")),
+        ...this.lateArrivals.map((inference) => toUnallocated(inference, "late")),
+      ],
     });
     this.baseline = nextBaseline;
     if (nextBaseline) this.trustedZeroBaseline = false;

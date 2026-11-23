@@ -17,12 +17,17 @@ export interface NativeTurnRead extends NativeTurnUsage {
   readonly inferences: readonly NativeUsageInference[];
 }
 
+export interface NativeAttemptReceipt {
+  readonly ids: readonly string[];
+  readonly truncated?: true;
+}
+
 export interface NativeTurnMetering {
   readonly turnId: string;
   readonly isTerminal?: () => boolean;
   readonly terminalEarlierTurns?: (turnIds: readonly string[]) => Promise<ReadonlySet<string>>;
   /** Null means no operation exists; undefined means its accounting cannot be established. */
-  readonly accountedAttempts?: (turnId: string) => Promise<readonly string[] | null | undefined>;
+  readonly accountedAttempts?: (turnId: string) => Promise<NativeAttemptReceipt | null | undefined>;
   read(position?: NativeLedgerPosition): Promise<NativeTurnRead>;
 }
 
