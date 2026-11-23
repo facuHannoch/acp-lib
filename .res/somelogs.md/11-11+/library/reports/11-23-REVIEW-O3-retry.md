@@ -161,3 +161,67 @@ One commit, `c1b1c04` (smoke runner, README, `lifecycle-agent.ts` fixture). I re
 
 1. **"Disposable" means only "not exactly `~/.codex`".** My probe with `ACP_ORCH_CODEX_HOME` set to the fake `HOME` itself (a parent of the real `~/.codex`) was accepted and ran. A parent directory, or a directory that contains the real login, isn't refused. Consider also rejecting a home that contains, or is inside, `~/.codex`, or one that already holds `auth.json` unless the user opts in. It is the user's own variable, so this is a guard-rail, not a hole.
 2. **Signals are caught, then work waits for the abort to unwind.** The handlers only abort the deadline controller, so a signal during an unbounded await (for example `agent.close()` in the `finally`) doesn't kill the process until that await ends. Nothing leaks, but a second signal won't force an exit. The README states that an uncatchable kill (SIGKILL) leaves an `acp-orch-live-*` work tree, which now contains no login file.
+
+# Part 5 — the live-run files (`c1b1c04..9c50ffb`)
+
+Four commits: `f73fde1` (hardened runner), `93d12a1` (the first live report), `0ab13e9` (the permission-tracing runner and `codex-permissions.ts`) and `9c50ffb` (the second live report). I read `git diff` and clean archives of `93d12a1` and `9c50ffb` (`/tmp/clad2a-live`, `/tmp/clad2a-live2`). I made **no live run, no paid call, and did not read or touch any Codex home**: my runner tests used a fake `HOME` and stub binaries.
+
+**Verdict: the hardening, the redaction and the gating all hold, and the reports are consistent with what the runner asserts. No blocking findings. One thing outside these commits needs attention (the committed `.mcp.json` token), and three small notes.**
+
+## The runner's hardening (`f73fde1`)
+
+With a fake `HOME` (so the real one was never involved) and a stub `codex` that sleeps, each case run with `ACP_ORCH_LIVE=1`, a dummy key and a 4 s timeout:
+
+| `ACP_ORCH_CODEX_HOME` | Result |
+| --- | --- |
+| the normal `~/.codex` | **refused** ("Use a disposable Codex home that does not overlap…") |
+| a child of it (`~/.codex/sub`) | **refused** |
+| `$HOME` itself | **refused** |
+| an ancestor of `$HOME` (`/dev/shm`), and `/` | **refused** |
+| a symlink to `~/.codex`, a symlink to its child, a symlink to `$HOME` | **refused** (both sides go through `realpath`) |
+| siblings with a similar name (`~/.codex-other`, `~/.codexy`) and an unrelated directory | accepted (they ran until my timeout and the temp tree was removed), so the check is path containment, not a name prefix |
+
+All refusals happen before the work tree exists. `README` now says shutdown, including `Agent.close()`, runs to completion and recommends `timeout --signal=TERM --kill-after=10s 470s`. **Note 1:** the guard protects only `~/.codex`; a user whose real login lives at a custom `CODEX_HOME` would not be protected if they pass that as the disposable home. It is the user's own variable, so this is a guard-rail.
+
+## The permission-tracing runner (`0ab13e9`)
+
+| Check | Result |
+| --- | --- |
+| **`INITIAL_AGENT_MODE=read-only` is set** | Yes (`workerEnv`, `run.ts:101`). Free mode reads the installed bridge's bundle **as data** and checks that `read-only` means `on-request`, the `user` reviewer, a read-only sandbox with network off, that the bridge reads `INITIAL_AGENT_MODE`, and that approvals go through `session/request_permission` with `kind: "execute"` and the command in `rawInput.command`; it also checks that the ACP matcher recognizes the projected command. It ran here against the installed bridge and printed the settings |
+| **The output file is outside the worker's cwd** | Yes: the worker's cwd is `<root>/worker`, the output is `<root>/result.txt` |
+| **The runner approves only the exact command** | Yes: it checks `kind === "execute"`, `command === the authorized echo`, no `url`, no `additionalPermissions` before answering, and picks the `allow_once` option |
+| **The trace is redacted** | Yes. The logger keeps **only** tool kind, option *kinds* (`allow_once` etc.), a fixed string for the permitted command (`echo 'orch live ok' > [run output]`) or `[redacted]`/`[absent]`, and the selection kind. Raw option ids and unrecognized command text are dropped. Every other debug event is discarded. Printed output goes through `safe()`, which replaces the API key and the run root |
+| **The trace is deleted with the run and isn't committed** | It is written to `<root>/worker-permissions.jsonl` (mode 0600), and `rm(root, recursive)` runs in the final `finally`, after the summary is printed. No such file or `acp-orch-live-*` path is in the tree at `9c50ffb`; the work tree is under `/tmp` |
+| **The runner never reads or prints anything inside `ACP_ORCH_CODEX_HOME`** | Confirmed by reading every file access in `smoke-tests/orchestrator`: the only reads are the bridge bundle (`readFile(realpath(codex-acp))`) and the run's own result file. `CODEX_HOME` appears only as an environment value for `codex login status` and for the worker; it is never opened, listed or printed. `codex login status` still receives the real `HOME` (note 2) |
+| **No paid calls in free mode / offline** | Free mode passes (1 pass, 4 filtered out), also under `unshare -rn` with no network |
+
+## Key-like strings
+
+I searched every file in the archives of both commits, plus the two live reports and the log files, for OpenRouter-style keys (`sk-or-…`, `sk-…`), JWTs, `access_token`/`refresh_token` values, `OPENROUTER_API_KEY=<value>` and bearer tokens. **Nothing in the live-run files, the reports or the logs matches**, and the reports contain no 32-character-or-longer token. The added lines of `c1b1c04..9c50ffb` contain no `auth.json`, token or secret word other than documentation of what is *not* done.
+
+**One hit outside these commits: `.mcp.json` is tracked and contains an `Authorization: Bearer <64 hex>` header for the local `agents-hub` MCP server (`http://localhost:3409`).** It was added long ago (`2b8ff46`), it is on `main` too, and it is not an OpenRouter or Codex credential, so it does not touch this review's question. It is still a bearer token in the repository history: tell the owner, and consider ignoring the file and rotating that token. I did not print the value here.
+
+## The reports against the evidence
+
+**First live attempt (`93d12a1`).** Consistent with the runner of that commit: three OpenRouter requests are the first native prompt (the delegate call), its post-tool reply, and the notice-driven turn; one worker submission; the run stopped at the first mismatch (no forwarded permission) and the report says the permission and redirect gate stayed open. Its claims are scoped to what it saw (delivery from the run's database, not the runner's final assertions). **Note 3:** the report doesn't say *why* Codex didn't ask. The second runner's change explains it: the first run didn't set `INITIAL_AGENT_MODE`, which is what the bridge reads for its approval policy and sandbox (the `CODEX_CONFIG` JSON alone didn't select them). One sentence to that effect would make the two reports read as one story.
+
+**Second attempt (`9c50ffb`).** Every quoted result is one the runner **asserts and fails hard on**, so an exit code of 0 implies it:
+
+| Claim in the report | Where the runner enforces it |
+| --- | --- |
+| an `execute` request from `w1` reached Alice, command `echo 'orch live ok' > [run output]`, options `allow_once`, `allow_always`, `reject_once` | the permission trace (exactly one request, kind and command checked) and the check on `ask.source.handle === "w1"` and the exact command |
+| Bob's redirect queued while it was open; Bob's answer was rejected | `send` result must be `steered`; `bob.answerPermission(...)` must be not accepted; `resolutions === 0` is checked before Alice answers |
+| Alice's `allow_once` gave one approved resolution and one ACP `allow_once` response | `alice.answerPermission` accepted; `resolutions === 1`, `trace.requests.length === 1`, `trace.responses === ["allow_once"]` |
+| one notice from `w1` to Bob | `notices.length === 1`, channel Bob, source `w1` |
+| 5 OpenRouter requests, 2 native prompts, 2 worker submissions | the counters (`nativeCalls`, `workerSubmissions`) are asserted at 2, 4 and 5 along the way; the request cap is 6 |
+| the file contained the line | `readFile(output)` is checked |
+| provider delete true; both native conversations tombstoned; trees removed | `providerDeleted === true`, `deletedAt` checks, and `existsSync(root)` is checked in the final `finally` |
+
+I can't re-observe the live output (I did not run it), so "11 s" and the quoted model sentences rest on the report; nothing in them contradicts the code. The report states the supplied Codex home was not inspected; that matches the runner. **Note 4:** the report says the bridge reported no count of Codex's internal model calls, which is the stated limitation (those calls are uncapped); keep that sentence in the final status.
+
+## Notes (none blocking)
+
+1. The home guard protects only `~/.codex`, not a custom `CODEX_HOME` of the user's.
+2. `codex login status` is given the real `HOME`; with `CODEX_HOME` set, Codex should not read `~/.codex`, but it's the one place the real home directory reaches a child process.
+3. Add one sentence to the first report on why Codex did not ask (the mode variable).
+4. **Free mode now depends on the installed bridge.** `checkWorkerMode` throws if the bundle doesn't match the pinned 2.9.0 text, and nothing catches it in the free path: I put a stub `codex-acp` on `PATH` and the "free, scripted" run **exited with an error before running its test**. A newer bridge version would break the free smoke the same way. Catch it in free mode and print "cannot verify", as the not-installed branch already does.
