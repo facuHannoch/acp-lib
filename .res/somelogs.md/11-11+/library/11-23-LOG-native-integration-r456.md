@@ -212,3 +212,13 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   commits persisted a failed record): asked cod2a to verify that the next open's recovery restores the reply exactly
   once (test and changelog) or persist it; plus a test for the late-completion guard and the changelog's metering
   sentence. The pre-alpha waits for that short follow-up.
+- The stopped-reply recovery (`1b1472d`, report `97b44e3`) checked by clad2a (`3aaa53a`): clean for the case it targets, **R6
+  approved**. On `fde102b` a stop with the completion held left only the in-progress snapshot after a reopen though the
+  harness had committed the message (a real loss); now the exact stopped turn is checked within one five-second
+  deadline and the committed reply persisted by provider id (the caller still gets cancelled with empty text). One
+  record across two same-Agent reopens, a late live completion and two new-Agent opens; a silent host: stop 5,009 ms;
+  nothing committed: no record; two conversations: no cross-attribution. A narrower case is not restored at stop (a
+  second conversation's turn whose events were also in flight: restored on a new Agent open); three survivors (the
+  deadline, the provider-id dedupe, the unknown-turn check); the worst-case native stop with a silent host is about 6 s.
+  **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-R6.md)): 1,672 in 159 files. `pre-alpha` built with R5's
+  docs and all of R6.
