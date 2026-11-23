@@ -99,8 +99,9 @@ export class Orchestrator {
       if (!redirected) await update();
       this.dispatch(slot, actor, input.text, plan, redirected ? async () => {
         await update();
-        this.emit({ ...this.identity(workerSlot.row), kind: "worker_redirected",
-          ...(running.destination ? { previousConversation: running.destination } : {}) });
+        const event = { ...this.identity(workerSlot.row), kind: "worker_redirected" as const,
+          ...(running.destination ? { previousConversation: running.destination } : {}) };
+        return () => this.emit(event);
       } : undefined);
       return { status: running ? "steered" : "sent" };
     });
@@ -237,7 +238,7 @@ export class Orchestrator {
 
   private dispatch(
     slot: ReturnType<WorkerPool["attach"]>, actor: WorkerActor, text: string, plan: AssignmentPlan,
-    accepted?: () => Promise<void>,
+    accepted?: () => Promise<() => void>,
   ): void {
     const sender = actor.kind === "conversation" ? actor.sender : undefined;
     const active = this.pool.start(slot, plan.assignment, sender);
@@ -246,22 +247,33 @@ export class Orchestrator {
     if (plan.kind === "start") this.emit({ ...identity, kind: "worker_busy" });
     const policyNames = actor.kind === "conversation" ? [...actor.policyNames] : [];
     let crossedDispatch = false;
+    let announceRedirect: (() => void) | undefined;
+    const confirmDispatch = () => {
+      const announce = announceRedirect;
+      announceRedirect = undefined;
+      announce?.();
+    };
     const input = {
       text,
-      handlers: { onPermissionRequest: workerPermissionHandler(actor, row, this.findGivingConversation, this.defaultWorkerPermissions) },
+      handlers: {
+        onPermissionRequest: workerPermissionHandler(actor, row, this.findGivingConversation, this.defaultWorkerPermissions),
+        ...(accepted ? { onUpdate: confirmDispatch } : {}),
+      },
       delivery: plan.kind === "start" ? "queue" as const : "steer" as const,
       ...(actor.kind === "conversation" || accepted ? { beforeDispatch: async (messageId: string) => {
         await this.assignments?.beforeDispatch(row, plan, messageId, policyNames, actor.kind === "conversation" ? actor : undefined);
         crossedDispatch = true;
         // Reservation and retarget have committed. Bookkeeping errors must not refuse that accepted dispatch.
-        try { await accepted?.(); }
+        try { announceRedirect = await accepted?.(); }
         catch (error) { this.log.warn("worker_dispatch_bookkeeping_failed", { handle: row.handle, error: String(error) }); }
       } } : {}),
     };
     const work = sender === undefined ? slot.conversation.prompt(input) : slot.conversation.promptFrom({ ...input, participantId: sender });
     const completion = work.then(result => {
-      if (result.status === "completed") this.emit({ ...identity, kind: "worker_replied" });
-      else if (result.status === "error") this.emit({ ...identity, kind: "worker_failed", reason: workerTerminalFailure(false).reason });
+      if (result.status === "completed") {
+        confirmDispatch();
+        this.emit({ ...identity, kind: "worker_replied" });
+      } else if (result.status === "error") this.emit({ ...identity, kind: "worker_failed", reason: workerTerminalFailure(false).reason });
     }, async (error: unknown) => {
       this.log.warn("worker_prompt_failed", { conversationId: slot.conversation.id, error: String(error) });
       if (!crossedDispatch && plan.kind !== "start" && actor.kind === "conversation") {

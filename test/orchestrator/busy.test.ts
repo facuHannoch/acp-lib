@@ -27,11 +27,15 @@ for (const scenario of ["continue", "redirect", "replace", "take over with new a
     const events: WorkerEvent[] = [];
     const tool = Promise.withResolvers<void>();
     const successor = Promise.withResolvers<void>();
+    const redirected = Promise.withResolvers<void>();
     agent.events.subscribe(({ event }) => {
       if (event.record.kind === "tool_call" && event.record.state === "announced") tool.resolve();
     });
     const orchestrator = new Orchestrator(agent.persistence.workers!, agent.conversations, { limit: 1 }, noopLogger,
-      event => events.push(event), {
+      event => {
+        events.push(event);
+        if (event.kind === "worker_redirected") redirected.resolve();
+      }, {
         async beforeDispatch(_row, plan, messageId, policyNames) {
           planned.push({ plan, messageId, policyNames });
           if (planned.length === 2) successor.resolve();
@@ -59,6 +63,7 @@ for (const scenario of ["continue", "redirect", "replace", "take over with new a
       expect((await orchestrator.check(restricted, "w1")).state).toBe("busy");
       await writeFile(boundary, "");
       await successor.promise;
+      if (takeover) await redirected.promise;
       expect(planned.map(entry => entry.plan)).toEqual([
         { kind: "start", assignment: { id: "first", destination: giver.conversationId } },
         {

@@ -10,7 +10,7 @@ const lifecyclePeer = new URL("../fixtures/lifecycle-agent.ts", import.meta.url)
 const allowed = ["continue", "redirect", "replace"] as const;
 const refused = ["conflict", "hook_error"] as const;
 
-for (const mode of [...allowed, ...refused]) {
+for (const mode of [...allowed, ...refused, "folded_conflict"] as const) {
   test(`a busy ACP successor ${mode} uses the durable assignment boundary`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "orchestrator-assignment-"));
     const toolGate = join(directory, "release-tool"), state = join(directory, "worker-history.json");
@@ -36,8 +36,9 @@ for (const mode of [...allowed, ...refused]) {
       await waitFor(tool.promise, "original worker to reach the tool barrier");
       const originalBinding = (await repo.readBinding("original"))!;
       expect(originalBinding).toMatchObject({ destination: { kind: "acp", id: original.id }, originatingPolicyNames: ["guest"] });
-      if (mode === "conflict") {
-        expect(await repo.reserve({ ...originalBinding, assignmentId: "next", messageId: "some-other-message" })).toBe("reserved");
+      if (mode === "conflict" || mode === "folded_conflict") {
+        const conflicting = mode === "conflict" ? "next" : "later";
+        expect(await repo.reserve({ ...originalBinding, assignmentId: conflicting, messageId: "some-other-message" })).toBe("reserved");
       }
       if (mode === "hook_error") {
         const transaction = agent.persistence.transaction.bind(agent.persistence);
@@ -51,6 +52,10 @@ for (const mode of [...allowed, ...refused]) {
       const replace = mode === "replace" || mode === "conflict";
       expect(await pool.send(next, "w1", { text: "successor", redirect: true, ...(replace ? { assignment: "new" as const } : {}) }))
         .toEqual({ status: "steered" });
+      if (mode === "folded_conflict") {
+        expect(await pool.send(actor(original.id, "later", ["guest"]), "w1",
+          { text: "later successor", redirect: true, assignment: "new" })).toEqual({ status: "steered" });
+      }
       expect(events.some(event => event.kind === "worker_redirected" || event.kind === "worker_failed")).toBe(false);
       expect((await repo.readBinding("original"))?.messageId).toBe(originalBinding.messageId);
       await writeFile(toolGate, "");
@@ -66,7 +71,13 @@ for (const mode of [...allowed, ...refused]) {
       }
       const dispatched = Object.values(JSON.parse(await readFile(state, "utf8")) as Record<string, string[]>).flat();
       const redirected = events.filter(event => event.kind === "worker_redirected");
-      if (failed) {
+      if (mode === "folded_conflict") {
+        expect(dispatched).toEqual(["[lifecycle:tool] old"]);
+        expect(redirected).toHaveLength(0);
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: "worker_failed", reason: "refused", cause: "conflict", destination: original.id,
+        }));
+      } else if (failed) {
         expect(dispatched).toEqual(["[lifecycle:tool] old"]);
         expect(await repo.readBinding("original")).toMatchObject({ messageId: originalBinding.messageId,
           destination: { kind: "acp", id: original.id }, contributingPolicyNames: ["guest"] });
