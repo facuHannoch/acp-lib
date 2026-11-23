@@ -193,3 +193,12 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   never taken by a turn; a running (taken) prompt keeps the previous cancelled-result behaviour; changelog accurate;
   report notes that a real-process strict prefix can't be scripted. Then a short check and the pre-alpha with R5's docs
   and all of R6.
+- R6 stop narrowing (`ac33f2d`, report `ac09144`) checked by clad2a (`80736cb`; coordinator gate 1,670 in 159 files green,
+  sizes unchanged). The discrepancy: clad2a was wrong, cod2a was right: on `a9b3ae1` a stop mid-turn returned
+  `{ status: "cancelled" }` with EMPTY text, no messages and no metering record (the records had "Partial reply.");
+  `2e1869f` rejected; `ac09144` returns cancelled with "Partial reply.", one message and a cancelled metering record.
+  So it IS a (benign) change from the old behaviour and the changelog must say so (a mid-message stop still returns
+  empty text). Mixed stop and close, a 30-round take-wins race, pre-submission prompts and the typed error only for
+  never-taken inputs all verified. Three fixes: the changelog; a stop racing an in-flight `message_completed` gives
+  `AgentSessionOperationError` where `a9b3ae1` returned cancelled (settle it as cancelled); a test for the `taken`
+  answer during the grace (the `noteTaken` mutation survives).
