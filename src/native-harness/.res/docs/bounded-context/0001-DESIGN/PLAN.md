@@ -2,7 +2,7 @@
 
 Date: 2026-11-23
 
-Status: Gate 2 implements the bounded storage read. Inference integration is next.
+Status: Gate 3 wires bounded context into inference. Inspector read changes and the end-to-end checkpoint are next.
 
 ## Scope and base
 
