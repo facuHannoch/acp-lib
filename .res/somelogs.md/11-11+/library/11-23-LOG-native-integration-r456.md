@@ -264,3 +264,9 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   on the orchestrator. Packaging, for the user's decision: the pack is 515 files, 4.61 MB, with no secrets; it ships
   `src/native-harness/.res` (internal docs, a marketing draft, sandbox transcripts), 708 KB of harness tests, twelve files
   containing the author's absolute path, and a smoke-test README link that points outside the package.
+- Release docs fixes (`b8d627b`) re-checked by clad2a (`8964e86`): clean, **the release docs are done**. All six items landed;
+  the list of newly required members is complete (`PersistenceCapabilities.channels`, `PromptHandle.withdrawAsync`,
+  `AgentEventBus.subscribeWorkers`); the README Quick start compiles and runs; agents-core's types return to the 0.12.1
+  baseline byte for byte and its two runtime tests return to full pass with the documented test-double edit. **Gate
+  passed** ([gate](../.plan-execution/status/11-23-GATE-release-docs.md)): 1,678 in 162 files. Combined with cod2a's test
+  guard `8ba7662` into `pre-alpha`. Alpha had moved by two docs-only commits (the reminders and routines spec).
