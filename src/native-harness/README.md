@@ -35,9 +35,14 @@ bun run test
 OPENROUTER_API_KEY=your-key bun run start
 ```
 
-That session lives in memory. To keep it in a SQLite file, name one:
+Each plain `bun run start` creates a new durable session under
+`~/.harness/sessions/<session-id>/session.sqlite`. Startup prints its ID and
+database path. To reopen it, use the ID or the path. Use `--create` when you want
+to choose the ID or file for a new session.
 
 ```sh
+bun run start --session <session-id>       # reopen a saved session
+bun run start --session project-a --create  # create with a chosen ID
 bun run start --db ./dev.sqlite --create   # first run: the file must not exist
 bun run start --db ./dev.sqlite            # later runs: the file must exist
 bun run start --db ./dev.sqlite --resume   # also resume a suspended session
@@ -74,7 +79,11 @@ and receives notice-triggered replies through the same output subscriptions.
 The pairing link changes on restart; it grants access to this development chat,
 not a verified participant identity. No provider key is sent to the browser.
 
-Set `HARNESS_CHAT_PORT` to change port 3001, or use 0 for an available port. The
+The CLI recovers a stale Unix socket owned by the current user. If a server
+is listening there, connect with `bun run chat` or use a different
+`HARNESS_SOCKET`. Unavailable default browser ports fall back to available
+ports. Explicit port settings are honored, and 0 requests an available port.
+Use the URLs printed at startup. The
 phone needs network access to that port. The inspector stays local-only on port
 3000. Its Live Context tab shows a bounded preview across the session. Timeline
 pages older events on request, and Channels shows recent captured requests
@@ -84,7 +93,7 @@ New messages and notices have an 8 KiB UTF-8 text limit. Web chat currently show
 replies, without replay or persistent browser history. Browser connections do not
 automatically reconnect after a network loss; press Connect again.
 
-Open `http://127.0.0.1:3000` for the read-only context inspector. It starts with
+Open the printed URL for the read-only context inspector. It starts with
 the agent and opens on Live context, showing the rendered shared base and tool
 definitions in one plain-text container. The system prompt and tools are visible
 immediately, before any inference. Shared history updates as events are recorded;
@@ -129,7 +138,7 @@ Messages sent to a channel while it is working join the turn in progress, and
 their requests all complete with that turn's last reply.
 A request still waiting when its turn is checkpointed by suspension is answered
 with an explanation; the reply arrives through the subscription after resume.
-Ctrl+C in the agent terminal stops it; without `--db` all history is lost. Ask for the current
+Ctrl+C in the agent terminal stops it. Reopen the session to continue its history. Ask for the current
 time to exercise tool use. Tools and results are logged in the agent terminal;
 chat clients receive the final answer.
 
@@ -206,14 +215,21 @@ context, and never executed again by the harness. Tool errors are returned to
 the model. Disconnecting a client does not
 cancel an accepted turn. New shared events are visible at the next ordinary
 inference; ordinary shared events do not wake idle channels or extend a turn.
-Explicit notices do. Stopping the agent loses the dashboard job, and the
-session too unless it was started with `--db`.
+Explicit notices do. The development CLI saves the session across restarts.
 
-## Startup scenario and notices
+## Development instructions and notices
 
-The development system prompt describes a startup preparing its dashboard and
-launch. `dashboard_work({})` advances a single shared dashboard job by one of five
-steps. Each step waits five seconds in code, not in model narration. Only one
+Live development defaults to the general-purpose [instructions](src/interfaces/cli/instructions.md)
+and offers `current_time` and `notify_channel`. To use your own Markdown, run
+`bun run start --instructions ./my-instructions.md`. For a saved session, add
+`--db <path>`. The explicit file replaces the selected config's `system` text
+for that open. SQLite saves the resolved text with the session, and a present
+`config.json` still supplies the configuration on subsequent opens without the
+flag. Restart the harness to load edits. A changed prompt or tool list can make
+a suspended turn incompatible with the new configuration.
+
+Scripted development runs keep the dashboard demo. In that demo,
+`dashboard_work({})` advances a shared job by one of five simulated steps. Only one
 dashboard call per inference can advance work. Concurrent attempts return busy;
 after five steps, additional calls report completion without advancing. No work
 runs between calls. A running step is not interrupted; the model decides whether

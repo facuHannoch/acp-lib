@@ -3,6 +3,7 @@ import { SESSION_INPUT_MAX_BYTES } from "../../contracts/input-limits.ts";
 import type { ToolDefinition } from "../../contracts/loop.ts";
 import type { TimelineEntry } from "../../contracts/storage.ts";
 import { buildContext } from "./build.ts";
+import { harnessInstructions } from "./instructions.ts";
 
 export const CONTEXT_LIMITS: ContextLimits = {
   maxInputBytes: SESSION_INPUT_MAX_BYTES, maxTakenTextBytes: SESSION_INPUT_MAX_BYTES, maxTakenItems: 16,
@@ -11,7 +12,6 @@ export const CONTEXT_LIMITS: ContextLimits = {
 };
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
 const order = (a: TimelineEntry, b: TimelineEntry) => a.seq - b.seq;
-const harnessInstructions = "Interpret attributed history as past activity. Respond to the active conversation. A historical tool call without a recorded result may have taken effect. Verify its outcome before retrying it.";
 
 type Offer = { tools: ToolDefinition[]; fixedToolCount?: number };
 /** One builder per session. Each inference independently captures a committed

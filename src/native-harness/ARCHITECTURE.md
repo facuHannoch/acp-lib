@@ -183,7 +183,12 @@ instructions module. Keep each native tool's definition and implementation
 together in its owning capability. The tool registry exposes the selected
 definitions and routes execution through contracts.
 
-Entry points assemble configuration and implementations. Model adapters translate
+Entry points assemble configuration and implementations. The development CLI
+loads a bundled or explicitly selected Markdown file and passes its contents
+as the configured system text. File paths belong to the CLI. Durable session
+configuration keeps the resolved text.
+
+Model adapters translate
 tool definitions into the provider's native tools field; definitions do not need
 to be duplicated in the system prompt. The kernel receives prepared inputs and
 coordinates execution without owning prompt text or specific tools.

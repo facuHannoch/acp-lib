@@ -83,10 +83,14 @@ export function createChannelHandler(session: LocalSession, outputs?: ChannelOut
 
 /** Experimental local HTTP interface; caller identity is self-reported. */
 export function serveLocal(session: LocalSession, socketPath: string, outputs?: ChannelOutputs, control?: LocalControl) {
-  const handle = createChannelHandler(session, outputs, control);
+  let handle: ReturnType<typeof createChannelHandler> | undefined;
   return Bun.serve({
     unix: socketPath,
-    fetch(request, server) { server.timeout(request, 0); return handle(request); },
+    fetch(request, server) {
+      server.timeout(request, 0);
+      handle ??= createChannelHandler(session, outputs, control);
+      return handle(request);
+    },
   });
 }
 

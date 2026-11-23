@@ -2,7 +2,8 @@ import { entryOverhead, type ContextRow } from "./inference.ts";
 import { checkScriptIdentity } from "./script-identity.ts";
 import { Database } from "bun:sqlite";
 import { existsSync, linkSync, rmSync } from "node:fs";
-import type { SessionStorageAdapter, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
+import type { PortableSessionConfig } from "../../contracts/session-file.ts";
+import type { SessionStorageAdapter, StorageResult, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
 import { Fail, createEngine, failure, recover, referencesCompatible, type ChannelRow, type Meta, type Tables, type TurnRow } from "./engine.ts";
 import { archiveMeta, restoreArchive, storedSession, validateArchive, validateSessionPayload } from "./archive.ts";
 import { legacyItemSignature, policyItemSignature } from "./policy-metadata.ts";
@@ -368,24 +369,36 @@ function publish(path: string, meta: Meta, fill?: (tables: Tables) => void): voi
   } finally { rmSync(draft, { force: true }); rmSync(`${draft}-journal`, { force: true }); }
 }
 
+interface SavedSessionHeader { sessionId: string; config: PortableSessionConfig | undefined }
+
 /** One SQLite file holds one session. Ownership is SQLite's exclusive file
  * lock, held from open to close: a second handle, in this or any process,
  * fails immediately, and the operating system releases it if the owner dies. */
-export function createSqliteStorageAdapter(path: string): SessionStorageAdapter {
+export function createSqliteStorageAdapter(path: string): SessionStorageAdapter & {
+  /** Inspect the saved identity and config without taking session ownership. */
+  readSavedHeader(): StorageResult<SavedSessionHeader>;
+} {
+  const readSavedHeader = (): StorageResult<SavedSessionHeader> => {
+    let db: Database | undefined;
+    try {
+      if (!existsSync(path)) throw new Fail("not_found", `No session exists at ${path}`);
+      db = new Database(path, { readonly: true }); db.exec("PRAGMA busy_timeout=0");
+      const rows = db.query<{ key: string; value: string }, []>("SELECT key, value FROM meta WHERE key IN ('importedConfig', 'revision', 'sessionId')").all();
+      const raw = rows.find(row => row.key === "importedConfig")?.value;
+      const sessionId = rows.find(row => row.key === "sessionId")?.value;
+      if (!sessionId?.trim()) throw new Fail("incompatible", "No saved session ID");
+      return { ok: true, value: { sessionId, config: raw === undefined ? undefined : JSON.parse(raw) }, revision: Number(rows.find(row => row.key === "revision")?.value ?? 0) };
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return failure(new Fail("owner_conflict", "Session storage already has an owner"));
+      return failure(error);
+    } finally { db?.close(); }
+  };
   return {
+    readSavedHeader,
     readSavedConfig() {
-      let db: Database | undefined;
-      try {
-        if (!existsSync(path)) throw new Fail("not_found", `No session exists at ${path}`);
-        db = new Database(path, { readonly: true }); db.exec("PRAGMA busy_timeout=0");
-        const rows = db.query<{ key: string; value: string }, []>("SELECT key, value FROM meta WHERE key IN ('importedConfig', 'revision')").all();
-        const raw = rows.find(row => row.key === "importedConfig")?.value;
-        return { ok: true, value: raw === undefined ? undefined : JSON.parse(raw), revision: Number(rows.find(row => row.key === "revision")?.value ?? 0) };
-      } catch (error) {
-        const code = (error as { code?: string }).code;
-        if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return failure(new Fail("owner_conflict", "Session storage already has an owner"));
-        return failure(error);
-      } finally { db?.close(); }
+      const result = readSavedHeader();
+      return result.ok ? { ...result, value: result.value.config } : result;
     },
     importSessionFile(payload, options) {
       try {
