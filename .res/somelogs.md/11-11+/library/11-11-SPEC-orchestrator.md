@@ -564,7 +564,10 @@ events only for a conversation's own turns). Corrections go to the spec owner be
    answers `conflict`), the send is refused and the orchestrator closes the awaiting continuation of the old
    assignment (`closeContinuation`, interrupted, steered), so its notice isn't lost; `worker_redirected` is emitted
    only after the successor's dispatch is accepted. After a `replaced` result the orchestrator triggers the host's
-   pending-notice flush (`agent.nativeHarness?.flushWorkerDelivery()`).
+   pending-notice flush (`agent.nativeHarness?.flushWorkerDelivery()`). **After a restart,** an assignment left by
+   the previous owner is abandoned: `continueAssignment` on it answers `conflict` (correctly), and the orchestrator
+   then treats the worker as idle and reserves a fresh assignment for the send, rather than refusing it; the
+   abandoned one is settled as uncertain by the recovery (O5b).
 3. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
    the assignment's destination; a gone target keeps the reply on the
    worker (`check`, `list`). **Gate:** each item; a deleted target.

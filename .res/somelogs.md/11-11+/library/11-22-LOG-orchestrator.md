@@ -160,3 +160,8 @@ edit to `src/agent-session.ts`.
 - Cod1a's runtime `d78bee1` (on O1 `3c28130`; schema 20; the lifecycle, the flush, ACP filtered) is with Clad1a; their
   root runs are not green (load deadlines in the audit flush and two fixture watchdogs, each passing in focused
   reruns). O3a waits for it. O6 step 1 (the route, the actor, the tool catalog) has no dependency on it: given to cod2a.
+- Clad1a did not approve Cod1a's implementation `d78bee1`: F1, after a restart `replaceAssignment` on an abandoned
+  predecessor returns `conflict`, blocking an explicit `assignment: "new"` send to an ACP-destination worker until the
+  old row is staged; Cod1a to settle it as uncertain inside the same transaction. Schema 20 verified on a real
+  `3fd2db2` database (19, then 20, reopened twice). For O3a (spec updated): after a restart `continueAssignment` on
+  abandoned work answers `conflict`, so the orchestrator reserves a fresh assignment for the send.
