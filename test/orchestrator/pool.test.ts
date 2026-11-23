@@ -299,3 +299,18 @@ test("idle timers can be disabled, are cleared by a new send and stay closed at 
     } finally { enabled.closeIdleTimers(); }
   } finally { await close(); }
 }, 15_000);
+
+
+test("drop succeeds for a directly deleted worker before another operation reconciles it", async () => {
+  const { agent, pool, close } = await rig(1, false);
+  const dropped: string[] = [];
+  agent.events.subscribeWorkers(({ event }) => { if (event.kind === "worker_dropped") dropped.push(event.handle); });
+  try {
+    await pool.open(actor, { text: "work" });
+    const worker = await agent.workers!.check("w1");
+    await agent.conversations.delete(worker.conversationId);
+    expect(await agent.workers!.delete("w1")).toEqual({ providerDeleted: false, checkpointsDeleted: 0 });
+    expect((await agent.persistence.workers!.get("w1"))?.droppedAt).toBeDefined();
+    expect(dropped).toEqual(["w1"]);
+  } finally { await close(); }
+}, 20_000);

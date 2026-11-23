@@ -5,11 +5,18 @@
 - `AgentEvent` includes worker lifecycle facts. Subscribe with `agent.events.subscribeWorkers` for
   worker events. Existing committed-record subscriptions retain their record payloads.
 
+## Worker shutdown
+
+- `agent.workers.delete(handle)` returns a `DeleteConversationResult` with the provider cleanup outcome.
+- `orchestrator.workers.idleStopMs` defaults to ten minutes and accepts `false` to keep idle
+  providers connected. An idle stop emits `worker_stopped` with reason `idle`; the next send reloads the worker.
+
 ## Worker permission forwarding
 
 - A forwarded `permission_requested` event carries a `source` with the worker handle and conversation ID.
-  Its `turnId` is optional. The public `WorkerPermissionSource` type describes the source, and the giving
+  `turnId` is optional only on a request with a worker source. Ordinary requests require it. The public `WorkerPermissionSource` type describes the source, and the giving
   conversation answers through its existing `answerPermission` method.
+- Forwarded asks shown to a non-owner hide `allow_always` and reject it as an answer.
 - Consumer-opened workers use `orchestrator.defaults.workerPermissions`. An unattended ask is refused.
 
 ## Conversation permission events

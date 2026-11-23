@@ -125,7 +125,8 @@ export class Orchestrator {
   drop(actor: WorkerActor, handle: string): Promise<DeleteConversationResult> {
     return this.run(async () => {
       requireWorkerRedirect(actor);
-      const row = await this.requireWorker(actor, handle);
+      const row = await this.requireWorker(actor, handle, true);
+      if (!await this.reconcileWorker(row)) return { providerDeleted: false, checkpointsDeleted: 0 };
       await this.interrupt(handle);
       let result: DeleteConversationResult;
       try {
@@ -188,12 +189,12 @@ export class Orchestrator {
     if (!input.text.trim()) throw new Error("worker prompt cannot be blank");
   }
 
-  private async requireWorker(actor: WorkerActor, handle: string): Promise<WorkerRow> {
+  private async requireWorker(actor: WorkerActor, handle: string, allowMissingConversation = false): Promise<WorkerRow> {
     const row = await this.workers.get(handle);
     if (actor.kind === "conversation" && actor.policy.scope === "none" &&
       (!row || !canSeeWorker(actor, row, this.pool.get(handle)?.work?.assignment))) throw new WorkerPolicyError("scope");
     if (!row || row.droppedAt) throw new Error(`unknown active worker: ${handle}`);
-    if (!await this.reconcileWorker(row)) throw new Error(`worker conversation is unavailable: ${handle}`);
+    if (!allowMissingConversation && !await this.reconcileWorker(row)) throw new Error(`worker conversation is unavailable: ${handle}`);
     return row;
   }
 
