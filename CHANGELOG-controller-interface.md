@@ -23,6 +23,9 @@
   outcome, `check` and `list` include the last successful result as `latestResult` if one exists.
 - Native destinations receive durable worker notices through the harness. Opening the harness
   retries eligible notices and recovers prior assignments by ID without redispatching work.
+- Worker `check` and `list` report `deliveryState` for the latest staged assignment. Consumers
+  can call `agent.workers.retryDelivery(handle)` to retry the worker's newest policy-blocked notice
+  explicitly. It rejects when the worker has no policy-blocked delivery.
 
 ## Worker permission forwarding
 

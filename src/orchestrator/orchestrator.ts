@@ -119,6 +119,14 @@ export class Orchestrator {
     });
   }
 
+  retryDelivery(handle: string): Promise<void> {
+    return this.run(async () => {
+      const row = await this.requireWorker({ kind: "consumer" }, handle);
+      if (!this.assignments?.retryDelivery) throw new Error(`worker ${handle} has no policy-blocked delivery to retry`);
+      await this.assignments.retryDelivery(row);
+    });
+  }
+
   stop(actor: WorkerActor, handle: string): Promise<"stopped" | "idle"> {
     return this.run(async () => {
       const row = await this.requireWorker(actor, handle);
@@ -220,7 +228,7 @@ export class Orchestrator {
     const latest = await this.assignments?.latestOutcome?.(row);
     const result = latest?.assignmentId.startsWith("refused-steer:")
       ? (await this.assignments?.latestResult?.(row))?.outcome : undefined;
-    return { ...this.pool.summary(row), ...(latest ? { latestOutcome: latest.outcome } : {}),
+    return { ...this.pool.summary(row), ...(latest ? { latestOutcome: latest.outcome, deliveryState: latest.delivery.state } : {}),
       ...(result?.kind === "result" ? { latestResult: result } : {}) };
   }
 
