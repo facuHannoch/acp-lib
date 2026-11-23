@@ -138,3 +138,7 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   the 32 KiB boundary; nine mutations killed; a record from the intermediate source still reads. **Gate passed**
   ([gate](../.plan-execution/status/11-23-GATE-R5-2b.md)): 1,649 in 155 files. `pre-alpha` rebuilt with R5 step 2b (the
   harness tree untouched). Step 4 (docs) and R6 released.
+- R5 step 4 (docs and close-out) in from cod2a: `910b7fd` (the native source, the evidence shape, schema 21, pricing and
+  failure behaviour, the two retention limitations: `CHANGELOG-metering.md`, `CONSUMER_GUIDE.md`), `d6c35b8` (the final gate
+  result in the R5 report: 1,649 in 155 files); alpha `b77c3d7` merged at `9a0e0fd`. Nothing under `src/` or `test/`
+  changed. With clad2a for a docs review; cod2a is writing R6's grounding.
