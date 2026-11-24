@@ -1,7 +1,7 @@
 import type { PortableSessionConfig } from "../../contracts/session-file.ts";
 import { validateManagedConfig } from "../../util/config.ts";
 
-/** Narrow, definite-length CBOR profile for JSON-compatible session data. */
+/** Narrow, definite-length CBOR profile for session data and file bytes. */
 export class SessionFileError extends Error {
   constructor(readonly code: "invalid_archive" | "transfer_limit" | "serialization_error", message: string) { super(message); }
 }
@@ -9,27 +9,38 @@ const bad = (message: string): never => { throw new Error(message); };
 export function validateConfig(value: unknown, legacy = false): PortableSessionConfig {
   return validateManagedConfig(value, legacy);
 }
-function cborEncode(value: unknown): Uint8Array {
+function cborEncode(value: unknown, maxPayloadBytes: number): Uint8Array {
   const chunks: Uint8Array[] = [];
+  let length = 0;
+  const add = (bytes: Uint8Array) => {
+    if (bytes.length > maxPayloadBytes - length) throw new SessionFileError("transfer_limit", "Session file exceeds limit");
+    length += bytes.length;
+    chunks.push(bytes);
+  };
   const head = (major: number, n: number) => {
     if (!Number.isSafeInteger(n) || n < 0) bad("Invalid CBOR length");
-    if (n < 24) { chunks.push(Uint8Array.of(major * 32 + n)); return; }
+    if (n < 24) { add(Uint8Array.of(major * 32 + n)); return; }
     const size = n <= 255 ? 1 : n <= 65535 ? 2 : n <= 0xffffffff ? 4 : 8;
     const bytes = new Uint8Array(1 + size), view = new DataView(bytes.buffer);
     bytes[0] = major * 32 + ({ 1: 24, 2: 25, 4: 26, 8: 27 } as Record<number, number>)[size]!;
     if (size === 1) view.setUint8(1, n); else if (size === 2) view.setUint16(1, n); else if (size === 4) view.setUint32(1, n); else view.setBigUint64(1, BigInt(n));
-    chunks.push(bytes);
+    add(bytes);
   };
   const visit = (v: unknown, depth: number) => {
-    if (v === null) { chunks.push(Uint8Array.of(0xf6)); return; }
-    if (typeof v === "boolean") { chunks.push(Uint8Array.of(v ? 0xf5 : 0xf4)); return; }
+    if (v === null) { add(Uint8Array.of(0xf6)); return; }
+    if (typeof v === "boolean") { add(Uint8Array.of(v ? 0xf5 : 0xf4)); return; }
     if (typeof v === "number") {
       if (!Number.isFinite(v) || (Number.isInteger(v) && !Number.isSafeInteger(v))) bad("Invalid number");
       if (Number.isSafeInteger(v) && !Object.is(v, -0)) { head(v >= 0 ? 0 : 1, v >= 0 ? v : -1 - v); return; }
-      const bytes = new Uint8Array(9); bytes[0] = 0xfb; new DataView(bytes.buffer).setFloat64(1, v); chunks.push(bytes); return;
+      const bytes = new Uint8Array(9); bytes[0] = 0xfb; new DataView(bytes.buffer).setFloat64(1, v); add(bytes); return;
     }
-    if (typeof v === "string") { const bytes = new TextEncoder().encode(v); if (new TextDecoder("utf-8", { fatal: true }).decode(bytes) !== v) bad("Invalid text"); head(3, bytes.length); chunks.push(bytes); return; }
+    if (typeof v === "string") {
+      const size = Buffer.byteLength(v, "utf8");
+      if (size > maxPayloadBytes - length) throw new SessionFileError("transfer_limit", "Session file exceeds limit");
+      const bytes = new TextEncoder().encode(v); if (new TextDecoder("utf-8", { fatal: true }).decode(bytes) !== v) bad("Invalid text"); head(3, bytes.length); add(bytes); return;
+    }
     if (!v || typeof v !== "object" || depth >= 128) bad("Invalid value or nesting");
+    if (v instanceof Uint8Array) { head(2, v.byteLength); add(v); return; }
     if (Array.isArray(v)) { head(4, v.length); for (const x of v) visit(x, depth + 1); return; }
     if (Object.getPrototypeOf(v) !== Object.prototype && Object.getPrototypeOf(v) !== null) bad("Invalid map");
     const entries = Object.entries(v as object); head(5, entries.length); for (const [k, x] of entries) { visit(k, depth + 1); visit(x, depth + 1); }
@@ -51,6 +62,7 @@ function cborDecode(bytes: Uint8Array): unknown {
   const visit = (depth: number): unknown => {
     const b = view.getUint8(take(1)), major = b >> 5, a = b & 31;
     if (major === 0 || major === 1) { const n = arg(a); const v = major === 0 ? n : -1 - n; if (!Number.isSafeInteger(v)) bad("Unsafe integer"); return v; }
+    if (major === 2) { const n = arg(a), p = take(n); return Uint8Array.from(bytes.subarray(p, p + n)); }
     if (major === 3) { const n = arg(a), p = take(n); return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(p, p + n)); }
     if (major === 4 || major === 5) {
       if (depth >= 128) bad("CBOR nesting limit"); const n = arg(a); if (n > bytes.length - pos) bad("Invalid CBOR container length");
@@ -71,8 +83,9 @@ function cborDecode(bytes: Uint8Array): unknown {
   const value = visit(0); if (pos !== bytes.length) bad("Extra CBOR item"); return value;
 }
 export function encodeSessionFile(value: unknown, maxBytes: number): Uint8Array {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 14) throw new SessionFileError("transfer_limit", "Invalid session file limit");
   let payload: Uint8Array;
-  try { payload = cborEncode(value); } catch (e) { throw new SessionFileError("serialization_error", String(e)); }
+  try { payload = cborEncode(value, maxBytes - 14); } catch (e) { if (e instanceof SessionFileError) throw e; throw new SessionFileError("serialization_error", String(e)); }
   if (payload.length > 0xffffffff || payload.length + 14 > maxBytes) throw new SessionFileError("transfer_limit", "Session file exceeds limit");
   const bytes = new Uint8Array(14 + payload.length); bytes.set(new TextEncoder().encode("HARNSESS")); const view = new DataView(bytes.buffer); view.setUint16(8, 1); view.setUint32(10, payload.length); bytes.set(payload, 14); return bytes;
 }
