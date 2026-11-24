@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInProcessHarness } from "../src/testing.ts";
+import { spawnHarness } from "./helpers/stdio.ts";
 import { connectMcpHttps } from "../src/capabilities/tools/mcp/http.ts";
 
 const toolName = "mcp__fixture__72656164";
@@ -10,8 +11,9 @@ const toolName = "mcp__fixture__72656164";
 async function httpsFixture(run: (fixture: {
   endpoint: string;
   ca: string;
+  cert: string;
   seen: { method: string; id?: number; requestId?: number }[];
-  expected: { header?: string; env?: string; redirect?: boolean };
+  expected: { header?: string; env?: string; redirect?: boolean; fail?: string };
 }) => Promise<void>) {
   const home = mkdtempSync(join(tmpdir(), "mcp-https-"));
   const cert = join(home, "cert.pem"), key = join(home, "key.pem");
@@ -21,7 +23,7 @@ async function httpsFixture(run: (fixture: {
   const ca = readFileSync(cert, "utf8");
   const controller = new AbortController();
   const seen: { method: string; id?: number; requestId?: number }[] = [];
-  const expected: { header?: string; env?: string; redirect?: boolean } = {};
+  const expected: { header?: string; env?: string; redirect?: boolean; fail?: string } = {};
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: { key: Bun.file(key), cert: Bun.file(cert) },
     async fetch(request) {
       const requestPath = new URL(request.url).pathname;
@@ -31,6 +33,7 @@ async function httpsFixture(run: (fixture: {
       if (request.method !== "POST") return new Response(null, { status: 405 });
       const message = await request.json() as { id?: number; method: string; params?: { requestId?: number; arguments?: { mode?: string }; _meta?: { progressToken?: number } } };
       seen.push({ method: message.method, id: message.id, requestId: message.params?.requestId });
+      if (expected.fail === message.method) return new Response("remote fixture diagnostics", { status: 500 });
       if (expected.redirect) return new Response(null, { status: 307, headers: { location: "/must-not-follow" } });
       if (message.id === undefined) return new Response(null, { status: 202 });
       const respond = (result: unknown) => Response.json({ jsonrpc: "2.0", id: message.id, result });
@@ -69,7 +72,7 @@ async function httpsFixture(run: (fixture: {
         structuredContent: { nested: { runtime: expected.header, env: expected.env } } });
     },
   });
-  try { await run({ endpoint: new URL("/mcp", server.url).href, ca, seen, expected }); }
+  try { await run({ endpoint: new URL("/mcp", server.url).href, ca, cert, seen, expected }); }
   finally { controller.abort(); await server.stop(true); rmSync(home, { recursive: true, force: true }); }
 }
 
@@ -183,3 +186,52 @@ test("runtime headers are owner-open material, missing is entry-local, and echoe
     } finally { await imported.close(); rmSync(home, { recursive: true, force: true }); }
   });
 });
+
+for (const failure of ["tools/list", "tools/call"]) {
+  test(`HTTP 500 during ${failure} stays local under real native stdio`, async () => {
+    await httpsFixture(async ({ endpoint, cert, seen, expected }) => {
+      expected.fail = failure;
+      const home = mkdtempSync(join(tmpdir(), "mcp-https-500-"));
+      const script = join(home, "fixture.jsonl"), requests = join(home, "requests.jsonl");
+      writeFileSync(script, [
+        { type: "scenario", version: 1, name: "http-errors" },
+        { type: "model", channelId: "affected", content: null, calls: [{ id: "failed-call", name: toolName, arguments: {} }] },
+        { type: "model", channelId: "affected", content: "handled" },
+        { type: "model", channelId: "independent", content: "still usable" },
+      ].map(row => JSON.stringify(row)).join("\n") + "\n");
+      const harness = spawnHarness({ home, requests, extraCaCerts: cert });
+      try {
+        await harness.client.initialize();
+        const opened = await harness.client.createSession({ sessionId: "fixture", participants: [], channels: {}, config: {
+          version: 1, system: "", model: { protocol: "scripted", script }, defaultPolicy: "owner",
+          policies: { owner: { mcp: "allow", fallback: "allow", tools: {} } },
+          mcpServers: { fixture: { transport: "http", endpoint } },
+        } });
+        expect(opened.mcpServers?.fixture?.state).toBe(failure === "tools/list" ? "unavailable" : "ready");
+        const push = (channel: string) => harness.client.push({ channel, item: {
+          id: channel, sender: "owner", kind: "user_message", content: [{ type: "text", text: "go" }],
+        } });
+        const read = () => {
+          try { return readFileSync(requests, "utf8").trim().split("\n").map(line => JSON.parse(line)); }
+          catch { return []; }
+        };
+        await push("affected");
+        await until(() => read().filter(row => row.channel === "affected").length === 2);
+        const results = read().filter(row => row.channel === "affected")[1].messages
+          .filter((message: { role: string }) => message.role === "tool");
+        expect(results).toHaveLength(1);
+        expect(JSON.parse(results[0].content).code).toBe(failure === "tools/list" ? "tool_unavailable" : "mcp_uncertain");
+        expect(JSON.stringify(results).includes("remote fixture diagnostics")).toBe(false);
+        expect(seen.filter(call => call.method === failure)).toHaveLength(1);
+        await push("independent");
+        await until(() => read().some(row => row.channel === "independent"));
+        const expires = performance.now() + 2500;
+        while (!(await harness.client.idle()).idle) {
+          if (performance.now() >= expires) throw new Error("Independent channel did not settle");
+          await Bun.sleep(5);
+        }
+        expect((await harness.client.status()).channels.some(channel => channel.channel === "independent")).toBe(true);
+      } finally { try { await harness.close(); } finally { rmSync(home, { recursive: true, force: true }); } }
+    });
+  }, 10000);
+}

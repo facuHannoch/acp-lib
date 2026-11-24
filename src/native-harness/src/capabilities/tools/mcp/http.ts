@@ -1,4 +1,3 @@
-import { Readable } from "node:stream";
 import { connectMcp, supportedMcpVersions } from "./client.ts";
 
 const receiveLimit = 256 * 1024;
@@ -19,6 +18,16 @@ export function connectMcpHttps(name: string, endpoint: string, headers: Record<
         method: "POST", body: String(init?.body), signal: init?.signal ?? undefined,
         headers: { ...Object.fromEntries(new Headers(init?.headers)), "accept-encoding": "identity" },
       });
+      // Undici reports deliberate destruction through the Node error event.
+      // The iterator still observes read errors; discarded bodies have no reader.
+      response.body.on("error", () => {});
+      const discard = async () => {
+        if (response.body.closed) return;
+        await new Promise<void>(resolve => {
+          response.body.once("close", resolve);
+          response.body.destroy();
+        });
+      };
       const headers = new Headers();
       for (const [name, value] of Object.entries(response.headers)) {
         if (typeof value === "string") headers.set(name, value);
@@ -26,14 +35,35 @@ export function connectMcpHttps(name: string, endpoint: string, headers: Record<
       }
       const encoding = headers.get("content-encoding");
       if ((response.statusCode >= 300 && response.statusCode < 400) || (encoding && encoding.toLowerCase() !== "identity")) {
-        response.body.destroy();
+        await discard();
         throw new Error("MCP HTTPS response refused");
       }
-      if ([204, 205, 304].includes(response.statusCode)) {
-        response.body.destroy();
+      if (response.statusCode >= 400 || [204, 205].includes(response.statusCode)) {
+        await discard();
         return new Response(null, { status: response.statusCode, headers });
       }
-      return new Response(Readable.toWeb(response.body) as ReadableStream<Uint8Array>, { status: response.statusCode, headers });
+      // Pull from Undici directly. Bun's Readable.toWeb adapter can enqueue
+      // after cancel and throw outside the request's error path.
+      const source = response.body.iterator();
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const next = await source.next();
+            if (cancelled) return;
+            if (next.done) controller.close();
+            else controller.enqueue(next.value);
+          } catch (error) {
+            if (!cancelled) controller.error(error);
+          }
+        },
+        async cancel() {
+          cancelled = true;
+          await discard();
+          await source.return?.().catch(() => {});
+        },
+      });
+      return new Response(body, { status: response.statusCode, headers });
     };
     const requests = new Map<number | string, AbortController>();
     const finished = new Set<number | string>();
