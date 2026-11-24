@@ -1,6 +1,6 @@
 {
   "name": "@qlairoslabs/acp-client",
-  "version": "0.12.1",
+  "version": "0.13.0-alpha.1",
   "description": "Embeddable Agent Client Protocol (ACP) client library with degraded PTY fallback.",
   "type": "module",
   "module": "src/index.ts",
@@ -40,7 +40,14 @@
     "CHANGELOG-consumer-fixes.md",
     "CHANGELOG-controller-interface.md",
     "MIGRATION-0.10-to-0.12.md",
-    "MIGRATION-0.12-to-0.13.md"
+    "MIGRATION-0.12-to-0.13.md",
+    "!src/native-harness/test",
+    "!src/native-harness/.res",
+    "!src/native-harness/AGENTS.md",
+    "!src/native-harness/ARCHITECTURE.md",
+    "!src/native-harness/bun.lock",
+    "!src/**/*.test.ts",
+    "!src/**/*.typecheck.ts"
   ],
   "exports": {
     ".": "./src/index.ts",
