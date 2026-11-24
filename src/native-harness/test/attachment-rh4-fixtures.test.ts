@@ -203,3 +203,23 @@ test("durable publication activates format 9 through the owning session and surv
     } finally { take(reopened.close()); }
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+test("the active image budget defers the FIFO head to a fresh turn", () => {
+  const home = mkdtempSync(join(tmpdir(), "a1-image-budget-")), path = join(home, "sqlite");
+  try {
+    const adapter = createSqliteStorageAdapter(path), store = take(adapter.open({ mode: "create", identity }));
+    try {
+      take(store.createChannel({ channelId: "a" }));
+      const id = "11111111-1111-4111-8111-111111111111";
+      take(store.registerReadyAttachment({ id, channel: "a", filename: "x.png", mediaType: "image/png", bytes: 20 * 1024 * 1024, sha256: "0".repeat(64) }));
+      const input = (itemId: string, count: number) => ({ kind: "participant_message" as const, channelId: "a", senderId: "human", itemId, text: "", parts: Array.from({ length: count }, () => ({ type: "attachment" as const, id })) });
+      take(store.acceptItem(input("first", 2), undefined, { imageInput: true }));
+      const first = take(store.beginTurn("a"))!;
+      take(store.acceptItem(input("second", 1), undefined, { imageInput: true }));
+      expect(take(store.takePending(first.turn.turnId)).items).toEqual([]);
+      take(store.appendMessage(first.turn.turnId, { role: "assistant", content: "done", calls: [] }));
+      expect(take(store.finishTurn(first.turn.turnId, { status: "completed" })).finished).toBe(true);
+      expect(take(store.beginTurn("a"))?.items.map(item => item.itemId)).toEqual(["second"]);
+    } finally { take(store.close()); }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

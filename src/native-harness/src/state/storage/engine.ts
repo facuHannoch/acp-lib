@@ -389,14 +389,29 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     if (turn.state.status !== "running") fail("invalid_state", `Turn ${turnId} is ${turn.state.status}, not running`);
     return turn;
   }
+  function imageBytes(item: StoredItem): number {
+    let total = 0;
+    for (const part of item.parts ?? []) if (part.type === "attachment") {
+      const metadata = tables.attachments?.get(part.id)?.metadata;
+      if (!metadata) fail("storage_failure", `Attachment metadata unavailable: ${part.id}`);
+      if (metadata!.mediaType.startsWith("image/")) total += metadata!.bytes;
+    }
+    return total;
+  }
+  function turnImageBytes(turnId: number | undefined): number {
+    return turnId === undefined ? 0 : tables.itemsOfTurn(turnId).reduce((sum, item) => sum + imageBytes(item), 0);
+  }
   function boundaryPending(channelId: string, intake?: IntakeLimit, turnId?: number): StoredItem[] {
-    if (!intake) return tables.pendingItems(channelId);
-    const already = turnId === undefined ? [] : tables.contextInputs(turnId, tables.contextPreviousResponse(turnId), intake.maxTakenItems);
-    const slots = intake.maxTakenItems - already.length;
+    const already = !intake || turnId === undefined ? [] : tables.contextInputs(turnId, tables.contextPreviousResponse(turnId), intake.maxTakenItems);
+    const slots = intake ? intake.maxTakenItems - already.length : Number.MAX_SAFE_INTEGER;
     if (slots <= 0) return [];
-    let bytes = intake.maxTakenTextBytes - already.reduce((sum, row) => sum + (row.textBytes ?? 0), 0);
+    let bytes = intake ? intake.maxTakenTextBytes - already.reduce((sum, row) => sum + (row.textBytes ?? 0), 0) : Number.MAX_SAFE_INTEGER;
+    let activeImages = turnImageBytes(turnId);
     const selected: StoredItem[] = [];
     for (const item of tables.pendingItems(channelId, slots)) {
+      const images = imageBytes(item);
+      if (activeImages + images > 40 * 1024 * 1024) break;
+      activeImages += images;
       bytes -= byteLength(item.text);
       // A legacy oversized head advances alone and gets a typed build failure.
       if (bytes < 0 && (selected.length || already.length)) break;
@@ -952,7 +967,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         if (!last || last.role !== "assistant" || last.calls.length)
           fail("invalid_state", "Completion needs a final assistant response without tool calls");
         const pending = tables.pendingCount(turn.channelId);
-        if (pending) return { finished: false as const, pending };
+        const head = pending ? tables.pendingItems(turn.channelId, 1)[0] : undefined;
+        const imageBlocked = !!head && turnImageBytes(turnId) + imageBytes(head) > 40 * 1024 * 1024;
+        if (pending && !imageBlocked) return { finished: false as const, pending };
         const done: TurnRow = { ...turn, state: { status: "completed" } };
         tables.putTurn(done); settle(turn.channelId); seq(meta);
         return { finished: true as const, turn: full(done) };
