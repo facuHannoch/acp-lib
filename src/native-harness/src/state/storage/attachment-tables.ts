@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { AttachmentMetadata } from "../../contracts/attachments.ts";
+import type { AttachmentMetadata, InputPart } from "../../contracts/attachments.ts";
 
 /** Durable attachment rows live in the same SQLite transaction as the caller's
  * inbox acceptance. The session owner is responsible for serialization with
@@ -18,6 +18,9 @@ export function sqliteAttachmentTables(db: Database) {
       attachment_id TEXT NOT NULL REFERENCES attachment_files(id),
       item_id TEXT NOT NULL REFERENCES items(item_id),
       PRIMARY KEY (attachment_id, item_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS attachment_item_parts (
+      item_id TEXT PRIMARY KEY REFERENCES items(item_id), parts TEXT NOT NULL
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS attachment_items_by_item ON attachment_items(item_id);`);
     const row = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key='formatVersion'").get();
@@ -44,6 +47,18 @@ export function sqliteAttachmentTables(db: Database) {
     associate(id: string, itemId: string) {
       if (!present()) throw new Error("Unknown attachment");
       db.query("INSERT OR IGNORE INTO attachment_items VALUES (?, ?)").run(id, itemId);
+    },
+    /** Caller inserts the item and links every attachment in the same owner
+     * transaction. Retained order and boundaries do not depend on the links. */
+    saveParts(itemId: string, parts: readonly InputPart[]) {
+      if (!present()) throw new Error("Attachment storage has not been activated");
+      db.query("INSERT INTO attachment_item_parts VALUES (?, ?)").run(itemId, JSON.stringify(parts));
+      for (const part of parts) if (part.type === "attachment") this.associate(part.id, itemId);
+    },
+    parts(itemId: string): InputPart[] | undefined {
+      if (!present()) return undefined;
+      const row = db.query<{ parts: string }, [string]>("SELECT parts FROM attachment_item_parts WHERE item_id=?").get(itemId);
+      return row ? JSON.parse(row.parts) as InputPart[] : undefined;
     },
     isRetained(id: string) {
       return present() && !!db.query<{ yes: number }, [string]>("SELECT 1 AS yes FROM attachment_items WHERE attachment_id=? LIMIT 1").get(id);

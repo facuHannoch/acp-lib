@@ -31,7 +31,9 @@ describe("attachment metadata tables", () => {
       const tables = sqliteAttachmentTables(db);
       db.transaction(() => tables.publish(metadata, "2026-01-01T00:00:00.000Z"))();
       db.exec("INSERT INTO items VALUES ('i', NULL)");
-      db.transaction(() => tables.associate("file", "i"))();
+      const parts = [{ type: "text" as const, text: "before" }, { type: "attachment" as const, id: "file" }, { type: "text" as const, text: "after" }];
+      db.transaction(() => tables.saveParts("i", parts))();
+      expect(tables.parts("i")).toEqual(parts);
       expect(tables.isRetained("file")).toBe(true);
       expect(tables.isTimelineVisible("file")).toBe(false);
       expect(tables.unreferencedBefore("2027-01-01T00:00:00.000Z")).toHaveLength(0);
