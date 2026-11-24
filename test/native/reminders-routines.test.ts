@@ -408,3 +408,34 @@ test("confirmed absence after an interrupted create permits a fresh create on th
     } finally { await s.persistence.close(); }
   }
 });
+
+test("routine expiry consumes a range and becomes terminal only from the authoritative row", async () => {
+  const s = await startup();
+  try {
+    await s.sync.initialize({ capabilities: negotiated });
+    const row = { ...s.saved("expiry"), remainingCount: 3 };
+    const channel = row.channel;
+    s.peer.rows.set(row.id, row);
+    await s.open(3);
+    const first = iso(anchor + 600_000), last = iso(anchor + 1_200_000);
+    const snapshot = async () => (await s.repo.list())[0]?.confirmed;
+    s.sync.notification({ channel, event: { kind: "reminder_expired", reminderId: row.id,
+      occurrenceId: "unexpected", scheduledAt: first, expiredAt: last } }, () => {}, s.peer.client);
+    await s.sync.settled();
+    expect(await snapshot()).toMatchObject({ status: "active", remainingCount: 3, nextRunAt: anchor + 600_000 });
+
+    const disposition = { kind: "routine_disposition", reason: "expired", reminderId: row.id,
+      firstScheduledAt: first, lastScheduledAt: last, count: 2 } as const;
+    const next = iso(anchor + 1_800_000);
+    s.peer.rows.set(row.id, { ...row, remainingCount: 1, nextRunAt: next });
+    s.sync.notification({ channel, event: disposition }, () => {}, s.peer.client);
+    await s.sync.settled();
+    expect(await snapshot()).toMatchObject({ status: "active", remainingCount: 1, nextRunAt: anchor + 1_800_000 });
+
+    s.peer.rows.set(row.id, { ...row, state: "done", remainingCount: 0, nextRunAt: null });
+    s.sync.notification({ channel, event: { ...disposition, firstScheduledAt: next, lastScheduledAt: next, count: 1 } },
+      () => {}, s.peer.client);
+    await s.sync.settled();
+    expect(await snapshot()).toMatchObject({ status: "completed", remainingCount: 0, nextRunAt: null });
+  } finally { await s.persistence.close(); }
+});

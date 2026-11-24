@@ -219,13 +219,17 @@ export class ReminderSync {
     return this.ordered(async () => {
       if (!this.supported) return;
       if (!id) return this.sweep(client, channel);
-      try {
-        const { reminder } = await client.getReminder({ id });
-        if (reminder.channel === channel) await this.storeRows([reminder], new Set());
-      } catch (error) {
-        if (codeOf(error) !== "not_found") throw error;
-      }
+      return this.refreshRow(client, channel, id);
     });
+  }
+
+  private async refreshRow(client: HarnessClient, channel: string | undefined, id: string): Promise<void> {
+    try {
+      const { reminder } = await client.getReminder({ id });
+      if (reminder.channel === channel) await this.storeRows([reminder], new Set());
+    } catch (error) {
+      if (codeOf(error) !== "not_found") throw error;
+    }
   }
 
   dispatch(client: HarnessClient, target?: WireChange) {
@@ -264,7 +268,7 @@ export class ReminderSync {
     return result;
   }
 
-  notification(notification: ReminderNotification, emit: (channel: string, event: WireReminderEvent) => void) {
+  notification(notification: ReminderNotification, emit: (channel: string, event: WireReminderEvent) => void, client?: HarnessClient) {
     void this.ordered(async () => {
       if ("deadline" in notification) return this.deadline(notification.deadline.nextDueAt, notification.deadline.revision);
       const { channel, event } = notification;
@@ -273,6 +277,9 @@ export class ReminderSync {
       if (!conversation || conversation.deletedAt) return;
       if (event.kind === "routine_disposition" || event.kind === "routine_migration_blocked") {
         emit(channel, event);
+        if (client && event.kind === "routine_disposition" && event.reason === "expired") {
+          await this.refreshRow(client, channel, event.reminderId);
+        }
         return;
       }
       if (event.kind === "reminder_changed" && event.reminder.channel === channel) await this.storeRows([event.reminder], new Set());
@@ -283,8 +290,9 @@ export class ReminderSync {
           const confirmed = (await repo.list()).find(item => item.id === event.reminderId && item.conversationId === channel)?.confirmed;
           if (!confirmed) return;
           const status = event.kind === "reminder_fired" ? "completed" : event.kind === "reminder_expired" ? "expired" : "cancelled";
-          const routineFire = event.kind === "reminder_fired" && isRoutineSchedule(confirmed.schedule);
-          await repo.observe({ ...confirmed, ...(!routineFire ? { status, nextRunAt: null } : {}), ...(event.kind === "reminder_fired"
+          const routineOccurrence = event.kind !== "reminder_cancelled" && isRoutineSchedule(confirmed.schedule);
+          if (routineOccurrence && event.kind === "reminder_expired") return;
+          await repo.observe({ ...confirmed, ...(!routineOccurrence ? { status, nextRunAt: null } : {}), ...(event.kind === "reminder_fired"
             ? { lastRunAt: Date.parse(event.firedAt), lastOccurrenceId: event.occurrenceId, noticeId: event.noticeId } : {}) });
         });
       }

@@ -405,7 +405,7 @@ export class NativeHarnessHost {
     let reminderOpen = false;
     const earlyReminders: ReminderNotification[] = [];
     const reminderEvent = (event: ReminderNotification) =>
-      this.reminderSync?.notification(event, (channel, payload) => this.#ports.get(channel)?.reminderEvent?.(payload));
+      this.reminderSync?.notification(event, (channel, payload) => this.#ports.get(channel)?.reminderEvent?.(payload), client);
     const notifyReminder = (event: ReminderNotification) => {
       if (!reminderOpen) earlyReminders.push(event);
       else if (this.#connection === connection || ("deadline" in event && this.#stoppingConnection === connection)) reminderEvent(event);
