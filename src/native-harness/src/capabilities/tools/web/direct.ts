@@ -133,7 +133,9 @@ export async function fetchDirect(input: string, deadlineMs: number, signal: Abo
       const html = mime!.trim() === "text/html";
       const result = html ? readableHtml(decoded) : { title: null, text: decoded.trim() };
       if (!result.text) throw new DirectHttpError("page_unavailable", "Web page has no readable text.");
-      const output = preview({ ...result, url: source, truncated: false, coverage: html ? "unknown" : "full" });
+      const framed = response.headers["content-length"] !== undefined || response.headers["transfer-encoding"] !== undefined;
+      const coverage = html || !framed ? "unknown" : "full";
+      const output = preview({ ...result, url: source, truncated: false, coverage });
       stop.throwIfAborted();
       if (performance.now() >= expiresAt) throw new DirectHttpError("tool_timeout", "Web fetch deadline exceeded.");
       return output;
