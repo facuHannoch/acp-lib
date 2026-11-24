@@ -1,4 +1,3 @@
-import { activatesRoutine } from "./routine-guard.ts";
 import { isRoutineSchedule, type MissedRuns, type RoutineOverlap } from "./routine-schedule.ts";
 import { SqliteAgentPersistence } from "../../persistence/sqlite-backend.ts";
 import { ReminderWakeSupervisor } from "./supervisor.ts";
@@ -129,11 +128,6 @@ export class ReminderService {
         if (edit.schedule && existing && routine && ("every" in edit.schedule) !== ("every" in existing.schedule)) {
           throw new ReminderError("invalid_schedule", "Routine schedule kind cannot change");
         }
-        if (routine && (op === "cancel" || status === "paused") && previous?.changes.some(change =>
-          (change.state === "pending" || change.state === "maybe_sent") && activatesRoutine(change) &&
-          !(op === "cancel" && change.op === "create" && previous.changes.every(entry => entry.state === "pending")))) {
-          throw new ReminderError("conflict", "Resolve the earlier routine activation before pausing or cancelling");
-        }
         if (routine && (op === "create" || edit.schedule || status === "active")) {
           const why = this.options.routineUnavailable ? this.options.routineUnavailable() : "Routine reminders are unavailable";
           if (why !== undefined) throw new ReminderError("routines_unavailable", why);
@@ -147,7 +141,7 @@ export class ReminderService {
           throw new ReminderError("reminders_unavailable", "Reminders require a live service or durable persistence");
         }
         const schedule = edit.schedule
-          ? normalizeReminderSchedule(edit.schedule, acceptedAt, this.limits)
+          ? normalizeReminderSchedule(edit.schedule, acceptedAt, this.limits, op === "update")
           : existing!.schedule;
         const expiryPolicy = edit.expiresAfter !== undefined || !existing
           ? reminderExpiryPolicy(edit.expiresAfter, this.limits) : existing.expiryPolicy;
@@ -246,7 +240,7 @@ export function createAgentReminderService(
     if (persistence instanceof SqliteAgentPersistence && persistence.ownsReminderWake) {
       host.reminderWake = new ReminderWakeSupervisor({
         state: () => host.reminderWakeState,
-        index: () => service.repository.wake(),
+        index: () => service.repository.wake(host.state === "running" && host.reminderSync?.routineAdmission.available === true),
         subscribe: listener => persistence.subscribeReminderWake(listener),
         start: now => host.startForReminder(now),
         error: error => log.warn("reminder_wake_failed", { error: String(error) }),

@@ -4,6 +4,17 @@ import type { ReminderWireOpen, RoutineConfig } from "./routine-wire.ts";
 import { isRoutineSchedule } from "./routine-schedule.ts";
 import { ReminderError } from "./schedule.ts";
 
+/**
+ * Executable startup stages the first column and holds the second.
+ *
+ * Schedule | Startup                                  | Post-open live
+ * One-off  | All changes                              | Overflow
+ * Routine  | Cancel, pause, text, grace, missed/overlap | Create, resume, replacement
+ *
+ * Every change after a held entry for the same ID follows it live. A cancel
+ * can erase an entirely unsent create locally. Old-calendar work can run
+ * before a replacement, and a new routine can be due before its follow-up pause.
+ */
 export function activatesRoutine(change: Pick<ReminderChange, "op" | "fields" | "reminder">): boolean {
   return isRoutineSchedule(change.reminder.schedule) && (
     change.op === "create" || (change.op === "update" &&
@@ -13,12 +24,14 @@ export function activatesRoutine(change: Pick<ReminderChange, "op" | "fields" | 
 }
 
 export class RoutineAdmission {
+  advertised = false;
   supported = false;
   private effective?: number;
   private bound?: number;
 
   initialize(routines: unknown, unattendedTurnGuard: unknown, reminders: boolean): void {
-    this.supported = reminders && routines === true && unattendedTurnGuard === true;
+    this.advertised = reminders && routines === true;
+    this.supported = this.advertised && unattendedTurnGuard === true;
     this.effective = undefined;
     if (!this.supported) this.bound = undefined;
   }

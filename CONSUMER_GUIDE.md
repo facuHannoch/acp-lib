@@ -1463,8 +1463,14 @@ Pass either input to `conversation.reminders.create(input)`.
 - Offline mutations require durable storage and prior negotiation.
   At startup, cancellations, pauses and other non-activating changes go
   before due work. Creates, resumes and schedule replacements wait for
-  guard confirmation and retain their original acceptance time. Held
-  changes alone do not launch the harness.
+  the connection's executable open and retain their original acceptance time.
+  A held entry also holds any later changes to its ID. An entirely unsent
+  create can be cancelled locally. A create followed by pause is sent live
+  in order, and a due occurrence may commit between those requests. An
+  offline schedule replacement can take effect after overdue work from the
+  old calendar. Held changes alone do not launch the harness. If open
+  confirms no effective guard, the harness can record
+  `unattended_guard_required` when the queued activation is sent live.
 
 Routine events are live. Within one commit a disposition precedes the fire
 it describes. A migration hold precedes the updated row, whose state is

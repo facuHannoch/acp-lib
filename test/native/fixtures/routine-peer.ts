@@ -23,13 +23,16 @@ export class RoutinePeer {
   failId?: string;
   failures = 0;
   blockActivation = false;
+  afterLiveChange?: (change: ReminderWireChange) => void;
   readonly sessionId = "routine-session";
   readonly client = {
     openSession: (params: Startup) => this.start("open", params),
     createSession: (params: Startup) => this.start("create", params),
     changeReminder: async (change: ReminderWireChange) => {
       this.calls.push({ method: "change", params: structuredClone(change) });
-      return this.change(change);
+      const result = this.change(change);
+      this.afterLiveChange?.(change);
+      return result;
     },
     listReminders: async () => ({ reminders: [...this.rows.values()] }),
     getReminder: async ({ id }: { id: string }) => {

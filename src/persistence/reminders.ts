@@ -1,3 +1,4 @@
+import { activatesRoutine } from "../native/reminders/routine-guard.ts";
 import type { MissedRuns, RoutineOverlap } from "../native/reminders/routine-schedule.ts";
 import type { TimezoneMigration } from "../native/reminders/routine-wire.ts";
 import type { WireChange } from "../native/reminders/wire.ts";
@@ -81,7 +82,7 @@ type Runner = <T>(operation: () => T) => Promise<T>;
 export interface ReminderPersistence {
   readonly durable: boolean;
   list(): Promise<readonly ReminderJournal[]>;
-  wake(): Promise<ReminderWakeIndex>;
+  wake(routineGuardConfirmed?: boolean): Promise<ReminderWakeIndex>;
   updateDeadline(deadline: ReminderDeadline, replaceSession?: boolean): Promise<ReminderDeadlineDecision>;
   setConversationSuspended(conversationId: string, suspended: boolean): Promise<void>;
   deleteConversation(conversationId: string): Promise<void>;
@@ -113,13 +114,16 @@ export class StoredReminderPersistence implements ReminderPersistence {
     return this.read(() => this.store.list());
   }
 
-  wake(): Promise<ReminderWakeIndex> {
-    return this.read(() => this.store.wake());
+  wake(routineGuardConfirmed = false): Promise<ReminderWakeIndex> {
+    return this.read(() => routineGuardConfirmed ? this.deriveWake(this.store.wake().reported, true) : this.store.wake());
   }
 
-  private recompute(reported = this.store.wake().reported): void {
+  private deriveWake(reported: ReminderWakeIndex["reported"], routineGuardConfirmed: boolean): ReminderWakeIndex {
     const supported = this.store.wake().supported;
-    const candidates = supported === false ? [] : this.store.list().flatMap((journal) => journal.changes.filter(change => isWakeSchedule(change.reminder.schedule)).map((change) => {
+    const candidates = supported === false ? [] : this.store.list().flatMap(journal => journal.changes.filter(change => {
+      const schedule = change.reminder.schedule;
+      return isWakeSchedule(schedule) || (routineGuardConfirmed && change.op === "create" && activatesRoutine(change));
+    }).map(change => {
       const latest = journal.changes.at(-1)?.reminder ?? change.reminder;
       const { schedule } = change.reminder;
       return {
@@ -130,11 +134,15 @@ export class StoredReminderPersistence implements ReminderPersistence {
         retiring: false,
       };
     }));
-    this.store.saveWake({
+    return {
       reported,
       ...(supported === undefined ? {} : { supported }),
       effectiveAt: supported === false ? null : deriveReminderWake(reported, candidates, defaultReminderLimits.oneShotLeadMs),
-    });
+    };
+  }
+
+  private recompute(reported = this.store.wake().reported): void {
+    this.store.saveWake(this.deriveWake(reported, false));
   }
 
   updateDeadline(deadline: ReminderDeadline, replaceSession = false): Promise<ReminderDeadlineDecision> {
@@ -169,7 +177,9 @@ export class StoredReminderPersistence implements ReminderPersistence {
       const journal = this.store.get(id) ?? { id, conversationId, highWater: 0, changes: [] };
       if (journal.conversationId !== conversationId) throw new Error("Reminder belongs to another conversation");
       const latest = journal.changes.at(-1);
-      const coalesce = latest?.state === "pending" && !latest.frozenWire && !(latest.op === "create" && change.reminder.status === "paused");
+      const separateRoutineStop = latest && activatesRoutine(latest) &&
+        (change.op === "cancel" || change.fields?.includes("status") && change.reminder.status === "paused");
+      const coalesce = !separateRoutineStop && latest?.state === "pending" && !latest.frozenWire && !(latest.op === "create" && change.reminder.status === "paused");
       const dropCreate = change.op === "cancel" && journal.changes[0]?.op === "create"
         && journal.changes.every(entry => entry.state === "pending");
       const changes = dropCreate ? [] : coalesce ? journal.changes.slice(0, -1) : [...journal.changes];

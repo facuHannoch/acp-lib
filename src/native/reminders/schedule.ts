@@ -1,4 +1,4 @@
-import { isRoutineCron, isRoutineSchedule, validInstant, type RoutineBound, type RoutineSchedule } from "./routine-schedule.ts";
+import { hasRoutineCronShape, isRoutineSchedule, validInstant, type RoutineBound, type RoutineSchedule } from "./routine-schedule.ts";
 import type { KnownReminderBlockReason } from "./wire.ts";
 import { defaultReminderLimits, type ReminderLimits } from "./limits.ts";
 
@@ -38,25 +38,26 @@ export function normalizeReminderSchedule(
   input: ReminderScheduleInput,
   acceptedAt: number,
   limits: ReminderLimits = defaultReminderLimits,
+  replacement = false,
 ): ReminderSchedule {
   if (isRoutineSchedule(input)) {
     const { count, until } = input;
     if (count !== undefined && (until !== undefined || !Number.isSafeInteger(count) || count <= 0)) {
       throw new ReminderError("invalid_schedule", "Expected a positive safe count or an inclusive until, not both");
     }
-    if (until !== undefined && (!validInstant(until) || until - acceptedAt < limits.repeatIntervalMs)) {
+    if (until !== undefined && (!validInstant(until) || (!replacement && until - acceptedAt < limits.repeatIntervalMs))) {
       throw new ReminderError("invalid_schedule", "Until must include at least one eligible occurrence");
     }
     const bound: RoutineBound<number> = count !== undefined ? { count } : until !== undefined ? { until } : {};
     if ("cron" in input) {
-      if (typeof input.cron !== "string" || !isRoutineCron(input.cron) || typeof input.timezone !== "string" || !input.timezone.trim()) {
+      if (typeof input.cron !== "string" || !hasRoutineCronShape(input.cron) || typeof input.timezone !== "string" || !input.timezone.trim()) {
         throw new ReminderError("invalid_schedule", "Expected a five-field numeric cron expression and timezone");
       }
       return { cron: input.cron, timezone: input.timezone, ...bound };
     }
     const startAt = input.startAt ?? acceptedAt + input.every;
     if (!Number.isSafeInteger(input.every) || input.every < limits.repeatIntervalMs || !validInstant(startAt)
-      || startAt - acceptedAt < limits.repeatIntervalMs || (until !== undefined && until < startAt)) {
+      || startAt - acceptedAt < limits.repeatIntervalMs || (!replacement && until !== undefined && until < startAt)) {
       throw new ReminderError("invalid_schedule", "Invalid routine interval, start time or bound");
     }
     return { every: input.every, startAt, ...bound };

@@ -8,21 +8,25 @@ import { SqliteAgentPersistence } from "../../src/persistence/sqlite-backend.ts"
 const anchor = 1_000_000;
 const iso = (value: number) => new Date(value).toISOString();
 
-test("routine normalization checks the shared minimum, exclusive bounds and numeric cron grammar", () => {
+test("routine normalization checks the shared minimum, exclusive bounds and numeric cron shape", () => {
   for (const schedule of [
     { every: 599_999 }, { every: 600_000, startAt: anchor + 599_999 },
     { every: 600_000, count: 1, until: anchor + 600_000 },
     { every: 600_000, count: 0 }, { every: 600_000, count: Number.MAX_SAFE_INTEGER + 1 },
     { every: 600_000, until: Number.NaN }, { every: 600_000, until: anchor + 599_999 },
     { cron: "@daily", timezone: "UTC" }, { cron: "0 0 * * MON", timezone: "UTC" },
-    { cron: "0 0 * * * *", timezone: "UTC" }, { cron: "0/10 * * * *", timezone: "UTC" },
-    { cron: "*/0 * * * *", timezone: "UTC" }, { cron: "0 0 * * 7", timezone: "UTC" },
+    { cron: "0 0 * * * *", timezone: "UTC" }, { cron: "0 0 * * *", timezone: " " },
   ]) expect(() => normalizeReminderSchedule(schedule as Parameters<typeof normalizeReminderSchedule>[0], anchor))
     .toThrow(expect.objectContaining({ code: "invalid_schedule" }));
   expect(normalizeReminderSchedule({ every: 600_000, until: anchor + 600_000 }, anchor))
     .toEqual({ every: 600_000, startAt: anchor + 600_000, until: anchor + 600_000 });
   expect(normalizeReminderSchedule({ cron: "0,20-40/10 0-23 * * 0,6", timezone: "Peer/Validates", count: 2 }, anchor))
     .toEqual({ cron: "0,20-40/10 0-23 * * 0,6", timezone: "Peer/Validates", count: 2 });
+  for (const cron of ["0/10 * * * *", "*/0 * * * *", "0 0 * * 7"]) {
+    expect(normalizeReminderSchedule({ cron, timezone: "UTC" }, anchor)).toEqual({ cron, timezone: "UTC" });
+  }
+  expect(normalizeReminderSchedule({ every: 600_000, until: anchor }, anchor, undefined, true))
+    .toEqual({ every: 600_000, startAt: anchor + 600_000, until: anchor });
 });
 
 test("routine encoding freezes replacement anchors and uses sparse non-schedule edits", async () => {
@@ -136,10 +140,10 @@ test("routine authoring requires both capabilities and an effective guard from e
     await s.open(3);
     expect(s.peer.calls.at(-1)?.params.config).not.toHaveProperty("limits");
     await s.sync.dispatch(s.peer.client);
-    expect(s.peer.calls.every(call => call.method !== "change")).toBe(true);
+    expect(s.peer.calls.at(-1)?.method).toBe("change");
+    expect((await s.repo.list())[0]?.changes[0]).toMatchObject({ state: "blocked", reason: "unattended_guard_required" });
     await s.open(3);
     await expect(s.open(4)).rejects.toMatchObject({ code: "invalid_config" });
-    expect((await s.repo.list())[0]?.changes[0]?.state).toBe("pending");
   } finally { await s.persistence.close(); }
 });
 
@@ -150,7 +154,6 @@ test("startup sends owed pause before due work and holds routine activation unti
     await s.sync.initialize({ capabilities: negotiated });
     await s.open(3);
     const created = await s.reminders.create(interval);
-    await expect(s.reminders.pause(created.id)).rejects.toMatchObject({ code: "conflict" });
     await s.reminders.pause("owed");
     expect((await s.repo.wake()).effectiveAt).toBeNull();
     const original = (await s.repo.list()).find(row => row.id === created.id)!.changes[0]!;
@@ -281,7 +284,7 @@ test("routine migration publishes the hold before its blocked row and suppresses
   } finally { await s.persistence.close(); }
 });
 
-test("the wire staging backstop holds a routine-shaped journal when negotiation is absent", async () => {
+test("the wire staging backstop quarantines a routine-shaped journal when routine capability is absent", async () => {
   const s = await startup();
   try {
     await s.sync.initialize({ capabilities: negotiated });
@@ -289,11 +292,60 @@ test("the wire staging backstop holds a routine-shaped journal when negotiation 
     const item = await s.reminders.create(interval);
     const before = (await s.repo.list())[0]!.changes[0]!;
     expect(reminderRequest(before)).toMatchObject({ op: "create", payload: { schedule: { every: 600_000 } } });
-    await s.sync.initialize({ capabilities: { reminders: true, routines: true } });
+    await s.sync.initialize({ capabilities: { reminders: true } });
     expect(await s.sync.stage()).toEqual([]);
     await s.sync.dispatch(s.peer.client);
     expect(s.peer.calls.every(call => call.method !== "change")).toBe(true);
-    expect((await s.repo.list())[0]!.changes[0]).toEqual(before);
+    expect((await s.repo.list())[0]!.changes[0]).toMatchObject({ state: "blocked", reason: "routines_unavailable" });
     expect((await s.repo.wake()).effectiveAt).toBeNull();
+  } finally { await s.persistence.close(); }
+});
+
+test("startup holds a routine create and follow-up pause, allowing a due occurrence between live requests", async () => {
+  const s = await startup();
+  try {
+    await s.sync.initialize({ capabilities: negotiated });
+    await s.open(3);
+    const created = await s.reminders.create(interval);
+    expect((await s.repo.wake()).effectiveAt).toBeNull();
+    expect((await s.repo.wake(true)).effectiveAt).toBe(anchor + 120_000);
+    await s.reminders.pause(created.id);
+    const removed = await s.reminders.create(interval);
+    await s.reminders.cancel(removed.id);
+    await s.sync.initialize({ capabilities: negotiated });
+    s.peer.trace.length = 0;
+    await s.open();
+    expect(s.peer.trace).toEqual(["guard", "channel:" + s.saved("unused").channel, "due"]);
+    const changes = () => s.repo.list().then(rows => rows.flatMap(row => row.changes));
+    expect(await changes()).toMatchObject([{ op: "create", state: "pending" }, { op: "update", state: "pending" }]);
+    s.peer.afterLiveChange = entry => {
+      if (entry.op === "create") {
+        expect(s.peer.rows.get(created.id)?.state).toBe("active");
+        s.peer.trace.push("occurrence:" + created.id);
+      }
+    };
+    await s.sync.dispatch(s.peer.client);
+    expect(s.peer.trace.slice(-3)).toEqual(["change:" + created.id, "occurrence:" + created.id, "change:" + created.id]);
+    expect(s.peer.rows.get(created.id)?.state).toBe("paused");
+    expect(s.peer.rows.has(removed.id)).toBe(false);
+  } finally { await s.persistence.close(); }
+});
+
+test("startup processes the old calendar before a held routine replacement and its follow-up cancel", async () => {
+  const s = await startup();
+  try {
+    s.peer.rows.set("replace", s.saved("replace"));
+    await s.sync.initialize({ capabilities: negotiated });
+    await s.open(3);
+    await s.reminders.update("replace", { schedule: { every: 720_000 } });
+    await s.reminders.cancel("replace");
+    expect((await s.repo.wake()).effectiveAt).toBeNull();
+    s.peer.trace.length = 0;
+    await s.open();
+    expect(s.peer.trace).toEqual(["guard", "channel:" + s.saved("unused").channel, "due"]);
+    expect(s.peer.rows.get("replace")?.schedule).toMatchObject({ every: 600_000 });
+    await s.sync.dispatch(s.peer.client);
+    expect(s.peer.calls.slice(-2).map(call => (call.params as { op?: string }).op)).toEqual(["update", "cancel"]);
+    expect(s.peer.rows.get("replace")?.state).toBe("cancelled");
   } finally { await s.persistence.close(); }
 });

@@ -1,4 +1,4 @@
-import { activatesRoutine, RoutineAdmission } from "./routine-guard.ts";
+import { RoutineAdmission } from "./routine-guard.ts";
 import { isRoutineSchedule } from "./routine-schedule.ts";
 import { routineTransport, type ReminderWireRow, type ReminderWireResult, type ReminderWireList, type ReminderWireOpen } from "./routine-wire.ts";
 import type { AgentConversationId } from "../../agent-ids.ts";
@@ -59,7 +59,7 @@ export class ReminderSync {
     await this.repository.setSupported(this.supported);
   }
 
-  async stage(originals?: ReminderChange[]): Promise<WireChange[]> {
+  async stage(include: (change: ReminderChange) => boolean = () => true, originals?: ReminderChange[]): Promise<WireChange[]> {
     if (!this.supported) return [];
     return this.transaction(async repo => {
       const entries = (await repo.list()).flatMap(row => row.changes)
@@ -72,19 +72,15 @@ export class ReminderSync {
         if (batch.length === batchLimit) break;
         const id = change.reminder.id;
         if (held.has(id)) continue;
-        if (isRoutineSchedule(change.reminder.schedule)) {
-          if (!this.routineAdmission.supported && change.reminder.missedRuns !== undefined) {
-            held.add(id);
-            continue;
-          }
-          if (activatesRoutine(change) && this.routineAdmission.supported &&
-            (originals !== undefined || this.routineAdmission.unavailable() !== undefined)) {
-            held.add(id);
-            continue;
-          }
+        if (isRoutineSchedule(change.reminder.schedule) && !this.routineAdmission.advertised) {
+          await repo.quarantine(id, change.changeId, change.reminder.missedRuns === undefined ? "invalid_local_entry" : "routines_unavailable");
+          continue;
+        }
+        if (!include(change)) {
+          held.add(id);
+          continue;
         }
         try {
-          if (isRoutineSchedule(change.reminder.schedule) && !this.routineAdmission.supported) throw new Error("Routine reminders were not negotiated");
           const wire = change.frozenWire ?? routineReminderRequest(change, this.limits);
           const size = Buffer.byteLength(JSON.stringify(wire)) + 1;
           if (size > 900_000) throw new Error("Reminder entry exceeds startup frame budget");

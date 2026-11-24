@@ -102,7 +102,7 @@ export function routineReminderRequest(change: ReminderChange, limits = defaultR
   )))) throw new Error("Invalid reminder destination or policies");
   const anchor = scheduleAcceptedAt ?? change.acceptedAt;
   const schedulePatch = () => {
-    normalizeReminderSchedule(schedule, anchor, limits);
+    normalizeReminderSchedule(schedule, anchor, limits, change.op === "update");
     const bound = schedule.count !== undefined ? { count: schedule.count }
       : schedule.until !== undefined ? { until: new Date(schedule.until).toISOString() } : {};
     const wireSchedule = "every" in schedule

@@ -1,4 +1,4 @@
-import { RoutineAdmission } from "./reminders/routine-guard.ts";
+import { activatesRoutine, RoutineAdmission } from "./reminders/routine-guard.ts";
 import type { ReminderChange } from "../persistence/reminders.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
 import { routineTransport, type ReminderWireOpen, type RoutineConfig } from "./reminders/routine-wire.ts";
@@ -58,7 +58,7 @@ export async function openOrCreate(
   admission.configForOpen(config.config); // Validate before marking any journal entry maybe sent.
   const changes = { ...(batch.length ? { channelChanges: batch } : {}), ...(tools ? { tools } : {}) };
   const originals: ReminderChange[] = [];
-  let staged = await reminders?.stage(originals) ?? [];
+  let staged = await reminders?.stage(change => !activatesRoutine(change), originals) ?? [];
   let proofFailed = false;
   const execute = async (fresh: boolean, recoveringCreate = false) => {
     signal.throwIfAborted();
