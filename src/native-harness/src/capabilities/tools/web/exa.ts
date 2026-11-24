@@ -2,9 +2,8 @@ import { ExaResponseLimit } from "./exa-transport.ts";
 import { BlockList, isIP } from "node:net";
 import { fetchPreview, searchPreview, type WebHit } from "./preview.ts";
 
-export type WebError = "invalid_arguments" | "rate_limited" | "provider_error" | "tool_timeout" | "page_unavailable" | "result_too_large" | "tool_interrupted" | "response_too_large";
-export interface WebUsage { requestId?: string; usd?: number }
-export type WebResponse = { ok: true; content: string; usage: WebUsage } | { ok: false; code: WebError; message: string; usage: WebUsage };
+import type { WebToolError as WebError, WebResultUsage as WebUsage, WebToolResponse as WebResponse } from "../../../contracts/web.ts";
+export type { WebToolError as WebError, WebResultUsage as WebUsage, WebToolResponse as WebResponse } from "../../../contracts/web.ts";
 /** Transport must reject redirects, enforce raw/decoded 2 MiB caps and abort. */
 export type ExaTransport = (request: { path: "/search" | "/contents"; key: string; body: object; signal: AbortSignal }) => Promise<{ status: number; body: unknown }>;
 const failed = (code: WebError, usage: WebUsage = {}): WebResponse => ({ ok: false, code, message: ({ invalid_arguments: "Invalid web tool arguments", rate_limited: "Web provider rate limit reached", provider_error: "Web provider request failed", tool_timeout: "Web request timed out", page_unavailable: "Page content is unavailable", result_too_large: "Page metadata exceeds the result limit", tool_interrupted: "Web request was interrupted", response_too_large: "Web provider response exceeds the limit" })[code], usage });

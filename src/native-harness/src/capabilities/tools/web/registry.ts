@@ -1,19 +1,11 @@
-import type { ToolDefinition } from "../../../contracts/loop.ts";
+import type { CheckedWebRegistration } from "../../../contracts/web.ts";
+export type { CheckedWebRegistration } from "../../../contracts/web.ts";
 import { resolveWebCredentials, type Validated, type WebConfig } from "./config.ts";
 import { WEB_FETCH, WEB_SEARCH, webDefinitions, webProblem } from "./definitions.ts";
 import { runExa, type ExaTransport, type WebResponse } from "./exa.ts";
-import type { WebDispatchEvidence } from "./usage.ts";
 
 /** Adapter implementations are supplied by the trusted assembly, never config. */
 export type DirectFetch = (url: string, signal: AbortSignal, deadlineMs: number) => Promise<WebResponse>;
-export interface CheckedWebRegistration {
-  definition: ToolDefinition;
-  /** Called before approval and again immediately before dispatch. */
-  validate(args: unknown): string | undefined;
-  /** Freeze this nonsecret attribution in the dispatch transaction. */
-  dispatch: WebDispatchEvidence;
-  execute(args: unknown, signal: AbortSignal): Promise<WebResponse>;
-}
 /** Build once per executable open; credentials remain inside executor closures. */
 export function createWebRegistry(config: WebConfig, env: Readonly<Record<string, string | undefined>>,
   providers: { exa: ExaTransport; http?: DirectFetch }): Validated<readonly CheckedWebRegistration[]> {

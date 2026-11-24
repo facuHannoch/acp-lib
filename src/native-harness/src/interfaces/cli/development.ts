@@ -1,3 +1,5 @@
+import { createWebRegistry } from "../../capabilities/tools/web/registry.ts";
+import { exaHttpsTransport } from "../../capabilities/tools/web/exa-transport.ts";
 import { compatibleInferenceKey } from "../../runtime/config/inference-key.ts";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -106,6 +108,12 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const tempMedia = sqlite ? undefined : mkdtempSync(join(tmpdir(), "harness-media-"));
   const mediaRoot = options.database ? options.mediaRoot ?? `${options.database}.media` : join(tempMedia!, "media");
   if (!sqlite) adapter = createMemoryStorageAdapter({ mediaRoot });
+  const makeWebTools = () => {
+    const result = createWebRegistry(managedConfig ?? {}, environment, { exa: exaHttpsTransport });
+    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
+    return result.value;
+  };
+  let webTools = creating ? makeWebTools() : undefined;
   const opened = adapter.open({ mode: options.database && !options.create ? "open" : "create",
     identity: { sessionId, compatibilityKey }, config: managedConfig, requiredScriptDigest: script?.modelDigest });
   if (!opened.ok) { if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw new Error(`Cannot open session storage (${opened.error.code}): ${opened.error.message}`); }
@@ -116,7 +124,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
     if (!execution.ok) throw new Error(execution.error.message);
     if (!execution.value) imageInput = false;
     else {
-      if (compatible && !creating) compatibleKey = resolveCompatibleCredential(compatible, environment);
+      if (!creating) { if (compatible) compatibleKey = resolveCompatibleCredential(compatible, environment); webTools = makeWebTools(); }
       attachments = createManagedAttachmentService(mediaRoot, storage, validateManagedImage);
     }
   }
@@ -129,7 +137,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const inspection = createInspection(systemPrompt, tools, storage, options.database ?? "memory");
   const captureScript = (options.environment ?? process.env).HARNESS_CAPTURE_SCRIPT_REQUESTS === "1";
   const session: PersistentSession = createSession({
-    systemPrompt, storage, config: managedConfig, imageInput, captureContext: (!script || captureScript) ? inspection.capture : undefined,
+    systemPrompt, storage, config: managedConfig, imageInput, webTools, captureContext: (!script || captureScript) ? inspection.capture : undefined,
     observeModelCall: inspection.modelCall,
     configureTurn(turn) {
       const model = observeModel(inspection, turn.channelId, onRequest => {

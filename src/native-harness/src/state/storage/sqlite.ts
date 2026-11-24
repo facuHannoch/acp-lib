@@ -600,7 +600,7 @@ export function createSqliteStorageAdapter(path: string, adapterOptions: { media
           catch { throw new Fail("incompatible", "File is not a readable harness session"); }
           if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7 && meta.formatVersion !== 8 && meta.formatVersion !== 9 && meta.formatVersion !== 10) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
           const webBase = meta.formatVersion === 10 ? inspect.web.baseFormat() : undefined;
-          if (meta.formatVersion === 10 && (![6, 7, 8, 9].includes(webBase ?? 0) || !inspect.web.all().length))
+          if (meta.formatVersion === 10 && (![6, 7, 8, 9].includes(webBase ?? 0) || db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM sqlite_schema WHERE type='table' AND name='web_dispatch'").get()?.count !== 1))
             throw new Fail("incompatible", "Format 10 is missing web dispatch evidence");
           const attachmentFormat = meta.formatVersion === 9 || webBase === 9;
           const attachmentBase = attachmentFormat ? inspect.attachments?.baseFormat() : undefined;

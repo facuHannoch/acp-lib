@@ -91,6 +91,8 @@ export interface PersistentSessionOptions {
   timelineTools?: boolean;
   /** Trusted assembly has verified the opted-in model and image validator. */
   imageInput?: boolean;
+  /** Local web implementations created by trusted session assembly. */
+  webTools?: readonly import("./web.ts").CheckedWebRegistration[];
   systemPrompt: string;
   /** Optional assertion of the storage owner's validated config. Omission uses
    * the owner snapshot; legacy allow applies only when that snapshot is absent. */

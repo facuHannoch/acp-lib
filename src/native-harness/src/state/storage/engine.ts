@@ -159,8 +159,9 @@ function checkMessage(message: unknown): Stored {
   const m = message as Record<string, unknown>;
   const keys = Object.keys(m);
   if (m.role === "tool") {
-    if (typeof m.content !== "string" || !text(m.callId) || keys.some(key => !["role", "content", "callId", "outcome", "usage"].includes(key)))
+    if (typeof m.content !== "string" || !text(m.callId) || keys.some(key => !["role", "content", "callId", "outcome", "usage", "webNoDispatch"].includes(key)))
       fail("invalid_input", "Tool result needs content and callId");
+    if (m.webNoDispatch !== undefined && m.webNoDispatch !== true) fail("invalid_input", "Invalid web refusal evidence");
     if (m.usage !== undefined && !validCommittedWebUsage(m.usage)) fail("invalid_input", "Invalid web usage");
     // Decision 0021: an optional, typed outcome. Checked here so a stored
     // result never claims a status the invocation view cannot interpret.
@@ -371,6 +372,9 @@ function unanswered(tables: Tables, turnId: number): string[] {
 }
 
 /** Older states lack dispatch evidence and retain the conservative old rule. */
+function stateDispatched(turn: TurnRow, callId: string): boolean {
+  return (turn.state.status === "running" || turn.state.status === "suspended") && !!turn.state.dispatchedCallIds?.includes(callId);
+}
 function uncertain(tables: Tables, turn: TurnRow): string[] {
   const open = unanswered(tables, turn.turnId);
   if (turn.state.status !== "running" && turn.state.status !== "suspended") return open;
@@ -963,6 +967,12 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         if (message.calls.length && turn.state.status === "running" && turn.state.dispatchedCallIds === undefined)
           tables.putTurn({ ...turn, state: { ...turn.state, dispatchedCallIds: [] } });
       } else if (!open.includes(message.callId)) fail("invalid_input", `No unanswered call ${message.callId} in this turn`);
+      if (message.role === "tool" && message.webNoDispatch) {
+        const call = tables.entriesOfTurn(turnId).flatMap(entry => entry.message.role === "assistant" ? entry.message.calls : []).find(candidate => candidate.id === message.callId);
+        if (!call || !["web_search", "web_fetch"].includes(call.name) || message.outcome?.status !== "skipped" || stateDispatched(turn, message.callId)) fail("invalid_input", "Invalid web refusal");
+        tables.web.activate(meta.formatVersion);
+        meta.formatVersion = 10;
+      }
       if (message.role === "tool" && message.usage !== undefined && !tables.web.all().some(record => record.turnId === turnId && record.callId === message.callId && record.evidence.paid))
         fail("invalid_input", "Web usage needs paid dispatch evidence");
       const entry: TimelineEntry = { seq: seq(meta), at: now(), channelId: turn.channelId, turnId,

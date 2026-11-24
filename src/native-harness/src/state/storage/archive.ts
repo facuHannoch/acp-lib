@@ -164,7 +164,7 @@ export function validateArchive(value: unknown): SessionArchive {
 
   const records = snapshot.webDispatches;
   if (archive.archiveVersion === 9) {
-    if (!Array.isArray(records) || !records.length) bad("Missing web dispatch evidence");
+    if (!Array.isArray(records)) bad("Missing web dispatch evidence");
     const seen = new Set<string>();
     for (const record of records!) {
       if (!record || Object.keys(record).sort().join() !== "callId,evidence,turnId" || !int(record.turnId) || !str(record.callId) || !validWebDispatch(record.evidence)) bad("Invalid web dispatch evidence");
@@ -174,12 +174,21 @@ export function validateArchive(value: unknown): SessionArchive {
       const call = snapshot.timeline.flatMap(entry => entry.turnId === record.turnId && entry.message.role === "assistant" ? entry.message.calls : []).find(candidate => candidate.id === record.callId);
       if (!call || call.name !== record.evidence.operation) bad("Web evidence does not match a call");
     }
+    let refusals = 0;
+    for (const entry of snapshot.timeline) if (entry.message.role === "tool" && entry.message.webNoDispatch !== undefined) {
+      const message = entry.message;
+      const call = snapshot.timeline.flatMap(row => row.turnId === entry.turnId && row.message.role === "assistant" ? row.message.calls : []).find(candidate => candidate.id === message.callId);
+      if (message.webNoDispatch !== true || message.outcome?.status !== "skipped" || !call || !["web_search", "web_fetch"].includes(call.name)
+        || records!.some(record => record.turnId === entry.turnId && record.callId === message.callId)) bad("Invalid web refusal evidence");
+      refusals++;
+    }
+    if (!records!.length && !refusals) bad("Empty web archive evidence");
     for (const entry of snapshot.timeline) if (entry.message.role === "tool" && entry.message.usage !== undefined) {
       const callId = entry.message.callId;
       const record = records!.find(candidate => candidate.turnId === entry.turnId && candidate.callId === callId);
       if (!record?.evidence.paid || !validCommittedWebUsage(entry.message.usage)) bad("Invalid paired web usage");
     }
-  } else if (snapshot.timeline.some(entry => entry.message.role === "tool" && entry.message.usage !== undefined)) bad("Unexpected paired web usage");
+  } else if (snapshot.timeline.some(entry => entry.message.role === "tool" && (entry.message.usage !== undefined || entry.message.webNoDispatch !== undefined))) bad("Unexpected paired web usage");
 
   const revoked = (snapshot as { revokedTools?: unknown }).revokedTools;
   if (revoked !== undefined && (!Array.isArray(revoked) || revoked.some(name => !str(name)) || new Set(revoked).size !== revoked.length
@@ -308,7 +317,7 @@ export function restoreArchive(tables: Tables, archive: SessionArchive): void {
     for (const participant of snapshot.participants) tables.addParticipant(participant.participantId);
     for (const { itemIds: _derived, ...turn } of snapshot.turns) tables.putTurn(turn);
     for (const entry of snapshot.timeline) tables.addEntry(entry);
-    if (archive.webState) for (const record of snapshot.webDispatches ?? []) tables.web.add(record, archive.webState.baseFormat);
+    if (archive.webState) { tables.web.activate(archive.webState.baseFormat); for (const record of snapshot.webDispatches ?? []) tables.web.add(record, archive.webState.baseFormat); }
     if (archive.attachmentState) {
       if (!tables.attachments) bad("Managed attachment storage is unavailable");
       tables.attachments!.restore(archive.attachmentState.baseFormat, archive.attachmentState.files);

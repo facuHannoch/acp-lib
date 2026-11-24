@@ -1,3 +1,6 @@
+import { createWebRegistry } from "./capabilities/tools/web/registry.ts";
+import { exaHttpsTransport } from "./capabilities/tools/web/exa-transport.ts";
+import { webDefinitions } from "./capabilities/tools/web/definitions.ts";
 import { compatibleInferenceKey } from "./runtime/config/inference-key.ts";
 import { wallReminderClock } from "./runtime/reminder-timer.ts";
 import { createHash } from "node:crypto";
@@ -62,6 +65,8 @@ export interface ScriptedServerOptions {
   providerFactory?: (apiKey: string, model: string) => Model;
   /** Test-only loopback fixture for observing the actual provider request. */
   providerEndpoint?: string;
+  /** Test assembly injection; never selected through managed configuration. */
+  webTransport?: import("./capabilities/tools/web/exa.ts").ExaTransport;
   environment?: Record<string, string | undefined>;
 }
 
@@ -110,7 +115,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
   };
   const server = createProtocolServer(async ({ mode, sessionId, config: inline, tools }) => {
     // Decision 0021: the catalog's names must not collide with the built-ins.
-    const catalog = tools && parseCatalog(tools, BUILTINS.map(tool => tool.name));
+    const catalog = tools && parseCatalog(tools, [...BUILTINS, ...webDefinitions].map(tool => tool.name));
     const paths = options.home ? managedSessionPaths(sessionId, options.home) : undefined;
     const adapter = locate(sessionId);
     const stored = mode === "open" ? adapter.readSavedConfig() : undefined;
@@ -126,6 +131,12 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       : createHash("sha256").update(JSON.stringify([config.system, config.model.protocol === "openrouter" && config.model.model,
         [...BUILTINS, notifyChannelDefinition].map(tool => tool.name), ...(config.model.protocol !== "openai-compatible" && config.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
     if (mode === "create" && paths) mkdirSync(paths.directory, { recursive: true });
+    const makeWebTools = () => {
+      const result = createWebRegistry(config, environment, { exa: options.webTransport ?? exaHttpsTransport });
+      if (!result.ok) throw new SessionOpenError("invalid_config", result.error.message);
+      return result.value;
+    };
+    let webTools = mode === "create" ? makeWebTools() : undefined;
     const opened = adapter.open({ mode, identity: { sessionId, compatibilityKey }, config, requiredScriptDigest: script?.modelDigest });
     if (!opened.ok) {
       const code = opened.error.code;
@@ -140,7 +151,10 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       const execution = storage.executionCompatible();
       if (!execution.ok) throw new Error(execution.error.message);
       if (!execution.value) imageInput = false;
-      if (execution.value && compatible && mode === "open") compatibleKey = resolveCompatibleCredential(compatible, environment);
+      if (execution.value && mode === "open") {
+        if (compatible) compatibleKey = resolveCompatibleCredential(compatible, environment);
+        webTools = makeWebTools();
+      }
       if (execution.value && paths && !options.adapter) attachments = createManagedAttachmentService(join(paths.directory, "media"), storage, validateManagedImage, Date.now, hit);
     } catch (error) { opened.value.close(); throw error; }
     const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
@@ -153,7 +167,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const session = createSession({
       ...(script && options.reminderTime !== undefined && Number.isSafeInteger(options.reminderTime)
         ? { reminderClock: { ...wallReminderClock, now: () => options.reminderTime! } } : {}), ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
-      revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, imageInput, ...(catalog ? { catalog } : {}), configureTurn(turn) {
+      revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, imageInput, webTools, ...(catalog ? { catalog } : {}), configureTurn(turn) {
       if (compatible) {
         const model: Model = async () => { throw new Error("Chat Completions requires a model attempt"); };
         bindModelAttempt(model, { scripted: false,
