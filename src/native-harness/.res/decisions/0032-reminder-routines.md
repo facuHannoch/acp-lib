@@ -80,7 +80,7 @@ arguments cannot supply origin names, creator, channel or acceptedAt.
 ## Occurrences and bounded delivery
 
 Every concrete instant processed consumes one count, including skipped,
-expired, overlapped, coalesced and guard-blocked occurrences. A paused or
+expired, overlapped, and coalesced occurrences. A paused or
 suspended routine does not advance until eligible again. For a late batch,
 separate expired instants first, then apply missed-run policy to the
 remaining backlog strictly before the wall-clock minute containing now.
@@ -115,7 +115,7 @@ checkpointed turn. Withdrawn notices and terminal or recovered-interrupted
 turns release overlap. Queue uses ordinary admission and inbox rules.
 Expose compact dispositions on a post-commit channel
 `routine_disposition { reminderId, firstScheduledAt, lastScheduledAt, count,
-reason }` with reason `missed | catch_up_limit | overlap | expired | unattended_limit | coalesced`.
+reason }` with reason `missed | catch_up_limit | overlap | expired | coalesced`.
 Ordinary queued notices still emit 0031 reminder_fired.
 
 ## Unattended guard
@@ -146,12 +146,27 @@ participant inbox items reset the counter, never notices, approval, or text
 claiming human input. The host must use the notice path for automated work.
 Check and update in the begin/take transaction before inference; an
 interrupted turn still spends its slot. Resume of the same checkpoint spends
-no new slot. When exhausted, queue admission cannot buy another turn: due
-routines without runnable participant input record unattended_limit and do
-not enqueue; ordinary already queued notices remain pending until a
-participant can be taken with them. Blocked backlog alone is not runnable.
-Guard-disabled sessions preserve one-off behavior. Existing policy and usage
-accounting still apply to all admitted work.
+no new slot. When exhausted, a channel with no runnable owning-host participant
+input contributes no **routine** deadline and no routine occurrence is
+processed. This applies to live and cold wake, including queue overlap.
+No unattended_limit routine disposition is emitted. Guard refusal at
+turn admission leaves ordinary already accepted notices pending without
+spending a slot. Blocked backlog alone is not runnable.
+
+Evaluate eligibility from the counter, channel/session lifecycle, and
+whether the next initial take can include a participant item under the
+ordinary intake rules. Recompute the routine contribution on participant
+admission, withdrawal or take, guard limit reached or reset, and lifecycle
+changes, in the transaction committing that cause. Use the existing wake
+revision rule: advance only if the aggregate next deadline changes, and
+publish after commit. Other eligible channels retain their deadlines. A
+participant arrival can restore eligibility before take; only actually
+taking a participant resets the counter. If eligibility is lost again,
+hold the remaining work without consuming it. When eligible, apply normal
+expiry, missed-run limits and stable occurrence IDs to elapsed work.
+Guard-disabled sessions preserve one-off behavior and the 0031 one-off wake
+calculation is unchanged. Existing policy and usage accounting still apply.
+
 
 ## Commit traces and compatibility
 
@@ -174,10 +189,8 @@ inputs. Verify parity, calendar boundary pairs, exact expiry, bounded long
 outages, both commit orders, rollback, restart, and real stdio with two
 occurrences plus a guarded or overlapping recovery case before releasing R9.
 
-## Pending product decision
-
-F4 is open. An exhausted channel with no runnable participant input could
-either retain routine wake deadlines and durably record unattended_limit on
-each due wake, or suppress that channel's deadline and resolve the gap by
-the ordinary missed-run and expiry policies when eligibility returns.
-Haurness owns the choice. Runtime and R9 remain gated pending resolution.
+Guard acceptance must cover a cold exhausted channel with no deadline,
+another channel retaining its own deadline, and participant admission
+followed by take/reset and bounded catch-up. Cover withdrawal before take
+and a crash between participant admission and reset. Reopen must use the
+saved counter and inbox to recover eligibility without a duplicate notice.
