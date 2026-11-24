@@ -4,6 +4,10 @@ export interface ChannelInput {
   channelId: string;
   participantId: string;
   text: string;
+  /** Ordered mixed parts; callers supply a matching newline-joined text projection. */
+  parts?: readonly import("./attachments.ts").InputPart[];
+  /** Trusted assembly declares that the configured model accepts images. */
+  imageInput?: boolean;
   itemId?: string;
   policy?: string | null;
 }
@@ -52,7 +56,7 @@ export type SendResult =
          * an already accepted input never gets this; it returns its recorded outcome. */
         | "channel_suspended"
         /** Decision 0014: the channel ID was deleted and is reserved. */
-        | "channel_retired" };
+        | "channel_retired" | "unsupported_image" | "transfer_limit" };
 
 /** Shared entity with one delivery behavior for messages and notices: accept
  * durably, then the channel takes the item as soon as it can. An active turn

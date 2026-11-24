@@ -7,7 +7,7 @@ export interface ToolCall {
 
 /** Neutral history. Provider state is opaque to the loop. */
 export type Message =
-  | { role: "system" | "user"; content: string }
+  | { role: "system" | "user"; content: string; parts?: readonly import("./attachments.ts").InputPart[] }
   | { role: "assistant"; content: string | null; calls: ToolCall[]; providerState?: unknown }
   | { role: "tool"; content: string; callId: string; /** Decision 0021; absent means a legacy success. */ outcome?: import("./tools.ts").ToolOutcome };
 

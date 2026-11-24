@@ -159,13 +159,30 @@ test("durable publication activates format 9 through the owning session and surv
     const metadata = uploads.finalize("a", begin.uploadId);
     expect(take(store.readSession()).formatVersion).toBe(9);
     expect(take(store.readManagedAttachment(metadata.id))?.metadata).toEqual(metadata);
+    const input = { kind: "participant_message" as const, channelId: "a", senderId: "person", itemId: "with-file", text: "before\nafter",
+      parts: [{ type: "text" as const, text: "before" }, { type: "attachment" as const, id: metadata.id }, { type: "text" as const, text: "after" }] };
+    expect(take(store.acceptItem(input)).duplicate).toBe(false);
+    const only = { ...input, itemId: "file-only", text: "", parts: [{ type: "attachment" as const, id: metadata.id }] };
+    expect(take(store.acceptItem(only)).duplicate).toBe(false);
+    expect(store.acceptItem({ ...only, itemId: "wrong-channel", channelId: "other" })).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(take(store.readManagedAttachment(metadata.id))?.timelineVisible).toBe(false);
+    take(store.beginSuspend()); take(store.completeSuspend());
+    expect(take(store.acceptItem(input)).duplicate).toBe(true);
+    expect(store.acceptItem({ ...input, text: "changed", parts: [{ type: "text", text: "changed" }, { type: "attachment", id: metadata.id }] })).toMatchObject({ ok: false, error: { code: "item_conflict" } });
     uploads.close(); take(store.close());
     const reopened = take(adapter.open({ mode: "open", identity, config }));
     try {
       expect(take(reopened.readSession()).formatVersion).toBe(9);
+      expect(take(reopened.acceptItem(input)).duplicate).toBe(true);
+      take(reopened.resume());
+      const turn = take(reopened.beginTurn("a"));
+      expect(turn?.items[0]?.parts).toEqual(input.parts);
+      expect(turn?.entries[0]?.message).toMatchObject({ parts: input.parts });
+      expect(turn?.items[1]?.parts).toEqual(only.parts);
+      expect(take(reopened.readManagedAttachment(metadata.id))?.timelineVisible).toBe(true);
       const lookup = (id: string) => { const saved = take(reopened.readManagedAttachment(id)); return saved && { ...saved, timelineReadable: true }; };
       expect(Buffer.from(readAttachment({ root, channel: "a", id: metadata.id, offset: 0, lookup }).data, "base64")).toEqual(data);
-      expect(take(reopened.exportArchive()).archiveVersion).toBe(7);
+      expect(reopened.exportArchive()).toMatchObject({ ok: false, error: { code: "busy" } });
       expect(take(reopened.readSession()).formatVersion).toBe(9);
     } finally { take(reopened.close()); }
   } finally { rmSync(home, { recursive: true, force: true }); }

@@ -6,6 +6,8 @@ import { createRoutineEvaluator } from "../../capabilities/reminders/routine-sch
 import { isRoutine, prepareRoutineRow } from "./routine-row.ts";
 import { unattendedAdmission } from "../../capabilities/reminders/unattended.ts";
 import { normalizeReminderSchedule, resolveAgentReminder } from "../../util/reminder-schedule.ts";
+import { createHash } from "node:crypto";
+import { validateMixedParts, mixedPartsSignature } from "../../util/attachment-input.ts";
 import { applyReminderChange } from "./reminder-change.ts";
 import type { OneOffReminder, Reminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
 import type { ReminderTables } from "./reminder-tables.ts";
@@ -126,8 +128,9 @@ function cleanName(name: unknown): string {
 }
 
 /** The contract's exact signature; identical for both adapters and archives. */
-export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text" | "explicitPolicy" | "externalSource" | "inheritedPolicyNames">): string {
-  return item.kind === "external_notice" ? externalNoticeSignature(item.channelId, item.externalSource, item.text, item.inheritedPolicyNames ?? []) : policyItemSignature(item);
+export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text" | "explicitPolicy" | "externalSource" | "inheritedPolicyNames" | "parts">): string {
+  const legacy = item.kind === "external_notice" ? externalNoticeSignature(item.channelId, item.externalSource, item.text, item.inheritedPolicyNames ?? []) : policyItemSignature(item);
+  return item.parts === undefined ? legacy : createHash("sha256").update(JSON.stringify([legacy, mixedPartsSignature(item.parts)])).digest("hex");
 }
 
 /** Strict JSON data: what survives a JSON round trip unchanged. */
@@ -409,7 +412,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         from: item.senderId, kind: item.kind, ...(item.sourceChannelId ? { sourceChannelId: item.sourceChannelId } : {}),
         ...(item.externalSource !== undefined ? { externalSource: item.externalSource } : {}),
         itemId: item.itemId, message: { role: "user", content: item.kind !== "participant_message" ? item.text
-          : `Participant: ${JSON.stringify(item.senderId)}\n\n${item.text}` } };
+          : `Participant: ${JSON.stringify(item.senderId)}\n\n${item.text}`, ...(item.parts ? { parts: item.parts } : {}) } };
       tables.addEntry(entry);
       const taken: StoredItem = { ...item, milestone: "taken", turnId: turn.turnId, entrySeq: entry.seq };
       tables.putItem(taken);
@@ -475,9 +478,16 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }
     if (changed.length) tables.setModelState(state, changed);
   };
-  const accept = (meta: Meta, input: AcceptItem, maxInputBytes?: number) => {
+  const accept = (meta: Meta, input: AcceptItem, maxInputBytes?: number, options?: { imageInput?: boolean }) => {
       const external = input?.kind === "external_notice";
-      if (!external) requireCompatible();
+      if (!external && input?.parts === undefined) requireCompatible();
+      if (input?.parts !== undefined) {
+        if (input.kind !== "participant_message") fail("invalid_input", "Only participant messages can carry attachments");
+        try { input = { ...input, parts: validateMixedParts(input.parts) }; }
+        catch (error) { fail((error as { code?: string }).code === "transfer_limit" ? "transfer_limit" : "invalid_input", String(error)); }
+        const textParts = input.parts!.filter(part => part.type === "text").map(part => (part as { text: string }).text).join("\n");
+        if (input.text !== textParts) fail("invalid_input", "Text projection does not match ordered parts");
+      }
       if (external && (!text(input.itemId) || !text(input.channelId) || !text(input.text)
         || (input.externalSource !== undefined && !text(input.externalSource))
         || !Array.isArray(input.inheritedPolicyNames) || !Array.from(input.inheritedPolicyNames).every(text)
@@ -494,8 +504,23 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
           return { item: known, duplicate: true };
         }
       }
+      if (!external && input?.parts !== undefined) requireCompatible();
+      if (input?.parts) {
+        const attachments = tables.attachments;
+        if (!attachments) fail("incompatible", "Managed attachments are unavailable in this store");
+        let imageBytes = 0;
+        for (const part of input.parts) if (part.type === "attachment") {
+          const metadata = attachments!.get(part.id)?.metadata;
+          if (!metadata || metadata.channel !== input.channelId) fail("not_found", "Unknown attachment");
+          if (metadata!.mediaType.startsWith("image/")) {
+            if (!options?.imageInput) fail("unsupported_image", "Image input is unsupported");
+            imageBytes += metadata!.bytes;
+          }
+        }
+        if (imageBytes > 40 * 1024 * 1024) fail("transfer_limit", "Input image budget exceeded");
+      }
       const notice = shaped && input.kind === "channel_notice";
-      if (!shaped || !(notice || external || input.kind === "participant_message") || ![input.channelId, input.senderId, input.text].every(text)
+      if (!shaped || !(notice || external || input.kind === "participant_message") || ![input.channelId, input.senderId].every(text) || (input.parts === undefined && !text(input.text))
         || (input.itemId !== undefined && !text(input.itemId))
         || (notice ? !text(input.sourceChannelId) : input.sourceChannelId !== undefined))
         fail("invalid_input", "Item needs kind, channelId, senderId and text; a notice also needs sourceChannelId");
@@ -537,7 +562,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       }
       const item: StoredItem = { itemId, kind: input.kind, channelId: input.channelId, senderId: external ? input.externalSource ?? "host" : input.senderId,
         ...(external ? { inheritedPolicyNames: inherited, ...(input.externalSource === undefined ? {} : { externalSource: input.externalSource }) } : {}),
-        ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), ...(input.explicitPolicy == null ? {} : { explicitPolicy: input.explicitPolicy }), text: input.text,
+        ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), ...(input.explicitPolicy == null ? {} : { explicitPolicy: input.explicitPolicy }), text: input.text, ...(input.parts ? { parts: input.parts } : {}),
         signature: signatureOf(input), policy: { ...(input.explicitPolicy == null ? {} : { explicit: input.explicitPolicy }), resolved, inherited },
         acceptedSeq: seq(meta), acceptedAt: now(), milestone: "received" };
       if (!notice && !external) {
@@ -545,6 +570,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         tables.addParticipant(item.senderId);
       }
       tables.putItem(item);
+      if (input.parts) tables.attachments!.saveParts(itemId, input.parts);
       return { item, duplicate: false };
   };
   const reminders = tables.reminders;
@@ -584,7 +610,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     registerReadyAttachment: metadata => run(meta => {
       if (!tables.attachments) fail("incompatible", "Managed attachments are unavailable in this store");
       if (!metadata || typeof metadata.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(metadata.id)
-        || !text(metadata.channel) || !text(metadata.filename) || !metadata.filename.isWellFormed()
+        || !text(metadata.channel) || typeof metadata.filename !== "string" || metadata.filename.length === 0 || !metadata.filename.isWellFormed()
         || Buffer.byteLength(metadata.filename) > 255 || /[\u0000-\u001f\u007f-\u009f]/u.test(metadata.filename)
         || typeof metadata.mediaType !== "string" || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(metadata.mediaType) || metadata.mediaType.length > 127
         || !Number.isSafeInteger(metadata.bytes) || metadata.bytes <= 0 || metadata.bytes > 20 * 1024 * 1024
@@ -679,7 +705,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const calls = rows.slice(0, limit);
       return { calls, ...(rows.length > limit ? { next: calls.at(-1)!.callId } : {}) };
     }, true),
-    acceptItem: (input, maxInputBytes) => run(meta => accept(meta, input, maxInputBytes), input?.kind === "external_notice"),
+    acceptItem: (input, maxInputBytes, options) => run(meta => accept(meta, input, maxInputBytes, options), input?.kind === "external_notice"),
 
     changeReminder: (change, wallTime) => run(meta => {
       requireCompatible();

@@ -30,7 +30,7 @@ export type StorageErrorCode =
   /** Export refused: active or pending work exists and the session is not suspended. */
   | "busy"
   | "invalid_archive"
-  | "serialization_error" | "storage_failure" | "transfer_limit" | "invalid_cursor";
+  | "serialization_error" | "storage_failure" | "transfer_limit" | "invalid_cursor" | "unsupported_image";
 
 /** A failed mutation leaves no partial domain changes. Do not retry blindly. */
 export interface StorageError { code: StorageErrorCode; message: string }
@@ -133,6 +133,8 @@ export interface AcceptItem {
   inheritedPolicyNames?: readonly string[];
   /** Original payload, kept unrendered for the life of the item. */
   text: string;
+  /** Ordered mixed input; absent for legacy text-only identity. */
+  parts?: readonly import("./attachments.ts").InputPart[];
 }
 
 /** An accepted input. While `milestone` is `received` it is pending: in the
@@ -345,7 +347,7 @@ export interface SessionStorage extends ModelCallStore, ReminderStorage, Timelin
    * Nothing is added to the timeline and no turn is created or changed. */
   /** External notice retries compare durable identity before admission or
    * policy validation for new work, through a path that writes nothing. */
-  acceptItem(input: AcceptItem, maxInputBytes?: number): StorageResult<{ item: StoredItem; duplicate: boolean }>;
+  acceptItem(input: AcceptItem, maxInputBytes?: number, options?: { imageInput?: boolean }): StorageResult<{ item: StoredItem; duplicate: boolean }>;
 
   /** Start the channel's next turn by taking ALL its pending items, in
    * acceptance order, in one transaction: create the running turn, move each

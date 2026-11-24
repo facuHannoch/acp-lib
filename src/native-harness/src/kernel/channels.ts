@@ -196,18 +196,18 @@ export function createChannelScheduler(
     suspension = undefined;
   }
 
-  function accept(item: AcceptItem): SendResult {
+  function accept(item: AcceptItem, options?: { imageInput?: boolean }): SendResult {
     if (stopped && item.kind !== "external_notice") return { accepted: false, code: "stopped", error: "This process has stopped accepting work" };
     if (stopped) {
       const known = storage.snapshot();
       if (!known.ok || !known.value.items.some(stored => stored.itemId === item.itemId))
         return { accepted: false, code: "stopped", error: "This process has stopped accepting work" };
     }
-    const result = storage.acceptItem(item, limits?.maxInputBytes);
+    const result = storage.acceptItem(item, limits?.maxInputBytes, options);
     if (!result.ok) {
       const code = result.error.code;
       return { accepted: false, error: result.error.message, code: code === "invalid_input" || code === "item_conflict"
-        || code === "invalid_policy" || code === "incompatible" || code === "not_running" || code === "not_found" || code === "channel_suspended" || code === "channel_retired" ? code : "storage_failure" };
+        || code === "invalid_policy" || code === "incompatible" || code === "not_running" || code === "not_found" || code === "channel_suspended" || code === "channel_retired" || code === "unsupported_image" || code === "transfer_limit" ? code : "storage_failure" };
     }
     const { item: stored, duplicate } = result.value;
     if (!duplicate) {
@@ -330,7 +330,7 @@ export function createChannelScheduler(
     agent: {
       idle: () => live.size === 0 && (!compatible() || !started || stopped || lifecycle !== "running" || waiting.size === 0),
       send: (input: ChannelInput) => accept({ kind: "participant_message", channelId: input?.channelId, senderId: input?.participantId,
-        text: input?.text, ...(input?.policy == null ? {} : { explicitPolicy: input.policy }), ...(input?.itemId === undefined ? {} : { itemId: input.itemId }) }),
+        text: input?.text, ...(input?.parts === undefined ? {} : { parts: input.parts }), ...(input?.policy == null ? {} : { explicitPolicy: input.policy }), ...(input?.itemId === undefined ? {} : { itemId: input.itemId }) }, { imageInput: input?.imageInput }),
       notifyExternal: notice => accept({ kind: "external_notice", itemId: notice.itemId, channelId: notice.channelId,
         senderId: notice.source ?? "host", externalSource: notice.source, inheritedPolicyNames: notice.policyNames, text: notice.text }),
       notify: (notice: ChannelNotice) => accept({ kind: "channel_notice", channelId: notice?.channelId,

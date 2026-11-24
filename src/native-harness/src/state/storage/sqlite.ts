@@ -252,6 +252,11 @@ function installContextPolicyIndex(db: Database): void {
 }
 
 function sqliteTables(db: Database): Tables & { dispose(): void } {
+  const attachments = sqliteAttachmentTables(db);
+  const readItem = (row: Row): StoredItem => {
+    const value = item(row), parts = attachments.parts(value.itemId);
+    return parts ? { ...value, parts } : value;
+  };
   // Prepared on first use: statements for tables a format 2 file does not have
   // yet must not be compiled before the upgrade runs.
   const finalizers: (() => void)[] = [];
@@ -353,7 +358,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     }
   };
   return {
-    attachments: sqliteAttachmentTables(db),
+    attachments,
     reminders: sqliteReminderTables(db),
     contextTurnStart: (channelId, turnId) => s.contextTurnStart.get(turnId, channelId)?.started_seq,
     contextTrigger(turnId) {
@@ -452,15 +457,15 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     channels: () => s.channels.all().map(channel),
     addParticipant(id) { s.addParticipant.run(id); },
     participants: () => s.participants.all().map(row => row.participant_id),
-    item(id) { const row = s.item.get(id); return row ? item(row) : undefined; },
+    item(id) { const row = s.item.get(id); return row ? readItem(row) : undefined; },
     putItem(i) { s.putItem.run(i.itemId, i.kind, i.channelId, i.senderId, i.sourceChannelId ?? null, i.text, i.signature,
       i.acceptedSeq, i.acceptedAt, i.milestone, i.turnId ?? null, i.entrySeq ?? null, i.withdrawnAt ?? null, JSON.stringify(i.policy ?? { resolved: "__legacy_allow", inherited: [] }), i.externalSource ?? null); },
     hasOpenRoutineNotice: (channelId, source) => !!db.query(`SELECT 1 FROM items i LEFT JOIN turns t USING(turn_id)
       WHERE i.channel_id = ? AND i.external_source = ? AND i.kind = 'external_notice'
       AND (i.milestone = 'received' OR t.status IN ('running','suspended')) LIMIT 1`).get(channelId, source),
-    pendingItems: (channelId, limit) => s.pending.all(channelId, limit ?? -1).map(item),
-    itemsOfTurn: turnId => s.ofTurn.all(turnId).map(item),
-    items: () => s.items.all().map(item),
+    pendingItems: (channelId, limit) => s.pending.all(channelId, limit ?? -1).map(readItem),
+    itemsOfTurn: turnId => s.ofTurn.all(turnId).map(readItem),
+    items: () => s.items.all().map(readItem),
     turn(id) { const row = s.turn.get(id); return row ? turn(row) : undefined; },
     putTurn(t) { s.putTurn.run(t.turnId, t.channelId, t.startedSeq, t.startedAt, t.compatibilityKey, t.state.status, JSON.stringify(t.state)); },
     liveTurn(channelId) { const row = s.live.get(channelId); return row ? turn(row) : undefined; },
