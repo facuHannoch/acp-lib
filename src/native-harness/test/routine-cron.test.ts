@@ -1,3 +1,4 @@
+import { routineExpiry } from "../src/capabilities/reminders/routine-expiry.ts";
 import { zonedCalendar } from "../src/capabilities/reminders/cron-zone.ts";
 import { cronCivilCalendar } from "../src/capabilities/reminders/cron-calendar.ts";
 import { expect, test } from "bun:test";
@@ -51,4 +52,20 @@ test("transition proof rejects a pair closer than ten minutes in UTC", () => {
   expect(zonedCalendar(civil, Date.UTC(2026, 0, 1), Date.UTC(2026, 0, 3), 0, [
     { at: Date.UTC(2026, 0, 2, 1, 55), offset: 5 * 60_000 },
   ])).toBeUndefined();
+});
+
+test("routine default grace uses the next real match across DST", () => {
+  const civil = cronCivilCalendar(parseRoutineCron("0 3 * * *")!)!;
+  const hour = 3_600_000;
+  const zone = zonedCalendar(civil, Date.UTC(2026, 2, 1), Date.UTC(2026, 3, 1), -5 * hour,
+    [{ at: Date.UTC(2026, 2, 8, 7), offset: -4 * hour }])!;
+  const daily = Date.UTC(2026, 2, 7, 8);
+  expect(zone.nextCalendarMatch(daily)).toBe(daily + 23 * hour);
+  expect(routineExpiry(zone, daily).expiresAfter).toBe(24 * hour);
+  const sparseClock = cronCivilCalendar(parseRoutineCron("0 1,3 * * *")!)!;
+  const short = zonedCalendar(sparseClock, Date.UTC(2026, 2, 1), Date.UTC(2026, 3, 1), -5 * hour,
+    [{ at: Date.UTC(2026, 2, 8, 7), offset: -4 * hour }])!;
+  const first = Date.UTC(2026, 2, 8, 6);
+  expect(routineExpiry(short, first)).toEqual({ expiresAfter: 2 * hour, expiresAt: first + 2 * hour });
+  expect(routineExpiry(short, first, null)).toEqual({ expiresAfter: null, expiresAt: null });
 });
