@@ -1,0 +1,155 @@
+{
+  "format": "harness-session",
+  "archiveVersion": 7,
+  "exportedAt": "2026-11-24T10:55:04.914Z",
+  "snapshot": {
+    "revision": 8,
+    "session": {
+      "sessionId": "a1-rh4-fixture",
+      "formatVersion": 8,
+      "createdAt": "2026-11-24T10:55:04.535Z",
+      "lifecycle": "running",
+      "compatibilityKey": "test"
+    },
+    "channels": [
+      {
+        "channelId": "a",
+        "lifecycle": "open",
+        "participantIds": []
+      }
+    ],
+    "participants": [],
+    "turns": [
+      {
+        "turnId": 1,
+        "channelId": "a",
+        "startedSeq": 6,
+        "startedAt": "2026-11-24T10:55:04.875Z",
+        "compatibilityKey": "test",
+        "state": {
+          "status": "interrupted",
+          "reason": "fixture",
+          "uncertainCallIds": []
+        },
+        "itemIds": [
+          "n1"
+        ]
+      }
+    ],
+    "items": [
+      {
+        "itemId": "n1",
+        "kind": "external_notice",
+        "channelId": "a",
+        "senderId": "host",
+        "text": "guard charge",
+        "inheritedPolicyNames": [],
+        "signature": "301b41e32c8b6245358d6d4eadc03523ddc872a5ef9d5c3db7a162132cb20cc4",
+        "acceptedSeq": 5,
+        "acceptedAt": "2026-11-24T10:55:04.859Z",
+        "milestone": "taken",
+        "policy": {
+          "resolved": "open",
+          "inherited": []
+        },
+        "turnId": 1,
+        "entrySeq": 7
+      }
+    ],
+    "timeline": [
+      {
+        "seq": 7,
+        "at": "2026-11-24T10:55:04.876Z",
+        "channelId": "a",
+        "turnId": 1,
+        "from": "host",
+        "kind": "external_notice",
+        "itemId": "n1",
+        "message": {
+          "role": "user",
+          "content": "guard charge"
+        }
+      }
+    ],
+    "modelCalls": [],
+    "scriptPositions": {}
+  },
+  "reminderState": {
+    "guard": {
+      "limit": 1,
+      "counters": [
+        {
+          "channel": "a",
+          "spent": 1
+        }
+      ]
+    },
+    "rows": [
+      {
+        "sequence": 3,
+        "defaultedExpiry": false,
+        "reminder": {
+          "schedule": {
+            "every": 600000,
+            "count": 2,
+            "startAt": "2026-10-31T12:10:00.000Z"
+          },
+          "remainingCount": 2,
+          "acceptedAt": "2026-10-31T12:00:00.000Z",
+          "nextRunAt": "2026-10-31T12:10:00.000Z",
+          "expiresAfter": null,
+          "expiresAt": null,
+          "id": "routine",
+          "channel": "a",
+          "createdBy": "host",
+          "policyNames": [],
+          "text": "fixture routine",
+          "state": "active",
+          "missedRuns": "coalesce",
+          "overlap": "skip"
+        },
+        "original": "[\"create\",{\"acceptedAt\":\"2026-10-31T12:00:00.000Z\",\"channel\":\"a\",\"expiresAfter\":null,\"schedule\":{\"count\":2,\"every\":600000},\"text\":\"fixture routine\"}]"
+      }
+    ],
+    "receipts": [
+      {
+        "fingerprint": "[\"create\",{\"acceptedAt\":\"2026-10-31T12:00:00.000Z\",\"channel\":\"a\",\"expiresAfter\":null,\"schedule\":{\"count\":2,\"every\":600000},\"text\":\"fixture routine\"}]",
+        "result": {
+          "reminderId": "routine",
+          "changeId": 1,
+          "outcome": "applied",
+          "reminder": {
+            "schedule": {
+              "every": 600000,
+              "count": 2,
+              "startAt": "2026-10-31T12:10:00.000Z"
+            },
+            "remainingCount": 2,
+            "acceptedAt": "2026-10-31T12:00:00.000Z",
+            "nextRunAt": "2026-10-31T12:10:00.000Z",
+            "expiresAfter": null,
+            "expiresAt": null,
+            "id": "routine",
+            "channel": "a",
+            "createdBy": "host",
+            "policyNames": [],
+            "text": "fixture routine",
+            "state": "active",
+            "missedRuns": "coalesce",
+            "overlap": "skip"
+          }
+        }
+      }
+    ],
+    "listingRevision": 1,
+    "wake": {
+      "nextDueAt": null,
+      "reminderRevision": 2
+    }
+  },
+  "allocation": {
+    "nextTurnId": 2,
+    "nextSeq": 9,
+    "nextItemNumber": 1
+  }
+}

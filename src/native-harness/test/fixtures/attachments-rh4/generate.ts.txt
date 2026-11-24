@@ -1,0 +1,20 @@
+import { writeFileSync } from "node:fs";
+import { createSqliteStorageAdapter } from "./src/state/storage/sqlite.ts";
+function take<T>(r: any): T { if (!r.ok) throw Error(JSON.stringify(r.error)); return r.value; }
+const identity = { sessionId: "a1-rh4-fixture", compatibilityKey: "test" };
+const config = { version: 1, system: "test", model: { protocol: "scripted", script: "test" }, defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } }, limits: { unattendedTurns: 1 } } as const;
+const adapter = createSqliteStorageAdapter("/tmp/a1-rh4-fixture.sqlite");
+const store: any = take(adapter.open({ mode: "create", identity, config }));
+take(store.createChannel({ channelId: "a" }));
+const now = Date.parse("2026-10-31T12:00:00.000Z");
+const receipt: any = take(store.changeReminder({ op: "create", reminderId: "routine", changeId: 1, payload: { channel: "a", text: "fixture routine", acceptedAt: new Date(now).toISOString(), schedule: { every: 600000, count: 2 }, expiresAfter: null } }, now));
+if (receipt.outcome !== "applied") throw Error(JSON.stringify(receipt));
+take(store.acceptItem({ kind: "external_notice", inheritedPolicyNames: [], channelId: "a", senderId: "worker", itemId: "n1", text: "guard charge" }));
+const turn: any = take(store.beginTurn("a"));
+take(store.finishTurn(turn.turn.turnId, { status: "interrupted", reason: "fixture" }));
+const session: any = take(store.readSession());
+const archive: any = take(store.exportArchive());
+if (session.formatVersion !== 8 || archive.archiveVersion !== 7 || archive.reminderState?.guard?.counters?.[0]?.spent !== 1) throw Error("Fixture format/guard mismatch");
+writeFileSync("/tmp/a1-rh4-archive7.json", JSON.stringify(archive, null, 2));
+take(store.close());
+console.log(JSON.stringify({ source: "174c7c48b40a3cdb2fcad91cf09e581971e51bad", sessionFormat: session.formatVersion, archiveVersion: archive.archiveVersion, guard: archive.reminderState.guard, routineCount: archive.reminderState.rows.length }));
