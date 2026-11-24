@@ -200,11 +200,11 @@ entry attributed to its original mark. Old archives/configs and legacy dispatche
 remain readable. New feature-bearing snapshots require a versioned format which
 older strict readers refuse, never silently drop evidence. Feature-free sessions
 continue to export the appropriate preexisting archive (including A1 and routines
-features where present), with no new usage fields. Do not allocate SQLite or
-archive version numbers in this decision: agree the next numbers and actual
-integration base with the A1 and routines owners before runtime schema work.
-Envelope version remains unchanged unless a separately reviewed decision changes
-it. A1 format 9/archive 8 and R-H4 format 8/archive 7 cannot be overwritten.
+features where present), with no new usage fields. Reserve lazy SQLite format 10 and logical archive 9 for retained web usage
+evidence; envelope version 1 remains unchanged. Preserve A1 format 9/archive 8
+and R-H4 format 8/archive 7, including feature-free archive selection. Before
+shared runtime schema work, coordinate the exact accepted A1 and 0034 runtime
+integration base with their owners and Haurness.
 Coordinate shared config, assembly, storage, archive and inspector files with A1
 and 0034; compose against their actual accepted revisions without changing 0034's
 text-only endpoint or A1 vision validation, redaction and archive semantics.

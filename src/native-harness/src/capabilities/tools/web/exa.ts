@@ -56,23 +56,28 @@ export async function runExa(input: { operation: "web_search" | "web_fetch"; arg
     const response = await input.transport({ path: search ? "/search" : "/contents", key: input.key, body, signal: controller.signal });
     if (cause) return failed(cause);
     const json = record(response.body), usage = usageOf(json);
+    // Provider output is untrusted and may echo request headers. Do not allow
+    // the resolved credential to escape via content or request metadata.
+    if (input.key && usage.requestId?.includes(input.key)) delete usage.requestId;
+    const redact = (value: string) => input.key ? value.replaceAll(input.key, "[redacted]") : value;
     if (response.status === 429) return failed("rate_limited", usage);
     if (response.status < 200 || response.status >= 300 || !json) return failed("provider_error", usage);
     if (search) {
       if (!Array.isArray(json.results)) return failed("provider_error", usage);
       const hits: WebHit[] = [];
       for (const value of json.results) {
-        const item = record(value), hitUrl = normalizedWebUrl(item?.url); if (!hitUrl) continue;
+        const item = record(value), hitUrl = normalizedWebUrl(item?.url); if (!hitUrl || (input.key && hitUrl.includes(input.key))) continue;
         const highlights = item?.highlights;
-        hits.push({ title: typeof item?.title === "string" ? item.title : null, url: hitUrl,
-          excerpt: Array.isArray(highlights) ? highlights.filter((part): part is string => typeof part === "string").join(" ") || null : null });
+        hits.push({ title: typeof item?.title === "string" ? redact(item.title) : null, url: hitUrl,
+          excerpt: Array.isArray(highlights) ? highlights.filter((part): part is string => typeof part === "string").map(redact).join(" ") || null : null });
       }
       return { ok: true, content: searchPreview(hits, input.maxResults ?? 5, input.excerptBytes ?? 512), usage };
     }
     const statuses = Array.isArray(json.statuses) ? json.statuses.map(record).filter(entry => entry?.id === url) : [];
     const results = Array.isArray(json.results) ? json.results.map(record).filter(entry => normalizedWebUrl(entry?.url) === url) : [];
     if (statuses.length !== 1 || statuses[0]?.status !== "success" || results.length !== 1 || typeof results[0]?.text !== "string" || !results[0].text.trim()) return failed("page_unavailable", usage);
-    const content = fetchPreview({ url: url!, title: typeof results[0].title === "string" ? results[0].title : null, text: results[0].text, truncated: false, coverage: "unknown" });
+    if (input.key && url!.includes(input.key)) return failed("page_unavailable", usage);
+    const content = fetchPreview({ url: url!, title: typeof results[0].title === "string" ? redact(results[0].title) : null, text: redact(results[0].text), truncated: false, coverage: "unknown" });
     return content === undefined ? failed("result_too_large", usage) : { ok: true, content, usage };
   } catch (error) { return failed(cause ?? (error instanceof ExaResponseLimit ? "response_too_large" : "provider_error")); }
   finally { clearTimeout(timeout); input.signal?.removeEventListener("abort", abort); }

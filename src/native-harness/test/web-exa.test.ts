@@ -63,3 +63,24 @@ test("deadline and interruption abort the provider request", async () => {
   const compressed = gzipSync(Buffer.alloc(4096));
   await expect(pipeline(Readable.from([compressed]), boundedBytes(1024), createGunzip(), boundedBytes(1024), sink())).rejects.toBeInstanceOf(ExaResponseLimit);
 });
+
+ test("provider echoes cannot expose credential values in content or metadata", async () => {
+  const key = "synthetic-secret-canary";
+  const result = await runExa({ operation: "web_search", args: { query: "a" }, key, transport: async () => ({ status: 200, body: { requestId: `req-${key}`, results: [{ url: "https://example.com/", title: key, highlights: [key] }] } }) });
+  expect(JSON.stringify(result)).not.toContain(key);
+  expect(result.ok).toBe(true);
+});
+
+test("web configuration selects credentials only for selected backends", async () => {
+  const { resolveWebCredentials, validateWebConfig } = await import("../src/capabilities/tools/web/config.ts");
+  const plain = validateWebConfig({ webFetch: { backend: "http" } });
+  expect(plain.ok).toBe(true); if (!plain.ok) return;
+  expect(resolveWebCredentials(plain.value, {})).toEqual({ ok: true, value: {} });
+  expect(validateWebConfig({ webFetch: { backend: "http", apiKeyEnv: "FOO" } }).ok).toBe(false);
+  expect(validateWebConfig({ webSearch: { backend: "exa", maxResults: 6 } }).ok).toBe(false);
+  const exa = validateWebConfig({ webSearch: { backend: "exa" }, webFetch: { backend: "exa", apiKeyEnv: "FETCH_KEY" } });
+  expect(exa.ok).toBe(true); if (!exa.ok) return;
+  expect(resolveWebCredentials(exa.value, { EXA_API_KEY: "secret" })).toMatchObject({ ok: false, error: { code: "invalid_config", message: "Missing or empty environment variable FETCH_KEY" } });
+  expect(resolveWebCredentials(exa.value, { EXA_API_KEY: "secret", FETCH_KEY: "another" })).toEqual({ ok: true, value: { searchKey: "secret", fetchKey: "another" } });
+  expect(JSON.stringify(exa.value)).not.toContain("secret");
+});
