@@ -9,7 +9,7 @@ import type { ReminderChange, ReminderPersistence } from "../../persistence/remi
 import { codeOf } from "../errors.ts";
 import { defaultReminderLimits } from "./limits.ts";
 import {
-  fromWireReminder, negotiatedLimits, reminderRequest,
+  fromWireReminder, negotiatedLimits, routineReminderRequest,
   type HarnessDescription, type ReminderNotification, type WireChange, type WireReminderEvent,
 } from "./wire.ts";
 
@@ -25,6 +25,7 @@ export class ReminderSync {
   private tail = Promise.resolve();
   private sends = Promise.resolve();
   private readonly fires = new Set<string>();
+  private readonly routineEvents = new Set<string>();
 
   constructor(
     private readonly persistence: PersistenceBackend,
@@ -84,7 +85,7 @@ export class ReminderSync {
         }
         try {
           if (isRoutineSchedule(change.reminder.schedule) && !this.routineAdmission.supported) throw new Error("Routine reminders were not negotiated");
-          const wire = change.frozenWire ?? reminderRequest(change, this.limits);
+          const wire = change.frozenWire ?? routineReminderRequest(change, this.limits);
           const size = Buffer.byteLength(JSON.stringify(wire)) + 1;
           if (size > 900_000) throw new Error("Reminder entry exceeds startup frame budget");
           if (bytes + size > 900_000) break;
@@ -122,6 +123,7 @@ export class ReminderSync {
     const saved = (await this.repository.wake()).reported?.sessionId;
     if (fresh || ((this.sessionId ?? saved) !== undefined && (this.sessionId ?? saved) !== sessionId)) {
       this.fires.clear();
+      this.routineEvents.clear();
       await this.repository.replaceSession(sessionId);
       await this.transaction(async repo => {
         for (const receipt of result.reminderChanges ?? []) await repo.markMaybeSent(receipt.reminderId, receipt.changeId);
@@ -251,6 +253,14 @@ export class ReminderSync {
       if (event.kind === "reminder_fired" && (this.fires.has(event.occurrenceId) || this.fires.has(event.noticeId))) return;
       const conversation = await this.persistence.conversations.get(channel as AgentConversationId);
       if (!conversation || conversation.deletedAt) return;
+      if (event.kind === "routine_disposition" || event.kind === "routine_migration_blocked") {
+        const key = JSON.stringify([channel, Object.entries(event).sort(([a], [b]) => a.localeCompare(b))]);
+        if (!this.routineEvents.has(key)) {
+          this.routineEvents.add(key);
+          emit(channel, event);
+        }
+        return;
+      }
       if (event.kind === "reminder_changed" && event.reminder.channel === channel) await this.storeRows([event.reminder], new Set());
       if (event.kind !== "reminder_changed") {
         await this.transaction(async (repo, scope) => {
@@ -259,7 +269,8 @@ export class ReminderSync {
           const confirmed = (await repo.list()).find(item => item.id === event.reminderId && item.conversationId === channel)?.confirmed;
           if (!confirmed) return;
           const status = event.kind === "reminder_fired" ? "completed" : event.kind === "reminder_expired" ? "expired" : "cancelled";
-          await repo.observe({ ...confirmed, status, nextRunAt: null, ...(event.kind === "reminder_fired"
+          const routineFire = event.kind === "reminder_fired" && isRoutineSchedule(confirmed.schedule);
+          await repo.observe({ ...confirmed, ...(!routineFire ? { status, nextRunAt: null } : {}), ...(event.kind === "reminder_fired"
             ? { lastRunAt: Date.parse(event.firedAt), lastOccurrenceId: event.occurrenceId, noticeId: event.noticeId } : {}) });
         });
       }

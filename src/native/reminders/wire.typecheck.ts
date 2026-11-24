@@ -1,8 +1,8 @@
 import type { ReminderChange } from "../../native-harness/src/client.ts";
-import type { oneOffReminderRequest } from "./wire.ts";
+import type { reminderRequest } from "./wire.ts";
 
 type AssignableToWire<T extends ReminderChange> = T;
-type Encoded = AssignableToWire<ReturnType<typeof oneOffReminderRequest>>;
+type Encoded = AssignableToWire<ReturnType<typeof reminderRequest>>;
 
 type Create = Extract<Encoded, { op: "create" }>;
 type MissingAcceptance = Omit<Create, "payload"> & {

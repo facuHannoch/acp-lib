@@ -5,7 +5,7 @@ import { ReminderWakeSupervisor } from "./supervisor.ts";
 import { ReminderSync } from "./sync.ts";
 import type { NativeHarnessHost } from "../host.ts";
 import { noopLogger } from "../../logger.ts";
-import { reminderRequest } from "./wire.ts";
+import { routineReminderRequest as reminderRequest } from "./wire.ts";
 import { randomUUID } from "node:crypto";
 import type { PersistenceBackend } from "../../persistence/backend.ts";
 import { createMemoryReminderPersistence, type Reminder, type ReminderChange, type ReminderJournal, type ReminderPersistence } from "../../persistence/reminders.ts";
@@ -50,7 +50,7 @@ export interface ReminderServiceOptions {
   readonly live?: (change: ReturnType<typeof reminderRequest>, original?: ReminderChange) => Promise<{ confirmed: Reminder } | { reason: string }>;
 }
 
-export { reminderRequest } from "./wire.ts";
+export { routineReminderRequest as reminderRequest } from "./wire.ts";
 
 function view(journal: ReminderJournal): ReminderView | undefined {
   const change = journal.changes.findLast(({ state }) => state !== "applied");

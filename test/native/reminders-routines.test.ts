@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createAgentConversationId, createAgentSessionId } from "../../src/agent-ids.ts";
 import { ReminderService } from "../../src/native/reminders/service.ts";
 import { normalizeReminderSchedule } from "../../src/native/reminders/schedule.ts";
-import { fromWireReminder, reminderRequest } from "../../src/native/reminders/wire.ts";
+import { fromWireReminder, routineReminderRequest as reminderRequest } from "../../src/native/reminders/wire.ts";
 import { SqliteAgentPersistence } from "../../src/persistence/sqlite-backend.ts";
 
 const anchor = 1_000_000;
@@ -222,5 +222,78 @@ test("live proof retry keeps payload identity and guard refusal stays visible as
     const [first, retry] = s.peer.calls.slice(-2);
     expect(first).toEqual(retry);
     expect(await s.reminders.get(item.id)).toMatchObject({ state: "blocked", reason: "unattended_guard_required" });
+  } finally { await s.persistence.close(); }
+});
+
+test("routine dispositions precede fires without making a routine terminal", async () => {
+  const s = await startup();
+  try {
+    await s.sync.initialize({ capabilities: negotiated });
+    const row = { ...s.saved("counted"), remainingCount: 3 };
+    s.peer.rows.set(row.id, row);
+    await s.open(3);
+    const seen: string[] = [];
+    const emit = (_: string, event: { kind: string }) => seen.push(event.kind);
+    const channel = row.channel;
+    const disposition = { kind: "routine_disposition", reminderId: row.id, firstScheduledAt: iso(anchor + 600_000),
+      lastScheduledAt: iso(anchor + 1_200_000), count: 2, reason: "coalesced" } as const;
+    s.sync.notification({ channel, event: disposition }, emit);
+    s.sync.notification({ channel, event: { ...disposition } }, emit);
+    s.sync.notification({ channel, event: { kind: "reminder_fired", reminderId: row.id, occurrenceId: "occ", noticeId: "notice",
+      scheduledAt: disposition.lastScheduledAt, firedAt: disposition.lastScheduledAt } }, emit);
+    await s.sync.settled();
+    expect(seen).toEqual(["routine_disposition", "reminder_fired"]);
+    expect(await s.reminders.get(row.id)).toMatchObject({ remainingCount: 3, status: "active", nextRunAt: anchor + 600_000, noticeId: "notice" });
+    s.sync.notification({ channel, event: { kind: "reminder_changed", reminder: { ...row, remainingCount: 1, nextRunAt: iso(anchor + 1_800_000) } } }, emit);
+    await s.sync.settled();
+    expect(await s.reminders.get(row.id)).toMatchObject({ remainingCount: 1, status: "active", nextRunAt: anchor + 1_800_000 });
+  } finally { await s.persistence.close(); }
+});
+
+test("routine migration publishes the hold before its blocked row and suppresses exact live duplicates", async () => {
+  const s = await startup();
+  try {
+    await s.sync.initialize({ capabilities: negotiated });
+    const row = { ...s.saved("calendar"), schedule: { cron: "0 * * * *", timezone: "Etc/UTC", count: 4 },
+      timezoneVersion: "2026a", remainingCount: 2 };
+    s.peer.rows.set(row.id, row);
+    await s.open(3);
+    const timezoneMigration = { fromVersion: "2026a", targetVersion: "2026b", cause: "proof_budget" } as const;
+    const blocked = { ...row, state: "blocked", blockedReason: "invalid_schedule", nextRunAt: null, timezoneMigration } as const;
+    const channel = row.channel;
+    const seen: string[] = [];
+    const emit = (_: string, event: { kind: string }) => seen.push(event.kind);
+    const event = { kind: "routine_migration_blocked", reminderId: row.id, ...timezoneMigration } as const;
+    s.sync.notification({ channel, event }, emit);
+    s.sync.notification({ channel, event }, emit);
+    s.sync.notification({ channel, event: { kind: "reminder_changed", reminder: blocked } }, emit);
+    await s.sync.settled();
+    expect(seen).toEqual(["routine_migration_blocked", "reminder_changed"]);
+    expect(await s.reminders.get(row.id)).toMatchObject({ status: "blocked", blockedReason: "invalid_schedule",
+      timezoneVersion: "2026a", timezoneMigration, remainingCount: 2, nextRunAt: null });
+    expect((await s.repo.wake()).effectiveAt).toBeNull();
+    s.peer.rows.set(row.id, blocked);
+    await s.open(3);
+    expect(seen).toHaveLength(2);
+    s.sync.notification({ channel, event }, emit);
+    await s.sync.settled();
+    expect(seen).toHaveLength(2);
+  } finally { await s.persistence.close(); }
+});
+
+test("the wire staging backstop holds a routine-shaped journal when negotiation is absent", async () => {
+  const s = await startup();
+  try {
+    await s.sync.initialize({ capabilities: negotiated });
+    await s.open(3);
+    const item = await s.reminders.create(interval);
+    const before = (await s.repo.list())[0]!.changes[0]!;
+    expect(reminderRequest(before)).toMatchObject({ op: "create", payload: { schedule: { every: 600_000 } } });
+    await s.sync.initialize({ capabilities: { reminders: true, routines: true } });
+    expect(await s.sync.stage()).toEqual([]);
+    await s.sync.dispatch(s.peer.client);
+    expect(s.peer.calls.every(call => call.method !== "change")).toBe(true);
+    expect((await s.repo.list())[0]!.changes[0]).toEqual(before);
+    expect((await s.repo.wake()).effectiveAt).toBeNull();
   } finally { await s.persistence.close(); }
 });

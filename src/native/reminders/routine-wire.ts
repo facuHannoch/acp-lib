@@ -60,3 +60,9 @@ type RoutineTransport = {
 export function routineTransport(client: HarnessClient): RoutineTransport {
   return client as unknown as RoutineTransport;
 }
+
+
+export type RoutineDispositionReason = "missed" | "catch_up_limit" | "overlap" | "expired" | "coalesced";
+export type RoutineChannelEvent =
+  | { type: "routine_disposition"; reminderId: string; firstScheduledAt: string; lastScheduledAt: string; count: number; reason: RoutineDispositionReason }
+  | ({ type: "routine_migration_blocked"; reminderId: string } & TimezoneMigration);

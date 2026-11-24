@@ -15,7 +15,7 @@ export function separateReminderNotifications(
         const frame = JSON.parse(line);
         const kind = frame?.method === "session/event" ? frame.params?.type
           : frame?.method === "channel/event" ? frame.params?.event?.type : undefined;
-        if (typeof kind === "string" && /^reminders?_/.test(kind)) {
+        if (typeof kind === "string" && /^(reminders?|routine)_/.test(kind)) {
           let notification: ReminderNotification | undefined;
           try { notification = reminderNotification(frame); } catch { /* Drop malformed reminder notifications. */ }
           if (notification) accept(notification);

@@ -1,5 +1,5 @@
 import { isRoutineSchedule } from "./routine-schedule.ts";
-import type { ReminderWireChange as WireChange, ReminderWireRow, RoutineChange } from "./routine-wire.ts";
+import type { ReminderWireChange as WireChange, ReminderWireRow, RoutineChange, RoutineChannelEvent } from "./routine-wire.ts";
 import { normalizeReminderSchedule } from "./schedule.ts";
 import type {
   ChannelEvent, HarnessClient, ReminderChange as OneOffChange,
@@ -15,7 +15,8 @@ type WithKind<Event extends { type: string }> = Event extends unknown
   : never;
 
 export type WireReminderEvent = WithKind<Exclude<HarnessReminderEvent, { type: "reminder_changed" }>>
-  | { kind: "reminder_changed"; reminder: ReminderWireRow };
+  | { kind: "reminder_changed"; reminder: ReminderWireRow }
+  | WithKind<RoutineChannelEvent>;
 type PublicWireRow<Row> = Row extends unknown ? Omit<Row, "blockedReason"> & { blockedReason?: string } : never;
 // Keep future block reasons representable in the library's public event.
 export type ConsumerReminderEvent = Exclude<WireReminderEvent, { kind: "reminder_changed" }> | (
@@ -45,7 +46,7 @@ export function negotiatedLimits(value: AdvertisedReminderLimits | undefined, ro
   };
 }
 
-export function oneOffReminderRequest(change: ReminderChange, limits = defaultReminderLimits): OneOffChange {
+export function reminderRequest(change: ReminderChange, limits = defaultReminderLimits): OneOffChange {
   const { id, conversationId, text, schedule, expiryPolicy, status, policyNames, scheduleAcceptedAt } = change.reminder;
   const includes = (field: NonNullable<ReminderChange["fields"]>[number]) =>
     change.op === "create" || (change.op === "update" && change.fields?.includes(field) === true);
@@ -86,10 +87,10 @@ export function oneOffReminderRequest(change: ReminderChange, limits = defaultRe
   return { ...identity, op: "update", payload: patch } satisfies OneOffChange;
 }
 
-export function reminderRequest(change: ReminderChange, limits = defaultReminderLimits): WireChange {
+export function routineReminderRequest(change: ReminderChange, limits = defaultReminderLimits): WireChange {
   const { id: reminderId, conversationId: channel, text, schedule, scheduleAcceptedAt, status, policyNames,
     expiryPolicy, missedRuns, overlap } = change.reminder;
-  if (!isRoutineSchedule(schedule) || change.op === "cancel") return oneOffReminderRequest(change, limits);
+  if (!isRoutineSchedule(schedule) || change.op === "cancel") return reminderRequest(change, limits);
   const identity = { reminderId, changeId: change.changeId };
   if (!reminderId.trim() || !Number.isSafeInteger(change.changeId) || change.changeId < 1) throw new Error("Invalid reminder identity");
   const fields = change.fields ?? [];
@@ -179,15 +180,23 @@ export function reminderNotification(value: unknown): ReminderNotification | und
   }
   if (frame.method !== "channel/event" || typeof params.channel !== "string" || !params.event) return;
   const { type, ...fields } = params.event as { type: string };
-  if (!["reminder_changed", "reminder_fired", "reminder_cancelled", "reminder_expired"].includes(type)) return;
+  if (!["reminder_changed", "reminder_fired", "reminder_cancelled", "reminder_expired", "routine_disposition", "routine_migration_blocked"].includes(type)) return;
   const fieldsByType: Record<string, readonly string[]> = {
     reminder_fired: ["reminderId", "occurrenceId", "scheduledAt", "firedAt", "noticeId"],
     reminder_cancelled: ["reminderId", "by"],
     reminder_expired: ["reminderId", "occurrenceId", "scheduledAt", "expiredAt"],
+    routine_disposition: ["reminderId", "firstScheduledAt", "lastScheduledAt", "reason"],
+    routine_migration_blocked: ["reminderId", "fromVersion", "targetVersion", "cause"],
   };
   if (type === "reminder_changed") {
     const row = (fields as { reminder?: ReminderWireRow }).reminder;
     if (!row || typeof row.id !== "string" || row.channel !== params.channel || !(row.schedule && ("at" in row.schedule ? typeof row.schedule.at === "string" : ("every" in row.schedule || "cron" in row.schedule)))) return;
   } else if (fieldsByType[type]!.some(key => typeof (fields as Record<string, unknown>)[key] !== "string")) return;
+  const data = fields as Record<string, unknown>;
+  if (type === "routine_disposition" && (
+    !Number.isSafeInteger(data.count) || Number(data.count) <= 0 ||
+    !["missed", "catch_up_limit", "overlap", "expired", "coalesced"].includes(String(data.reason))
+  )) return;
+  if (type === "routine_migration_blocked" && !["invalid_schedule", "proof_budget"].includes(String(data.cause))) return;
   return { channel: params.channel, event: { ...fields, kind: type } as WireReminderEvent };
 }
