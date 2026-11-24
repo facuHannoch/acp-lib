@@ -49,7 +49,7 @@ locale-sensitive and do not promise full Unicode case folding. Validate fixtures
 for composed/decomposed accents, non-Latin letters, case, punctuation and empty
 or punctuation-only queries.
 
-Arguments: query at most 1024 UTF-8 bytes and 32 tokens, each normalized token
+Arguments: query at most 1024 UTF-8 bytes and 32 tokens, each normalized and folded token
 at most 256 UTF-8 bytes; `match` is `keywords` (default) or `phrase`, and
 `case_sensitive` defaults false. Reject unknown fields and wrong types. Limit
 channel and ID strings to the existing input limits. Return at most 20 hits,
@@ -60,11 +60,14 @@ cut only on Unicode scalar boundaries. The complete JSON result is limited to
 Generate candidate entries containing all distinct lowercased query tokens, in
 descending sequence order. Verify no more than 1000 candidates, including those
 that fail exact-case or phrase verification; probe one extra to establish whether
-work remains. Rank verified matches by the number of occurrences of the first
-query token (descending), capped at 255, then sequence descending. This score and
-ordering are identical across adapters. `partial` is true when candidates remain
-unverified or response bytes omit a qualifying hit; otherwise false. Thus a
-partial result is the best of the verified candidates, not a global top-k.
+work remains. Verify at most 2 MiB of original projected UTF-8 text in
+total. Check size before reading bodies, and stop at the first candidate
+that would exceed the remaining budget, including a single oversized
+candidate. Rank keywords by the sum of occurrences of distinct query
+tokens and phrases by the number of consecutive phrase occurrences,
+capped at 255, then sequence descending. Both adapters use the same
+score. Set partial if candidates remain unverified or serialized bytes
+omit a selected hit. A partial result describes the best of those checked.
 Result count alone does not imply partial: continue verification up to the cap
 so ranking is meaningful. A common token can still require substantial index
 matching/sorting before candidate verification; measure this separately.
@@ -72,6 +75,9 @@ matching/sorting before candidate verification; measure this separately.
 SQLite FTS5 indexes each normalized lowercase token as `x` followed by the
 hexadecimal UTF-8 bytes, separated by spaces, using the ASCII tokenizer. Query
 with internally constructed, parameterized AND terms; never expose FTS syntax.
+Use timeline sequence as FTS rowid, and select by rowid descending with the
+cap plus one. Index only folded tokens within the supported query token
+size, so oversized document tokens cannot exceed FTS token limits.
 This reversible encoding prevents FTS Unicode tokenization or diacritic folding
 from dropping a candidate. Verify phrase and casing against original projected
 text. Memory uses the identical candidate predicate, ordering, cap and scoring.
@@ -103,7 +109,9 @@ lookup indexes under the exclusive owner transaction; backfill existing files,
 update index rows in the same transaction as timeline writes, and rebuild on
 archive import. Mark dirty via triggers for writes from older compatible writers;
 on open, atomically rebuild a missing, dirty or incompatible projection before
-reads, leaving canonical data intact on failure. Archive only canonical records;
+reads, leaving canonical data intact on failure. Check the dirty marker
+inside the read transaction and fail closed if it was dirtied during the
+session. Never serve stale projected results. Archive only canonical records;
 IDs and index contents are reconstructed. Keep existing format compatibility and
 ensure interrupted rebuilds retry. FTS5 availability was checked on Bun 1.3.14;
 the supported minimum Bun environment must also be exercised in CI before release.
