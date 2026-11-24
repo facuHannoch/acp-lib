@@ -49,3 +49,15 @@ test("expiry equality is discarded before missed-run policy selects a notice", (
     coalesced: [{ first: 499_998, last: 499_998 }],
   });
 });
+
+test("replacement preserves alignment and ignores fenced instants when applying count", () => {
+  const fence = anchor + 3 * every + 100;
+  const replacement = intervalCalendar({ every, count: 2 }, anchor, fence)!;
+  expect(replacement.at(0)).toBe(anchor + 4 * every);
+  expect(replacement.at(1)).toBe(anchor + 5 * every);
+  expect(replacement.at(2)).toBeUndefined();
+  expect(replacement.rank(fence)).toBe(0);
+  const end = new Date(anchor + 4 * every).toISOString();
+  expect(intervalCalendar({ every, until: end }, anchor, fence)?.at(0)).toBe(anchor + 4 * every);
+  expect(intervalCalendar({ every, until: end }, anchor, anchor + 4 * every)).toBeUndefined();
+});

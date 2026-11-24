@@ -3,13 +3,17 @@ import { reminderInstant, REMINDER_LIMITS } from "../../util/reminder-schedule.t
 
 const lastInstant = Date.parse("9999-12-31T23:59:59.999Z");
 
-export function intervalCalendar(schedule: IntervalRoutineSchedule, anchor: number): RoutineCalendar | undefined {
+export function intervalCalendar(schedule: IntervalRoutineSchedule, anchor: number, processedThrough?: number): RoutineCalendar | undefined {
   const { every, count, until, startAt } = schedule;
   if (!Number.isSafeInteger(anchor) || !Number.isSafeInteger(every) || every < REMINDER_LIMITS.minIntervalMs) return;
   if (count !== undefined && (until !== undefined || !Number.isSafeInteger(count) || count < 1)) return;
-  const first = startAt === undefined ? anchor + every : reminderInstant(startAt);
+  const start = startAt === undefined ? anchor + every : reminderInstant(startAt);
   const last = until === undefined ? lastInstant : reminderInstant(until);
-  if (first === undefined || last === undefined || first > last || first - anchor < REMINDER_LIMITS.minIntervalMs) return;
+  if (start === undefined || last === undefined || !Number.isSafeInteger(start) || start - anchor < REMINDER_LIMITS.minIntervalMs) return;
+  if (processedThrough !== undefined && !Number.isSafeInteger(processedThrough)) return;
+  const skipped = processedThrough === undefined || processedThrough < start ? 0 : Math.floor((processedThrough - start) / every) + 1;
+  const first = start + skipped * every;
+  if (!Number.isSafeInteger(first) || first > last) return;
   const size = Math.min(count ?? Infinity, Math.floor((last - first) / every) + 1);
   return {
     at(ordinal) {
@@ -19,7 +23,7 @@ export function intervalCalendar(schedule: IntervalRoutineSchedule, anchor: numb
       return Math.max(0, Math.min(size, Math.floor((through - first) / every) + 1));
     },
     nextCalendarMatch(instant) {
-      const next = first + (Math.floor((instant - first) / every) + 1) * every;
+      const next = first + Math.max(0, Math.floor((instant - first) / every) + 1) * every;
       return next <= lastInstant ? next : undefined;
     },
   };
