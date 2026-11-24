@@ -34,6 +34,8 @@ export interface AgentSessionConfig extends ConversationPermissionConfig {
    * process. Opt-in: absent for every ACP conversation. `adapter` is then display only.
    */
   native?: NativeControllerBinding;
+  /** Override the owning Agent’s idle stop window for this conversation. */
+  idleStopWindowMs?: number;
   /** @internal Resolves native routes in the owning Agent. */
   isNativeAdapter?: (adapterId: string) => boolean;
   /** @deprecated Use launcher. */

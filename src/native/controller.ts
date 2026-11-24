@@ -53,11 +53,11 @@ export interface NativeControllerConfig {
   readonly host: NativeHarnessHost;
   /** The channel id: the conversation's id, stable for its lifetime. */
   readonly channelId: string;
-  /** The sender recorded for a message that names no participant. */
   readonly defaultSender?: string;
   /** True when the conversation has existing history (acp-client's own records); reported as `resumed`. */
   readonly resumed?: boolean;
   readonly logger?: Logger;
+  readonly idleStopWindowMs?: number;
   readonly onReminderEvent?: (event: WireReminderEvent) => void;
 }
 
@@ -112,6 +112,7 @@ export class NativeController implements ConversationController, ChannelPort {
   }
 
   get channelId(): string { return this.#channel; }
+  get idleStopWindowMs(): number | undefined { return this.#config.idleStopWindowMs; }
 
   async start(): Promise<StartResult> {
     this.#stopped = false;

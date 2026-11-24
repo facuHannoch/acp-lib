@@ -1,4 +1,8 @@
-import type { ReminderTimer, ReminderWakeSupervisor } from "./reminders/supervisor.ts";
+import type { NativeConnection, NativeHarnessHostConfig } from "./host-config.ts";
+export type { NativeConnection, NativeHarnessHostConfig, NativeApprovalRequest, NativeApprovalResponder } from "./host-config.ts";
+import { idleMilliseconds, ReminderIdleSupervisor, type IdleStopResult } from "./reminders/idle.ts";
+import { reminderRpc } from "./reminders/wire.ts";
+import type { ReminderWakeSupervisor } from "./reminders/supervisor.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
 import type { WireChange } from "./reminders/wire.ts";
 import type { ReminderNotification, WireReminderEvent } from "./reminders/wire.ts";
@@ -28,21 +32,18 @@ import { takenSender } from "./delegation-sender.ts";
  */
 import {
   type HarnessClient,
-  type ChannelChangeResult,
   type ChannelEvent,
   type ChannelStatusResult,
   type ItemStatus,
   type LoadResult,
-  type ProtocolConfig,
   type StatusResult,
   type StoredMessage,
   type TurnStatus,
   type ToolAvailability,
   type ToolInvocation,
 } from "../native-harness/src/client.ts";
-import { openOrCreate, readCompleteMessage, recoverChannel, recoverStoppedReplies } from "./recovery.ts";
-import { createNativeFunctionHost, type NativeFunctionHost, type NativeFunctionsConfig } from "./functions.ts";
-import type { AcpLauncher } from "../launcher.ts";
+import { commitChannelCatchUp, openOrCreate, readCompleteMessage, recoverChannel, recoverStoppedReplies } from "./recovery.ts";
+import { createNativeFunctionHost, type NativeFunctionHost } from "./functions.ts";
 import { noopLogger, type Logger } from "../logger.ts";
 import type { ChannelDesire, ChannelPersistence, PendingChange } from "../persistence/channels.ts";
 import { createMemoryHostRecords, fileHasPendingChannelChanges, submissionRecords, type NativeHostRecords, type Submission } from "./records.ts";
@@ -69,6 +70,7 @@ export interface ChannelView {
 export interface ChannelPort {
   event(event: ChannelEvent): void;
   reminderEvent?(event: WireReminderEvent): void;
+  readonly idleStopWindowMs?: number;
   /** After every open, before any live event of that connection is delivered. */
   reconcile(view: ChannelView): void;
   /** The connection was lost. Work stays pending: the next open reconciles it. */
@@ -78,55 +80,6 @@ export interface ChannelPort {
   /** Whether this channel has a turn the host should reopen for after a lost connection. */
   busy(): boolean;
   trackedTurns?(): string[];
-}
-
-/** What a live connection to a harness is, for the host. Tests substitute it; production spawns a process. */
-export interface NativeConnection {
-  readonly client: HarnessClient;
-  onReminderNotification?(listener: (event: ReminderNotification) => void): void;
-  /** Settles when the connection is gone (process exit, pipe closed, protocol failure). */
-  readonly closed: Promise<void>;
-  /** Ends the process. Graceful first (closing its input is a stop for the harness), then forced. */
-  kill(): Promise<void>;
-}
-
-export type NativeApprovalRequest = Omit<Extract<ChannelEvent["event"], { type: "approval_requested" }>, "type"> & { channel: string };
-export type NativeApprovalResponder = (
-  request: NativeApprovalRequest,
-  answer: (decision: "allow_once" | "deny") => Promise<boolean>,
-  signal: AbortSignal,
-) => void | Promise<void>;
-
-export interface NativeHarnessHostConfig {
-  /** The durable harness session: the Agent's id. */
-  readonly sessionId: string;
-  /** Sent on every open. Session configuration is fixed while the session is open. */
-  readonly config: ProtocolConfig;
-  /** The harness home, a path in the harness's environment. Must survive process restarts. */
-  readonly home: string;
-  /** How to start the harness server; defaults to this package's harness in `serve --stdio` mode. */
-  readonly command?: readonly string[];
-  readonly launcher?: AcpLauncher;
-  readonly env?: Record<string, string>;
-  readonly cwd?: string;
-  readonly records?: NativeHostRecords;
-  /** `final`: complete assistant messages only. `stream`: text deltas too. Default `final`. */
-  readonly text?: "final" | "stream";
-  /** From spawn to the open response. Default 30 000 ms. On expiry the process is killed and the start fails. */
-  readonly startupTimeoutMs?: number;
-  /** Per request to the running harness. Default 30 000 ms. */
-  readonly requestTimeoutMs?: number;
-  /** Automatic reopen attempts after an unexpected loss with work outstanding. Default 3 within 60 000 ms. */
-  readonly reminderTimer?: ReminderTimer;
-  readonly restart?: { readonly limit: number; readonly windowMs: number };
-  readonly logger?: Logger;
-  /** A blocked channel change (a delete that found pending work, a resume the configuration cannot run...). */
-  readonly onChannelChangeBlocked?: (result: ChannelChangeResult) => void;
-  /** Functions the model can call, served by this process (tools and callbacks spec). */
-  readonly functions?: NativeFunctionsConfig;
-  readonly approvalResponder?: NativeApprovalResponder;
-  /** Test seam: replaces the process launch. */
-  readonly connect?: () => Promise<NativeConnection>;
 }
 
 const REQUIRED_METHODS = ["session/open", "channel/observe", "channel/reconcile", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/message/read"];
@@ -146,8 +99,57 @@ export class NativeHarnessHost {
     if (!this.#claimRestart(now)) return Promise.reject(this.#failReopen());
     return this.ensureStarted();
   }
-  changeReminder(change: WireChange) { return this.reminderSync?.dispatch(this.#client(), change); }
-  refreshReminders(channel?: string, id?: string) { return this.reminderSync?.refresh(this.#client(), channel, id); }
+  async changeReminder(change: WireChange) {
+    if (this.#idling) await this.ensureStarted();
+    this.reminderIdle?.activity();
+    return this.reminderSync?.dispatch(this.#client(), change);
+  }
+  async refreshReminders(channel?: string, id?: string) {
+    await this.#idling;
+    if (this.#state === "running") return this.reminderSync?.refresh(this.#client(), channel, id);
+  }
+  reminderIdle?: ReminderIdleSupervisor;
+  closeReminderSupervisors(): void { this.reminderIdle?.close(); this.reminderWake?.close(); }
+  #idling?: Promise<IdleStopResult>;
+
+  #localBusy(): boolean {
+    return this.#waiters.size > 0 || this.records.submissions().length > 0 || this.#approvals.busy
+      || this.#changes.busy || [...this.#ports.values()].some(port => port.busy());
+  }
+
+  #idleStop(window: number, stillIdle: () => boolean): Promise<IdleStopResult> {
+    if (this.#idling) return this.#idling;
+    const connection = this.#connection;
+    if (this.#stoppingExplicitly || !connection || !stillIdle() || this.#localBusy()) return Promise.resolve({ stopped: false, reason: "busy" });
+    const attempt = reminderRpc<IdleStopResult>(connection.client, "session/stop", { ifIdle: true, unlessDueWithinMs: window });
+    this.#idling = attempt.then(async result => {
+      await this.reminderSync?.settled();
+      if (result.stopped && this.#connection === connection) {
+        this.#connection = null;
+        this.#approvals.stop();
+        try { await connection.kill(); } finally { this.#setState("stopped"); }
+      }
+      return result;
+    }).finally(() => { this.#idling = undefined; });
+    return this.#idling;
+  }
+
+  armIdleStop(pending: () => Promise<{ held: boolean; channels: string[] }>): void {
+    const interval = idleMilliseconds(this.#config.idleStopMs, "idleStopMs");
+    const fallback = idleMilliseconds(this.#config.idleStopWindowMs, "idleStopWindowMs") ?? 0;
+    if (!interval) return;
+    this.reminderIdle = new ReminderIdleSupervisor({
+      state: () => this.#state,
+      window: async () => {
+        if (!this.reminderSync?.supported || this.#localBusy() || (await this.#changes.pendingChanges()).length) return;
+        const { held, channels } = await pending();
+        if (!held) return channels.reduce((max, channel) => Math.max(max, this.#ports.get(channel)?.idleStopWindowMs ?? fallback), 0);
+      },
+      stop: (window, stillIdle) => this.#idleStop(window, stillIdle),
+      error: error => this.#log.warn("native_idle_stop_failed", { error: String(error) }),
+    }, interval, this.#config.reminderTimer);
+    this.subscribeState(() => this.reminderIdle?.activity());
+  }
   #state: NativeHostState = "stopped";
   #connection: NativeConnection | null = null;
   #starting: Promise<void> | null = null;
@@ -297,6 +299,8 @@ export class NativeHarnessHost {
 
   /** Starts the harness if it is not running. Concurrent callers share one start. */
   ensureStarted(): Promise<void> {
+    if (this.#idling) return this.#idling.catch(() => {}).then(() => this.ensureStarted());
+    this.reminderIdle?.activity();
     if (this.#state === "running") return Promise.resolve();
     if (this.#state === "failed") return Promise.reject(new HarnessUnavailableError("the native harness is unavailable; call restart()", { cause: this.#failure, code: "failed" }));
     this.#stopped = false;
@@ -314,6 +318,7 @@ export class NativeHarnessHost {
   async stop(): Promise<void> {
     this.#stopped = this.#stoppingExplicitly = true;
     this.reminderWake?.refresh();
+    await this.#idling?.catch(() => {});
     const connection = this.#connection;
     this.#connection = null;
     await this.#starting?.catch(() => undefined);
@@ -362,6 +367,7 @@ export class NativeHarnessHost {
           void live.closed.then(async () => {
             // A loss at the open boundary must reopen after the old start has retired.
             await this.#starting?.catch(() => undefined);
+            await this.#idling?.catch(() => undefined);
             this.#lost(live);
           });
         });
@@ -617,6 +623,7 @@ export class NativeHarnessHost {
   }
 
   #deliver(event: ChannelEvent): void {
+    this.reminderIdle?.activity();
     if (event.event.type === "item_withdrawn") {
       const id = event.event.item;
       const sender = this.records.submission(id)?.sender ?? "";
@@ -742,6 +749,8 @@ export class NativeHarnessHost {
    * the harness.
    */
   async changeChannel(channel: string, desire: ChannelDesire): Promise<ChannelChangeOutcome> {
+    if (this.#idling) await this.ensureStarted();
+    this.reminderIdle?.activity();
     const result = await this.#changes.change(channel, desire, this.#state === "running");
     if (result.state === "applied") void this.flushWorkerDelivery();
     return result;
@@ -752,6 +761,7 @@ export class NativeHarnessHost {
 
   /** Reserve delivery now, then read the intent only after its transaction commits. */
   async deliverCommittedChannelChange<T>(channel: string, commit: Promise<T>, deliver: (result: T) => boolean = () => true): Promise<T> {
+    this.reminderIdle?.activity();
     const result = await this.#changes.deliverCommitted(channel, commit, () => this.#state === "running", deliver);
     void this.flushWorkerDelivery();
     return result;
@@ -822,26 +832,8 @@ export class NativeHarnessHost {
     if (this.#attaching.has(channel)) throw new Error("Channel observation is already in progress");
     const buffered: ChannelEvent[] = [];
     this.#attaching.set(channel, buffered);
-    let position = after;
     const committed = new Set<string>();
-    try {
-      signal?.throwIfAborted();
-      const { revision } = await client.observeChannel({ channel });
-      let cursor: string | undefined;
-      do {
-        signal?.throwIfAborted();
-        const page = await client.channelMessages(cursor === undefined
-          ? { channel, after, throughRevision: revision } : { channel, cursor });
-        signal?.throwIfAborted();
-        if (page.messages.length) {
-          const next = page.messages.at(-1)!.position;
-          await commit(page.messages, next);
-          position = next;
-          for (const message of page.messages) committed.add(message.messageId);
-        }
-        cursor = page.next;
-      } while (cursor !== undefined);
-      return position;
+    try { return await commitChannelCatchUp(client, channel, after, committed, commit, signal);
     } finally {
       this.#attaching.delete(channel);
       const port = this.#connection === connection ? this.#ports.get(channel) : undefined;

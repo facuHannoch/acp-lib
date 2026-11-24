@@ -83,6 +83,7 @@ class Approval implements NativePermission {
 /** Attach the same ticket to live and observed copies. Held events keep their ticket after turn cleanup. */
 export class NativeApprovals {
   private readonly active = new Map<string, Approval>();
+  get busy(): boolean { return [...this.active.values()].some(ticket => !ticket.settled); }
   private readonly events = new WeakMap<ApprovalEvent, Approval>();
 
   constructor(private readonly responder: NativeApprovalResponder | undefined, private readonly log: Logger) {}

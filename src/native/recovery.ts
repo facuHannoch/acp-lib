@@ -119,3 +119,28 @@ export async function recoverStoppedReplies(
     clearTimeout(deadline);
   }
 }
+
+export async function commitChannelCatchUp(
+  client: HarnessClient, channel: string, after: string, committed: Set<string>,
+  commit: (messages: Awaited<ReturnType<HarnessClient["channelMessages"]>>["messages"], position: string) => Promise<void>,
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted();
+  const { revision } = await client.observeChannel({ channel });
+  let position = after;
+  let cursor: string | undefined;
+  do {
+    signal?.throwIfAborted();
+    const page = await client.channelMessages(cursor === undefined
+      ? { channel, after, throughRevision: revision } : { channel, cursor });
+    signal?.throwIfAborted();
+    if (page.messages.length) {
+      const next = page.messages.at(-1)!.position;
+      await commit(page.messages, next);
+      position = next;
+      for (const message of page.messages) committed.add(message.messageId);
+    }
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return position;
+}

@@ -24,6 +24,7 @@ export class NativeChannelChanges {
   readonly #blockedVersions = new Map<string, number>();
   readonly #writes = new Set<Promise<unknown>>();
   #revision = 0;
+  get busy(): boolean { return this.#queues.size > 0 || this.#writes.size > 0; }
 
   constructor(
     private readonly store: ChannelPersistence,

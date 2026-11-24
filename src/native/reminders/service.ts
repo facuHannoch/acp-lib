@@ -202,6 +202,13 @@ export function createAgentReminderService(
   });
   if (host) {
     host.reminderSync = new ReminderSync(persistence, service.repository, log);
+    host.armIdleStop(async () => {
+      const rows = await service.repository.list();
+      return {
+        held: rows.some(row => row.changes.some(change => change.state === "pending" || change.state === "maybe_sent")),
+        channels: rows.filter(row => row.confirmed?.status === "active" && row.confirmed.nextRunAt != null).map(row => row.conversationId),
+      };
+    });
     if (persistence instanceof SqliteAgentPersistence && persistence.ownsReminderWake) {
       host.reminderWake = new ReminderWakeSupervisor({
         state: () => host.reminderWakeState,

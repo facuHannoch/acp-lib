@@ -1,4 +1,7 @@
-import { HarnessClientError, type HarnessClient } from "../../../src/native-harness/src/client.ts";
+import type { NativeConnection } from "../../../src/native/host.ts";
+import type { ClientTransport, RpcNotification, StatusResult } from "../../../src/native-harness/src/contracts/protocol.ts";
+import type { ReminderNotification } from "../../../src/native/reminders/wire.ts";
+import { HarnessClientError, HarnessClient } from "../../../src/native-harness/src/client.ts";
 import type { WireChange, WireReceipt, WireReminder, ReminderPage } from "../../../src/native/reminders/wire.ts";
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -22,6 +25,38 @@ export class ReminderPeer {
   invalidatePages = 0;
   recomputeDefaultOnScheduleEdit = true;
   now = 1_000_000;
+  supported = true;
+  running = false;
+  busy = false;
+  beforeIdleStop?: () => Promise<void>;
+  private publish?: (event: ReminderNotification) => void;
+  private publishChannel?: (event: RpcNotification) => void;
+
+  emit(event: ReminderNotification): void { this.publish?.(event); }
+  channelEvent(event: RpcNotification["params"]): void {
+    this.publishChannel?.({ jsonrpc: "2.0", method: "channel/event", params: event });
+  }
+
+  connect(): Promise<NativeConnection> {
+    let receive: Parameters<ClientTransport["subscribe"]>[0] = () => {};
+    const lifetime = Promise.withResolvers<void>();
+    const transport: ClientTransport = {
+      send: request => {
+        void this.request(request.method, request.params as Record<string, unknown>).then(
+          result => receive({ jsonrpc: "2.0", id: request.id, result }),
+          error => receive({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: error.message, data: { code: error.code ?? "internal_error" } } }),
+        );
+      },
+      subscribe: listener => { receive = listener; this.publishChannel = listener; return () => {}; },
+      onClose: () => () => {},
+      close: () => { lifetime.resolve(); },
+    };
+    const client = new HarnessClient(transport);
+    return Promise.resolve({
+      client, closed: lifetime.promise, onReminderNotification: listener => { this.publish = listener; },
+      async kill() { client.close(); },
+    });
+  }
   readonly client = {
     request: (method: string, params: Record<string, unknown>) => this.request(method, params),
     openSession: (params: Record<string, unknown>) => this.request("session/open", params),
@@ -30,14 +65,45 @@ export class ReminderPeer {
 
   async request(method: string, params: Record<string, unknown>): Promise<unknown> {
     this.traffic.push({ method, params: structuredClone(params) });
+    if (method === "initialize") return { description: { capabilities: {
+      persistence: true, acceptance: "durable", startupChannelChanges: true, reminders: this.supported,
+      methods: ["session/open", "channel/observe", "channel/reconcile", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/message/read"],
+    }, reminderLimits: { minLeadMs: 120000, minIntervalMs: 600000, maxActiveRoutinesPerChannel: 0,
+      minExpiryGraceMs: 300000, maxExpiryGraceMs: 86400000, expiryMultiplier: 2 } } };
+    if (method === "session/status") return { sessionId: this.sessionId, revision: 0, lifecycle: "running", execution: "idle",
+      channels: this.channelOrder.map(channel => ({ channel, lifecycle: "open", pending: [], waitingForResume: false })) } satisfies StatusResult;
+    if (method === "channel/observe") return { revision: 0, channel: {
+      channel: params.channel, lifecycle: "open", pendingCount: 0, waitingForResume: false,
+    }, approvals: [] };
+    if (method === "channel/reconcile") return { items: [], turns: [], replies: [], unknownTurnIds: [] };
+    if (method === "channel/push") {
+      if (!this.running) throw failure("not_running");
+      const item = params.item as { id: string; sender: string };
+      return { item: { id: item.id, channel: params.channel, sender: item.sender, kind: "participant_message", milestone: "received" } };
+    }
+    if (method === "session/stop") {
+      if (params.ifIdle === true) {
+        await this.beforeIdleStop?.();
+        if (this.busy) return { stopped: false, reason: "busy" };
+        if (this.nextDueAt !== null && Date.parse(this.nextDueAt) <= this.now + (Number(params.unlessDueWithinMs) || 0)) {
+          return { stopped: false, reason: "next_due_soon" };
+        }
+        this.running = false;
+        return { stopped: true };
+      }
+      this.running = false;
+      return {};
+    }
     if (method === "session/open" || method === "session/create") {
       if (method === "session/open" && this.fresh) throw failure("not_found");
       const changes = (params.reminderChanges ?? []) as WireChange[];
       if (changes.length > 100 || (changes.length && this.rejectBatch)) throw failure("invalid_params");
-      for (const value of (params.channelChanges ?? []) as Array<{ channel: string }>) this.channelOrder.push(value.channel);
+      const channelChanges = (params.channelChanges ?? []) as Array<{ channel: string; changeId: string }>;
+      for (const value of channelChanges) if (!this.channelOrder.includes(value.channel)) this.channelOrder.push(value.channel);
+      this.running = true;
       const reminderChanges = changes.map(change => this.apply(change));
       const page = this.page({});
-      return { sessionId: this.sessionId, reminderChanges, nextDueAt: this.nextDueAt, reminderRevision: this.revision,
+      return { sessionId: this.sessionId, channelChanges: channelChanges.map(({ channel, changeId }) => ({ channel, changeId, outcome: "applied" })), reminderChanges, nextDueAt: this.nextDueAt, reminderRevision: this.revision,
         reminders: page.reminders, remindersNext: page.next };
     }
     if (method === "reminder/change") return this.apply(params as WireChange);

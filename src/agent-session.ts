@@ -582,7 +582,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       answersPermissions: config.answersPermissions, permissionTimeoutMs: config.permissionTimeoutMs,
       operationLifecycle: this.operationLifecycle,
       isNativeAdapter: config.isNativeAdapter,
-      ...(config.native ? { native: { ...config.native, onReminderEvent: event => this.emit(event) } } : {}),
+      ...(config.native ? { native: { ...config.native, idleStopWindowMs: config.idleStopWindowMs, onReminderEvent: event => this.emit(event) } } : {}),
       launcher: config.launcher,
       execPrefix: config.execPrefix,
       env: config.env,
