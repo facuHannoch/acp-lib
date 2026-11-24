@@ -2,7 +2,10 @@ import type { NativeConnection } from "../../../src/native/host.ts";
 import type { ClientTransport, RpcNotification, StatusResult } from "../../../src/native-harness/src/contracts/protocol.ts";
 import type { ReminderNotification } from "../../../src/native/reminders/wire.ts";
 import { HarnessClientError, HarnessClient } from "../../../src/native-harness/src/client.ts";
-import type { WireChange, WireReceipt, WireReminder, ReminderPage } from "../../../src/native/reminders/wire.ts";
+import type {
+  ConditionalStopParams, Reminder as WireReminder, ReminderChange as WireChange,
+  ReminderChangeResult as WireReceipt, ReminderList as ReminderPage, ReminderListParams,
+} from "../../../src/native-harness/src/client.ts";
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const failure = (code: string) => new HarnessClientError(code, code);
@@ -59,7 +62,10 @@ export class ReminderPeer {
     });
   }
   readonly client = {
-    request: (method: string, params: Record<string, unknown>) => this.request(method, params),
+    changeReminder: (params: WireChange) => this.request("reminder/change", params),
+    getReminder: (params: Parameters<HarnessClient["getReminder"]>[0]) => this.request("reminder/get", params),
+    listReminders: (params: ReminderListParams = {}) => this.request("reminder/list", { ...params }),
+    stopIfIdle: (params: ConditionalStopParams = { ifIdle: true }) => this.request("session/stop", { ...params }),
     openSession: (params: Record<string, unknown>) => this.request("session/open", params),
     createSession: (params: Record<string, unknown>) => this.request("session/create", params),
   } as unknown as HarnessClient;
@@ -137,7 +143,7 @@ export class ReminderPeer {
   apply(request: WireChange): WireReceipt {
     const { reminderId, changeId, op, payload } = request;
     const key = JSON.stringify([reminderId, changeId]);
-    const blocked = (reason: string): WireReceipt => ({ reminderId, changeId, outcome: "blocked", reason });
+    const blocked = (reason: Extract<WireReceipt, { outcome: "blocked" }>["reason"]): WireReceipt => ({ reminderId, changeId, outcome: "blocked", reason });
     const validFields = op === "create" ? ["channel", "schedule", "text", "acceptedAt", "policyNames", "expiresAfter"]
       : op === "update" ? ["schedule", "acceptedAt", "text", "state", "expiresAfter"] : [];
     if (Object.keys(payload).some(field => !validFields.includes(field)) ||

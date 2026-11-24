@@ -1,3 +1,4 @@
+import type { KnownReminderBlockReason } from "./wire.ts";
 import { defaultReminderLimits, type ReminderLimits } from "./limits.ts";
 
 export type ReminderSchedule =
@@ -23,10 +24,9 @@ export type ReminderExpiry =
   | { readonly kind: "duration"; readonly milliseconds: number }
   | null;
 
-export type ReminderErrorCode =
-  | "stale" | "invalid_state" | "routines_unavailable" | "reminders_unavailable" | "reminders_unsupported" | "invalid_schedule"
-  | "invalid_input" | "invalid_policy" | "unauthorized" | "limit_exceeded"
-  | "channel_missing" | "channel_retired" | "conflict" | "not_found";
+export type ReminderErrorCode = KnownReminderBlockReason
+  | "routines_unavailable" | "reminders_unavailable" | "reminders_unsupported"
+  | "invalid_input" | "unauthorized";
 
 export class ReminderError extends Error {
   constructor(readonly code: ReminderErrorCode, message: string) {

@@ -1,7 +1,7 @@
 import type { NativeConnection, NativeHarnessHostConfig } from "./host-config.ts";
 export type { NativeConnection, NativeHarnessHostConfig, NativeApprovalRequest, NativeApprovalResponder } from "./host-config.ts";
-import { idleMilliseconds, ReminderIdleSupervisor, type IdleStopResult } from "./reminders/idle.ts";
-import { reminderNotification, reminderRpc, type WireChange, type ReminderNotification, type WireReminderEvent } from "./reminders/wire.ts";
+import { idleMilliseconds, ReminderIdleSupervisor } from "./reminders/idle.ts";
+import { reminderNotification, type WireChange, type ReminderNotification, type WireReminderEvent } from "./reminders/wire.ts";
 import type { ReminderWakeSupervisor } from "./reminders/supervisor.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
 import { deferred, launchNativeConnection, type Deferred } from "./connection.ts";
@@ -29,7 +29,7 @@ import { takenSender } from "./delegation-sender.ts";
  * by channel id (the conversation id) and receive that channel's events and reconciled view.
  */
 import {
-  type HarnessClient,
+  type HarnessClient, type ConditionalStopResult,
   type ChannelEvent,
   type ChannelStatusResult,
   type ItemStatus,
@@ -114,18 +114,18 @@ export class NativeHarnessHost {
   }
   reminderIdle?: ReminderIdleSupervisor;
   closeReminderSupervisors(): void { this.reminderIdle?.close(); this.reminderWake?.close(); }
-  #idling?: Promise<IdleStopResult>;
+  #idling?: Promise<ConditionalStopResult>;
 
   #localBusy(): boolean {
     return this.#waiters.size > 0 || this.records.submissions().length > 0 || this.#approvals.busy
       || this.#changes.busy || [...this.#ports.values()].some(port => port.busy());
   }
 
-  #idleStop(window: number, stillIdle: () => boolean): Promise<IdleStopResult> {
+  #idleStop(window: number, stillIdle: () => boolean): Promise<ConditionalStopResult> {
     if (this.#idling) return this.#idling;
     const connection = this.#connection;
     if (this.#stoppingExplicitly || !connection || !stillIdle() || this.#localBusy()) return Promise.resolve({ stopped: false, reason: "busy" });
-    const attempt = reminderRpc<IdleStopResult>(connection.client, "session/stop", { ifIdle: true, unlessDueWithinMs: window });
+    const attempt = connection.client.stopIfIdle({ ifIdle: true, unlessDueWithinMs: window });
     this.#idling = attempt.then(async result => {
       await this.reminderSync?.settled();
       if (result.stopped && this.#connection === connection) {

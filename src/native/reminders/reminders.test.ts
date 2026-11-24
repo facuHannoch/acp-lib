@@ -172,9 +172,9 @@ test("deleting a conversation with a reminders-only backend removes its wake in 
       },
     };
     await deleteConversationWithChannel(
-      { persistence, nativeHarness: null } as never,
-      "channel" as never,
-      { providerSession: "keep" } as never,
+      { persistence, nativeHarness: null } as unknown as Parameters<typeof deleteConversationWithChannel>[0],
+      "channel" as AgentConversationId,
+      { providerSession: "keep" } as unknown as Parameters<typeof deleteConversationWithChannel>[2],
     );
     expect(deleted).toBe(true);
     expect(await repository.list()).toEqual([]);
