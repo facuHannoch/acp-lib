@@ -105,15 +105,25 @@ export class ReminderService {
       check();
       authorize(op);
       const live = this.options.running?.() ? this.options.live : undefined;
-      if (!live && !this.repository.durable) {
-        throw new ReminderError("reminders_unavailable", "Reminders require a live service or durable persistence");
-      }
       const acceptedAt = (this.options.now ?? Date.now)();
       const prepared = await this.transact(async (repo) => {
         const rows = (await repo.list()).filter((row) => row.conversationId === conversationId);
         const previous = rows.find((row) => row.id === id);
         const existing = previous && view(previous);
+        const confirmed = previous?.confirmed;
+        if (op !== "create" && confirmed && confirmed.status !== "active" && confirmed.status !== "paused") {
+          if (op === "cancel") return { unchanged: { ...confirmed, state: "confirmed" as const } };
+          throw new ReminderError("conflict", "Reminder is already terminal");
+        }
+        const last = previous?.changes.at(-1);
+        if (op !== "create" && last?.op === "cancel" && (last.state === "pending" || last.state === "maybe_sent")) {
+          if (op === "cancel") return { unchanged: { ...last.reminder, state: last.state } };
+          throw new ReminderError("conflict", "Reminder already has a cancellation in progress");
+        }
         if (op !== "create" && !existing) throw new ReminderError("not_found", "Reminder was not found");
+        if (!live && !repo.durable) {
+          throw new ReminderError("reminders_unavailable", "Reminders require a live service or durable persistence");
+        }
         const schedule = edit.schedule
           ? normalizeReminderSchedule(edit.schedule, acceptedAt, this.limits)
           : existing!.schedule;
@@ -142,9 +152,10 @@ export class ReminderService {
         if (status !== undefined) fields.push("status");
         if (edit.policyNames !== undefined) fields.push("policyNames");
         const pending = await repo.enqueue({ reminder, acceptedAt, op, fields });
-        const change = pending && live ? await repo.markMaybeSent(id, pending.changeId) : pending;
-        return { reminder, change };
+        const outgoing = pending && live ? await repo.markMaybeSent(id, pending.changeId) : pending;
+        return { reminder, change: outgoing };
       });
+      if (prepared.unchanged) return prepared.unchanged;
       let result: ReminderView = { ...prepared.reminder, state: prepared.change?.state === "maybe_sent" ? "maybe_sent" : "pending" };
       emit({ kind: op === "create" ? "reminder_created" : op === "cancel" ? "reminder_cancelled" : "reminder_changed", reminder: result });
       if (live && prepared.change) {

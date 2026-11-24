@@ -47,7 +47,8 @@ export function normalizeReminderSchedule(
   }
   if ("every" in input) {
     const startAt = input.startAt ?? acceptedAt + input.every;
-    if (!Number.isSafeInteger(input.every) || input.every < limits.repeatIntervalMs || !Number.isSafeInteger(startAt)) {
+    if (!Number.isSafeInteger(input.every) || input.every < limits.repeatIntervalMs || !Number.isSafeInteger(startAt)
+      || startAt - acceptedAt < limits.oneShotLeadMs) {
       throw new ReminderError("invalid_schedule", "Invalid reminder interval or start time");
     }
     return { every: input.every, startAt };
@@ -62,7 +63,7 @@ export function normalizeReminderSchedule(
 export function reminderExpiryPolicy(expiresAfter: number | null | undefined): ReminderExpiryPolicy {
   if (expiresAfter === undefined) return { kind: "default" };
   if (expiresAfter === null) return { kind: "unlimited" };
-  if (!Number.isSafeInteger(expiresAfter) || expiresAfter < 0) {
+  if (!Number.isSafeInteger(expiresAfter) || expiresAfter <= 0) {
     throw new ReminderError("invalid_input", "Invalid reminder expiry duration");
   }
   return { kind: "duration", milliseconds: expiresAfter };
