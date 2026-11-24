@@ -325,3 +325,47 @@ test("cumulative real stdio rehearsal includes a managed image provider phase", 
     expect(captures).not.toContain(bytes.toString("base64"));
   } finally { await run.close(); provider.stop(true); await rm(directory, { recursive: true, force: true }); }
 }, 35000);
+
+test("cumulative real stdio rehearsal dispatches web search and fetch with complete previews", async () => {
+  const { imageValidationAvailable } = await import("../../src/native-harness/src/capabilities/attachments/image-validation.ts");
+  if (!imageValidationAvailable()) return;
+  const { createHash } = await import("node:crypto");
+  const directory = await mkdtemp(join(tmpdir(), "web-rehearsal-")), requests = join(directory, "requests.jsonl");
+  const calls: { path: string; body: any }[] = [];
+  const provider = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    const path = new URL(request.url).pathname, body = await request.json(); calls.push({ path, body });
+    return Response.json(path === "/search"
+      ? { requestId: "search-request", costDollars: { total: 0 }, results: [{ title: "Source", url: "https://example.com/source", highlights: ["evidence"] }] }
+      : { requestId: "fetch-request", costDollars: { total: 0.002 }, statuses: [{ id: "https://example.com/source", status: "success" }], results: [{ url: "https://example.com/source", title: "Source", text: "a\\n😀".repeat(1000) }] });
+  } });
+  const visionProvider = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "fixture" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+  } });
+  const run = await createRehearsal(new URL("./fixtures/rehearsal-cumulative-web.jsonl", import.meta.url).pathname, {
+    deadlineMs: 30000, exactConsumption: true, timelineTools: true, imageInput: true,
+    webSearch: { backend: "exa" }, webFetch: { backend: "exa" },
+    env: { HARNESS_TEST_REQUESTS: requests, HARNESS_TEST_ATTEMPTS: join(directory, "attempts.jsonl"), HARNESS_TEST_PROVIDER_ENDPOINT: `http://127.0.0.1:${visionProvider.port}/`, HARNESS_TEST_WEB_ENDPOINT: `http://127.0.0.1:${provider.port}/`, EXA_API_KEY: "fixture-secret" },
+  });
+  try {
+    await run.setup();
+    await run.schedule(async offset => { if (offset) await until(() => run.activity.filter(event => event.kind === "completed").length >= offset, "previous phase completed"); });
+    await until(() => run.activity.some(event => event.channel === "web" && event.kind === "completed"), "web phase completed");
+    const client = run.client(), bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAEElEQVR4nGP4y8AARAwQCgAfrgP19hgqWQAAAABJRU5ErkJggg==", "base64");
+    const upload = await client.beginAttachment({ channel: "vision", filename: "fixture.png", mediaType: "image/png", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+    await client.writeAttachment({ channel: "vision", uploadId: upload.uploadId, offset: 0, data: bytes.toString("base64") }); await client.finalizeAttachment({ channel: "vision", uploadId: upload.uploadId });
+    await client.push({ channel: "vision", item: { id: "image-phase", kind: "user_message", sender: "operator", content: [{ type: "attachment", id: upload.attachmentId }] } });
+    await until(() => run.activity.some(event => event.channel === "vision" && event.kind === "completed"), "vision phase completed");
+    const webTurn = run.activity.find(event => event.channel === "web" && event.kind === "started")!.turnId;
+    expect((await client.toolInvocations(webTurn)).invocations).toMatchObject([{ webUsage: { cost: { kind: "provider_estimate", usd: 0 } } }, { webUsage: { cost: { kind: "provider_estimate", usd: 0.002 } } }]);
+    const summary = await run.finish(); expect(Object.values(summary.unused).every(count => count === 0)).toBe(true);
+    expect(calls.map(call => call.path)).toEqual(["/search", "/contents"]);
+    const captures = readFileSync(requests, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(row => row.channel === "web");
+    expect(captures).toHaveLength(3);
+    const search = captures[1].messages.find((message: any) => message.role === "tool" && message.callId === "web-search");
+    const page = captures[2].messages.find((message: any) => message.role === "tool" && message.callId === "web-fetch");
+    expect(JSON.parse(search.content).results[0].url).toBe("https://example.com/source");
+    expect(JSON.parse(page.content)).toMatchObject({ url: "https://example.com/source", truncated: true, coverage: "unknown" });
+    expect(Buffer.byteLength(page.content)).toBeLessThanOrEqual(2048);
+    expect(JSON.stringify(captures)).not.toContain("fixture-secret");
+  } finally { await run.close(); provider.stop(true); visionProvider.stop(true); await rm(directory, { recursive: true, force: true }); }
+}, 40000);

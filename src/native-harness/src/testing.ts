@@ -1,4 +1,4 @@
-import { createWebRegistry } from "./capabilities/tools/web/registry.ts";
+import { createWebRegistry, directWebFetch } from "./capabilities/tools/web/registry.ts";
 import { exaHttpsTransport } from "./capabilities/tools/web/exa-transport.ts";
 import { webDefinitions } from "./capabilities/tools/web/definitions.ts";
 import { compatibleInferenceKey } from "./runtime/config/inference-key.ts";
@@ -67,6 +67,8 @@ export interface ScriptedServerOptions {
   providerEndpoint?: string;
   /** Test assembly injection; never selected through managed configuration. */
   webTransport?: import("./capabilities/tools/web/exa.ts").ExaTransport;
+  /** Offline stdio fixture endpoint, restricted to literal loopback. */
+  webEndpoint?: string;
   environment?: Record<string, string | undefined>;
 }
 
@@ -98,6 +100,18 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const url = new URL(options.providerEndpoint);
     if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw new Error("Provider fixture must use loopback HTTP");
     fixtureEndpoint = url.href;
+  }
+  let webFixture: import("./capabilities/tools/web/exa.ts").ExaTransport | undefined;
+  if (options.webEndpoint) {
+    const url = new URL(options.webEndpoint);
+    if (url.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(url.hostname) || url.username || url.password || url.search || url.hash)
+      throw new Error("Web fixture must use literal loopback HTTP");
+    webFixture = async input => {
+      const response = await fetch(new URL(input.path, url), { method: "POST", headers: { "content-type": "application/json", "x-api-key": input.key }, body: JSON.stringify(input.body), signal: input.signal, redirect: "manual" });
+      const chunks: Uint8Array[] = []; let size = 0;
+      if (response.body) for await (const chunk of response.body) { size += chunk.byteLength; if (size > 2 * 1024 * 1024) throw Error("fixture response too large"); chunks.push(chunk); }
+      return { status: response.status, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) };
+    };
   }
   const providerFetch = fixtureEndpoint ? ((_: string | URL | Request, init?: RequestInit) => fetch(fixtureEndpoint!, init)) as unknown as typeof fetch : fetch;
   const models = new Map<string, ModelRequest[]>();
@@ -132,7 +146,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         [...BUILTINS, notifyChannelDefinition].map(tool => tool.name), ...(config.model.protocol !== "openai-compatible" && config.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
     if (mode === "create" && paths) mkdirSync(paths.directory, { recursive: true });
     const makeWebTools = () => {
-      const result = createWebRegistry(config, environment, { exa: options.webTransport ?? exaHttpsTransport });
+      const result = createWebRegistry(config, environment, { exa: options.webTransport ?? webFixture ?? exaHttpsTransport, http: directWebFetch });
       if (!result.ok) throw new SessionOpenError("invalid_config", result.error.message);
       return result.value;
     };

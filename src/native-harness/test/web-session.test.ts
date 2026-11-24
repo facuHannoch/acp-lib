@@ -37,3 +37,25 @@ test("checked web tools execute, preserve preview, and commit per-call usage", a
     expect(Buffer.from(archive).includes("secret-canary")).toBe(false);
   } finally { harness.close(); rmSync(home, { recursive: true, force: true }); }
 }, 10000);
+
+test("disabled or malformed web calls do not prompt or dispatch under ask", async () => {
+  const home = mkdtempSync(join(tmpdir(), "web-refusal-")), path = join(home, "script.jsonl");
+  script(path, [{ id: "invalid", name: "web_search", arguments: { query: " " } }, { id: "disabled", name: "web_fetch", arguments: { url: "https://example.com/" } }]);
+  let requests = 0, approvals = 0;
+  const harness = createInProcessHarness({ home, environment: { EXA_API_KEY: "key" }, webTransport: async () => { requests++; throw Error("must not dispatch"); } });
+  try {
+    harness.client.onChannelEvent(({ event }) => { if (event.type === "approval_requested") approvals++; });
+    await harness.client.initialize({ protocolVersion: 1, host: { name: "test", version: "0" }, callbacks: [], approval: true, subscription: { text: "final", tools: "full" } });
+    const source = config(path); const input = { ...source, webFetch: undefined, defaultPolicy: "ask", policies: { ask: { fallback: "ask" as const, tools: {} } } };
+    await harness.client.createSession({ sessionId: "s", config: input, participants: [], channels: {} });
+    await harness.client.push({ channel: "a", item: { id: "input", kind: "user_message", sender: "p", content: [{ type: "text", text: "go" }] } });
+    const deadline = Date.now() + 5000; while (!(await harness.client.idle()).idle && Date.now() < deadline) await Bun.sleep(10);
+    expect(requests).toBe(0); expect(approvals).toBe(0);
+    const invocations = (await harness.client.toolInvocations("1")).invocations;
+    expect(invocations).toMatchObject([{ state: "skipped", code: "invalid_arguments", webUsage: { cost: { kind: "none" } } }, { state: "skipped", code: "tool_unavailable", webUsage: { cost: { kind: "none" } } }]);
+    await harness.client.suspend(); const archive = await harness.client.exportArchive();
+    const { decodeSessionFile } = await import("../src/state/storage/session-file.ts");
+    const data = decodeSessionFile(archive, 268435456) as any;
+    expect(data.archive.archiveVersion).toBe(9);
+  } finally { harness.close(); rmSync(home, { recursive: true, force: true }); }
+}, 10000);

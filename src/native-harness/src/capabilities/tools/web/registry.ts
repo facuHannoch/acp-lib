@@ -1,3 +1,5 @@
+import { fetchDirect } from "./direct.ts";
+import { DirectHttpError } from "./direct-address.ts";
 import type { CheckedWebRegistration } from "../../../contracts/web.ts";
 export type { CheckedWebRegistration } from "../../../contracts/web.ts";
 import { resolveWebCredentials, type Validated, type WebConfig } from "./config.ts";
@@ -34,3 +36,12 @@ export function createWebRegistry(config: WebConfig, env: Readonly<Record<string
   }
   return { ok: true, value: registrations };
 }
+
+/** Production adapter; fixture transports remain assembly-only. */
+export const directWebFetch: DirectFetch = async (url, signal, deadlineMs) => {
+  try { return { ok: true, content: await fetchDirect(url, deadlineMs, signal), usage: {} }; }
+  catch (error) {
+    const known = error instanceof DirectHttpError;
+    return { ok: false, code: known ? error.code : "page_unavailable", message: known ? error.message : "Web destination could not be read.", usage: {} };
+  }
+};

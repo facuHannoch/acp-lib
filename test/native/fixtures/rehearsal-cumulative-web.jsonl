@@ -1,0 +1,16 @@
+{"type":"scenario","version":1,"name":"cumulative tools"}
+{"type":"send","atMs":0,"channelId":"decisions","participantId":"Rin","inputId":"launch-decision","text":"Launch decision: ship Friday."}
+{"type":"model","channelId":"decisions","content":"Recorded Friday."}
+{"type":"send","atMs":1,"channelId":"decisions","participantId":"Rin","inputId":"launch-correction","text":"Launch correction: ship Monday."}
+{"type":"model","channelId":"decisions","content":"Recorded Monday."}
+{"type":"send","atMs":2,"channelId":"review","participantId":"Ava","inputId":"find-decision","text":"Find Rin's launch decision and read the later correction."}
+{"type":"model","channelId":"review","content":null,"calls":[{"id":"timeline-search","name":"search_timeline","arguments":{"query":"launch decision","channel":"decisions"}}]}
+{"type":"model","channelId":"review","content":null,"calls":[{"id":"timeline-read","name":"read_message","arguments":{"message_id":"item:launch-decision","after":2}}]}
+{"type":"model","channelId":"review","content":"Rin in decisions initially said Friday, then corrected the launch to Monday."}
+{"type":"send","atMs":3,"channelId":"review","participantId":"Ava","inputId":"later-review","text":"Confirm the correction without repeating the tool exchange."}
+{"type":"model","channelId":"review","content":"Monday is the corrected launch day."}
+{"type":"model","channelId":"vision","content":"Image seen."}
+{"type":"send","atMs":4,"channelId":"web","participantId":"Ava","inputId":"web-phase","text":"Search and read the source."}
+{"type":"model","channelId":"web","content":null,"calls":[{"id":"web-search","name":"web_search","arguments":{"query":"fixture source"}}]}
+{"type":"model","channelId":"web","content":null,"calls":[{"id":"web-fetch","name":"web_fetch","arguments":{"url":"https://example.com/source"}}]}
+{"type":"model","channelId":"web","content":"The source confirms the finding."}

@@ -1,4 +1,4 @@
-import { createWebRegistry } from "../../capabilities/tools/web/registry.ts";
+import { createWebRegistry, directWebFetch } from "../../capabilities/tools/web/registry.ts";
 import { exaHttpsTransport } from "../../capabilities/tools/web/exa-transport.ts";
 import { compatibleInferenceKey } from "../../runtime/config/inference-key.ts";
 import { createHash } from "node:crypto";
@@ -109,7 +109,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const mediaRoot = options.database ? options.mediaRoot ?? `${options.database}.media` : join(tempMedia!, "media");
   if (!sqlite) adapter = createMemoryStorageAdapter({ mediaRoot });
   const makeWebTools = () => {
-    const result = createWebRegistry(managedConfig ?? {}, environment, { exa: exaHttpsTransport });
+    const result = createWebRegistry(managedConfig ?? {}, environment, { exa: exaHttpsTransport, http: directWebFetch });
     if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
     return result.value;
   };
