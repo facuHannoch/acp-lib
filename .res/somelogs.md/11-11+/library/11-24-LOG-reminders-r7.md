@@ -60,3 +60,18 @@ while a cancel is pending/maybe_sent is refused with `conflict` (minor, non-bloc
 - Rulings kept: first-open split (non-activating changes in startup, activations held until THIS connection's open proves the guard;
   evidence never persisted); no routine event dedupe; routine expiry only via `routine_disposition expired`; local cron check is
   shape-only; ONE 10-minute minimum; guard setting optional with no default; `discardExhausted` operator path.
+
+## R9 joint acceptance (2026-11-24)
+
+- R9 library candidate merged into alpha (`15f27b1`) with the `"unlimited"` guard option; approved R-H4 runtime `174c7c4` composed onto it.
+- Joint slice 1 (cod2b-t `ba2cb95`, reviewed by clad2a, Clad1a confirmed the harness side): integrated as alpha `51abd7f`. Gate: root tsc clean,
+  plain `bun test` 2,228 / 233, 35 snapshots; harness subtree identical to the approved runtime.
+- Joint slice 2 (cod2b-t `3447e64`, base `51abd7f`): clad2a APPROVE (no defects). core-p gate: root tsc clean, plain `bun test` 2,237 / 234,
+  35 snapshots; only `test/native/reminders-routines-joint.test.ts` changed; harness diff 0. Covered with the REAL harness child: guard
+  invalid_config/same value/"unlimited" both spellings; unattended_guard_required; missed/coalesced/expired dispositions with
+  authoritative rows (no reminder_expired/fired for routine expiry); overlap skip after a crash; migration hold (event, blocked row,
+  idempotent reopen); kind-change and routine-options-on-one-off refusals; offline cancel/pause beating due work; routine cold wake.
+- Not covered real-stdio: catch_up_limit and `each`, overlap queue, until, explicit startAt, a cron routine firing, DST, migration
+  proof_budget/repair/revalidation (the fixture is synthetic data: zone `Unavailable/Legacy`), held resume/replacement vs old-calendar due
+  work, idle stop with routines, real storage_failure (no deterministic seam; covered by scripted tests). Surviving mutant: the stdio
+  filter matcher alone (the client's own route delivers the same frames).
