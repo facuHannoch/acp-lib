@@ -1,3 +1,4 @@
+import type { ReminderMethods } from "./reminders.ts";
 import type { OperatorMethods } from "./operator-controls.ts";
 import type { ModelExecutionMethods } from "./model-execution.ts";
 import type { ChannelEvent, SessionEvent } from "./events.ts";
@@ -25,6 +26,7 @@ export interface ProtocolConfig {
 export interface CreateParams {
   sessionId: string;
   config?: ProtocolConfig;
+  reminderChanges?: import("./reminders.ts").ReminderChange[];
   participants: { id: string; kind: "person" | "agent" | "worker" | "host" }[];
   channels: Record<string, never>;
   /** Decision 0020. Applied before the new session starts. */
@@ -42,6 +44,7 @@ export interface PushParams {
   item: { id: string; kind: "user_message"; sender: string; content: { type: "text"; text: string }[]; policy?: string | null; delivery?: "queue"; wake?: true };
 }
 export interface Description {
+  reminderLimits?: import("./reminders.ts").ReminderLimits;
   configOptions: unknown[]; commands: unknown[]; policies: string[];
   /** Advertise only implemented guarantees: `durable`/`true` are reported by a
    * server only once its acceptance commits to storage before acknowledging. */
@@ -51,7 +54,7 @@ export interface Description {
      * reject the field. */
     startupChannelChanges?: true;
     /** Decision 0021: tool catalogs, `functions/call` callbacks and invocation records. */
-    functions?: true };
+    functions?: true; reminders?: true };
 }
 
 // ---- Channel changes applied at open, decision 0020.
@@ -160,7 +163,7 @@ export interface LoadResult {
 export interface TransferLimits { chunkBytes: 524288; maxBytes: 268435456; idleMs: 60000 }
 export type ArchiveLocation = { type: "path"; path: string } | { type: "transfer" };
 
-export interface DurableMethods extends ModelExecutionMethods, Omit<OperatorMethods, "session/create"> {
+export interface DurableMethods extends ModelExecutionMethods, ReminderMethods, Omit<OperatorMethods, "session/create"> {
   /** Open an existing session with runtime configuration. Returns the load
    * view; a second load on the same endpoint returns a fresh view only.
    * `channelChanges` (decision 0020) is validated as a whole, then applied
@@ -241,7 +244,7 @@ export interface DurableMethods extends ModelExecutionMethods, Omit<OperatorMeth
 }
 /** Sent after its lifecycle commit, on the same ordered stream as channel
  * events. Delivered through `subscribeSession` on the transport and endpoint. */
-export interface RpcSessionNotification { jsonrpc: "2.0"; method: "session/event"; params: SessionEvent }
+export interface RpcSessionNotification { jsonrpc: "2.0"; method: "session/event"; params: SessionEvent | import("./reminders.ts").ReminderSessionEvent }
 export interface Methods {
   initialize: { params: InitializeParams; result: { protocolVersion: 1; harness: { version: string }; description: Description } };
   /** Validate without opening a session or starting execution. */

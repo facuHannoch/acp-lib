@@ -84,3 +84,11 @@ export interface ReminderClock {
   now(): number;
   setTimer(callback: () => void, delayMs: number): () => void;
 }
+
+/** Portable reminder state in logical archive 6. High water is derived from retained receipts. */
+export interface ReminderArchiveState {
+  rows: Array<{ sequence: number; reminder: Reminder; original?: string; defaultedExpiry: boolean }>;
+  receipts: Array<{ fingerprint: string; result: ReminderChangeResult }>;
+  listingRevision: number;
+  wake: ReminderWake;
+}

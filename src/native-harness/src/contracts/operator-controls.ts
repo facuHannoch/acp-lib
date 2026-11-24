@@ -6,6 +6,11 @@ export interface OpenResult {
   lifecycle: import("./storage.ts").SessionLifecycle;
   revision: number;
   channelChanges?: ChannelChangeResult[];
+  reminderChanges?: import("./reminders.ts").ReminderChangeResult[];
+  reminders?: import("./reminders.ts").Reminder[];
+  remindersNext?: string;
+  nextDueAt?: string | null;
+  reminderRevision?: number;
 }
 
 export interface ChannelObservation {
@@ -63,6 +68,7 @@ export interface LoadResultOpenParams {
   sessionId: string;
   config?: ProtocolConfig;
   channelChanges?: PendingChannelChange[];
+  reminderChanges?: import("./reminders.ts").ReminderChange[];
   tools?: import("./tools.ts").ToolCatalogInput;
 }
 

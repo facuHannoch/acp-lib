@@ -181,7 +181,7 @@ test("development instruction overrides replace saved and sidecar text without o
       await ask(edited.session, { channelId: "channel", participantId: "alice", text: "Hello" });
     } finally { edited.close(); }
     expect(seen[0]!.prompt.startsWith(instructions + "\n\n")).toBe(true);
-    expect(seen[0]!.tools).toEqual(["current_time", "notify_channel"]);
+    expect(seen[0]!.tools).toEqual(["current_time", "notify_channel", "schedule_reminder", "list_reminders", "cancel_reminder"]);
     expect(readFileSync(sidecar, "utf8")).toContain("sidecar instructions");
     rmSync(sidecar);
     const reopened = await openDevelopment({ ...fallback, providerFactory });

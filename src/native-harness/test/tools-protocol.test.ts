@@ -212,7 +212,7 @@ test("stdio: revoking a tool while its approval is pending skips the call; the n
   expect(seen.toolEvents("a").map(event => event.status)).toEqual(["skipped"]);
   expect(seen.output("a", "skipped")).toMatchObject({ ok: false, code: "tool_unavailable" });
   expect((await first.client.toolInvocation("1:t1")).invocation).toMatchObject({ state: "skipped", code: "tool_unavailable", effect: "none" });
-  expect(offered()).toEqual([["echo", "record", "hold", "notify_channel", "lookup", "read_tool_result", "send"], ["echo", "record", "hold", "notify_channel", "lookup", "read_tool_result"]]);
+  expect(offered()).toEqual([["echo", "record", "hold", "notify_channel", "schedule_reminder", "list_reminders", "cancel_reminder", "lookup", "read_tool_result", "send"], ["echo", "record", "hold", "notify_channel", "schedule_reminder", "list_reminders", "cancel_reminder", "lookup", "read_tool_result"]]);
   await expect(first.client.revokeTool("lookup")).rejects.toMatchObject({ code: "invalid_state" });
   await expect(first.client.removeTool("send")).rejects.toMatchObject({ code: "invalid_state" });
   await expect(first.client.revokeTool("nope")).rejects.toMatchObject({ code: "not_found" });
@@ -231,7 +231,7 @@ test("stdio: revoking a tool while its approval is pending skips the call; the n
     expect((await second.client.toolInvocation("1:t1")).invocation).toMatchObject({ state: "skipped", code: "tool_unavailable" });
     await second.client.push(push("a", "a2"));
     await until(() => again.ended("a"), "second turn");
-    expect(offered().at(-1)).toEqual(["echo", "record", "hold", "notify_channel", "read_tool_result"]);
+    expect(offered().at(-1)).toEqual(["echo", "record", "hold", "notify_channel", "schedule_reminder", "list_reminders", "cancel_reminder", "read_tool_result"]);
     // A repeated load with the same catalog is a view; a different one is refused.
     await inspectOperatorView(second.client, { sessionId: "s", tools });
     await expect(second.client.openSession({ sessionId: "s", tools: { catalog: [tool("other")] } })).rejects.toMatchObject({ code: "invalid_state" });

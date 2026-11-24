@@ -86,6 +86,7 @@ export interface ChannelControls {
 }
 
 export interface PersistentSessionOptions {
+  reminderClock?: import("./reminders.ts").ReminderClock;
   /** Local opt-in when there is no managed configuration. */
   timelineTools?: boolean;
   systemPrompt: string;
@@ -112,6 +113,14 @@ export interface PersistentSessionOptions {
 /** Creating the session executes nothing: it can be inspected, loaded and
  * exported first. Opening, starting and resuming are separate actions. */
 export interface PersistentSession {
+  reminders?: Pick<SessionStorage, "readReminder" | "listReminders" | "reminderWake"> & {
+    change(change: import("./reminders.ts").ReminderChange): ReturnType<SessionStorage["changeReminder"]>;
+    processStartup(): void;
+    releaseTimer(): void;
+    executable(): boolean;
+    conditionalStop(windowMs: number): import("./reminders.ts").ConditionalStopResult;
+    subscribeWake(listener: (event: import("./reminders.ts").ReminderSessionEvent) => void): () => void;
+  };
   /** Read an oldest-first page of complete model-call summaries. */
   readModelCalls: SessionStorage["readCalls"];
   operatorReads?: Pick<SessionStorage, "readSession" | "readExecution" | "readChannel" | "readTracked" | "readTimeline">;

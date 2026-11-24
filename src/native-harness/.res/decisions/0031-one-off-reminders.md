@@ -152,3 +152,22 @@ timer and cancellation races, atomic crash boundaries, bounded reads,
 archive round trip, startup order, replay and revision conflicts, and
 real stdio cold-wake acceptance per the plan. R-H3 covers the host
 supervisor and its accepted missed-deadline crash window.
+
+## R8 coordination clarifications
+
+Persist grace provenance internally. If a schedule edit omits expiresAfter,
+recompute a previously defaulted grace and retain a previously explicit
+duration or explicit null. A submitted override applies to the edited
+schedule, or uses the saved lead anchor when only grace changes. Text and
+state edits leave expiry intact. The public record shape is unchanged.
+
+A receipt is the immutable observation made when the command committed.
+Get and list are authoritative for current rows. The host may seed its
+cache once from an applied receipt if this cannot overwrite a newer
+observation. Correct a blocked create with a new reminder ID; discard
+the old local pending entry. Updating a never-created ID is not_found.
+
+Wire sessionId identifies the wake fence. A new ID or confirmed fresh
+create after confirmed absence establishes replacement, even if the latter
+reuses an ID. A lower revision or ambiguous acknowledgement is insufficient.
+There is no separate incarnation field for an out-of-band same-ID replacement.

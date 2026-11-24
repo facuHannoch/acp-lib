@@ -571,6 +571,9 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           try { meta = inspect.getMeta(); }
           catch { throw new Fail("incompatible", "File is not a readable harness session"); }
           if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
+          if (meta.formatVersion === 7 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
+              WHERE type = 'table' AND name IN ('reminder_rows','reminder_receipts','reminder_creates','reminder_metadata')`).get()?.count !== 4)
+            throw new Fail("incompatible", "Format 7 is missing reminder storage");
           if (meta.sessionId !== identity.sessionId) throw new Fail("incompatible", "File holds a different session");
           checkScriptIdentity(meta.compatibilityKey, options.requiredScriptDigest);
         } finally { inspect.dispose(); db.exec("ROLLBACK"); }

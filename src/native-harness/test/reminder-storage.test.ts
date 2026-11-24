@@ -52,3 +52,64 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: replay and due 
       .toMatchObject({ outcome: "applied", alreadyQueued: true });
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+for (const kind of ["memory", "sqlite"] as const) test(`${kind}: format activation, expiry provenance and held expiry survive archive import`, () => {
+  const dir = mkdtempSync(join(tmpdir(), "reminder-archive-"));
+  const adapterFor = (name: string) => kind === "memory" ? createMemoryStorageAdapter() : createSqliteStorageAdapter(join(dir, name));
+  const source = adapterFor("source.db"), destination = adapterFor("destination.db");
+  let store = value(source.open({ mode: "create", identity }));
+  try {
+    expect(value(store.exportArchive()).archiveVersion).toBe(5);
+    const blocked = create("blocked");
+    expect(value(store.changeReminder(blocked, instant))).toMatchObject({ outcome: "blocked", reason: "channel_missing" });
+    expect(value(store.exportArchive()).archiveVersion).toBe(6);
+    value(store.createChannel({ channelId: "alpha" }));
+    expect(value(store.changeReminder(blocked, instant))).toMatchObject({ outcome: "blocked", reason: "channel_missing" });
+    const changed: ReminderChange = { ...blocked, changeId: 2, op: "create", payload: {
+      channel: "alpha", text: "corrected", schedule: { at: due }, acceptedAt: new Date(instant).toISOString(),
+    } };
+    expect(value(store.changeReminder(changed, instant))).toMatchObject({ outcome: "blocked", reason: "conflict" });
+    const seeded = create("defaulted");
+    const original = value(store.changeReminder(seeded, instant));
+    const archive = value(store.exportArchive());
+    expect(archive.archiveVersion).toBe(6);
+    value(store.close());
+    value(destination.importArchive(archive));
+    store = value(destination.open({ mode: "open", identity }));
+    const next = new Date(instant + 600_000).toISOString();
+    expect(value(store.changeReminder({ reminderId: "defaulted", changeId: 2, op: "update", payload: {
+      schedule: { at: next }, acceptedAt: new Date(instant).toISOString(),
+    } }, instant))).toMatchObject({ outcome: "applied", reminder: { expiresAfter: 1_200_000 } });
+    expect(value(store.changeReminder(seeded, instant))).toEqual(original);
+    value(store.beginChannelSuspend("alpha"));
+    expect(value(store.fireDueReminders(instant + 600_000))).toEqual([]);
+    expect(value(store.reminderWake()).nextDueAt).toBeNull();
+    value(store.resumeChannel("alpha"));
+    expect(value(store.fireDueReminders(instant + 1_800_000))).toMatchObject([{ event: { type: "reminder_expired" } }]);
+    expect(value(store.snapshot()).items).toHaveLength(0);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("SQLite: due rows are indexed, capped and leave a remaining wake across batches", () => {
+  const dir = mkdtempSync(join(tmpdir(), "reminder-batch-")), path = join(dir, "session.db");
+  const adapter = createSqliteStorageAdapter(path);
+  const store = value(adapter.open({ mode: "create", identity }));
+  try {
+    value(store.createChannel({ channelId: "alpha" }));
+    for (let index = 0; index < 101; index++) value(store.changeReminder(create(String(index)), instant));
+    const page = value(store.listReminders({ limit: 50 }));
+    expect(page.reminders).toHaveLength(50);
+    expect(page.next).toBeDefined();
+    value(store.changeReminder(create("0"), instant));
+    expect(value(store.listReminders({ after: page.next })).reminders[0]?.id).toBe("50");
+    expect(value(store.fireDueReminders(instant + 120_000))).toHaveLength(100);
+    expect(value(store.reminderWake()).nextDueAt).toBe(due);
+    expect(store.listReminders({ after: page.next })).toMatchObject({ ok: false, error: { code: "invalid_cursor" } });
+    expect(value(store.fireDueReminders(instant + 120_000))).toMatchObject([{ event: { reminderId: "100" } }]);
+    expect(value(store.reminderWake()).nextDueAt).toBeNull();
+    value(store.close());
+    using db = new Database(path);
+    const plan = db.query("EXPLAIN QUERY PLAN SELECT json FROM reminder_rows WHERE runnable_at <= ? ORDER BY runnable_at, creation_seq LIMIT 100").all(due);
+    expect(JSON.stringify(plan)).toContain("USING INDEX reminder_deadlines");
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

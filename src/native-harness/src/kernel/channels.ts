@@ -5,6 +5,7 @@ import type { ChannelControls, ChannelStatus, ControlResult, LifecycleResult, Se
 import type { AcceptItem, SessionLifecycle, SessionStorage, StorageError, StorageResult, StorageSnapshot, StoredTurn } from "../contracts/storage.ts";
 
 export interface ChannelScheduler {
+  wakeCommittedChannel(channelId: string): void;
   agent: SessionAgent;
   channels: ChannelControls;
   start(): void;
@@ -53,6 +54,7 @@ export function createChannelScheduler(
   // Channels that may have pending input. Only an optimization and an idle
   // signal: beginTurn remains the authority on whether a turn starts.
   const waiting = new Set<string>();
+  const deferredResumes = new Map<string, number>();
   let started = false, stopped = false;
   let lifecycle: SessionLifecycle = "running";
   let suspension: { promise: Promise<LifecycleResult>; settle(result: LifecycleResult): void } | undefined;
@@ -267,12 +269,14 @@ export function createChannelScheduler(
       if (stopped) return stoppedResult;
       const resumed = storage.resumeChannel(channelId);
       if (!resumed.ok) return failedWith(resumed.error);
-      // Resuming a checkpoint starts it even before `start`: storage already
-      // moved the turn to running, so it must have an executor.
+      // Startup can restore durable turn state before releasing inference.
       if (before !== "open") emitState(channelId, resumed.revision);
+      for (const reminder of resumed.value.unblockedReminders ?? [])
+        emit({ channel: reminder.channel, revision: resumed.revision, event: { type: "reminder_changed", reminder } });
       if (resumed.value.turn) {
         emit({ channel: channelId, revision: resumed.revision, event: { type: "turn_resumed", turnId: String(resumed.value.turn.turnId) } });
-        run({ channelId, turnId: resumed.value.turn.turnId, resumed: true });
+        if (started) run({ channelId, turnId: resumed.value.turn.turnId, resumed: true });
+        else deferredResumes.set(channelId, resumed.value.turn.turnId);
       } else if (before !== "open") {
         rescan();
         pump(channelId);
@@ -281,9 +285,11 @@ export function createChannelScheduler(
     },
     delete: channelId => {
       const before = lifecycleOf(channelId);
-      return control(() => storage.deleteChannel(channelId), (_channel, revision) => {
+      return control(() => storage.deleteChannel(channelId), (channel, revision) => {
         waiting.delete(channelId);
         if (before !== "retired") emitState(channelId, revision);
+        for (const id of channel.cancelledReminderIds ?? [])
+          emit({ channel: channelId, revision, event: { type: "reminder_cancelled", reminderId: id, by: "channel_retired" } });
         return channelStatus(channelId);
       });
     },
@@ -302,6 +308,7 @@ export function createChannelScheduler(
       }, (outcome, revision) => {
         if (!outcome.interrupted) return outcome;
         // Commit first, then cancel: whatever the aborted work returns is already fenced.
+        deferredResumes.delete(channelId);
         const handle = live.get(channelId);
         if (handle?.turnId === turnId) { live.delete(channelId); handle.abort.abort(new Error(reason)); }
         ended(outcome.turn, revision);
@@ -314,6 +321,11 @@ export function createChannelScheduler(
 
   return {
     channels,
+    wakeCommittedChannel(channelId: string) {
+      if (stopped) return;
+      waiting.add(channelId);
+      if (started) queueMicrotask(() => pump(channelId));
+    },
     agent: {
       idle: () => live.size === 0 && (!compatible() || !started || stopped || lifecycle !== "running" || waiting.size === 0),
       send: (input: ChannelInput) => accept({ kind: "participant_message", channelId: input?.channelId, senderId: input?.participantId,
@@ -326,6 +338,8 @@ export function createChannelScheduler(
     start() {
       if (started || stopped) return;
       started = true;
+      for (const [channelId, turnId] of deferredResumes) run({ channelId, turnId, resumed: true });
+      deferredResumes.clear();
       for (const channelId of [...waiting]) pump(channelId);
     },
     suspend() {
@@ -355,6 +369,8 @@ export function createChannelScheduler(
       if (!resumed.ok) return { ok: false, error: resumed.error };
       if (lifecycle !== "running") emitSession({ type: "lifecycle", lifecycle: "running", revision: resumed.revision });
       started = true;
+      for (const reminder of resumed.value.unblockedReminders ?? [])
+        emit({ channel: reminder.channel, revision: resumed.revision, event: { type: "reminder_changed", reminder } });
       // Storage returned only turns of channels that are not individually
       // suspended; those channels keep their checkpoint and backlog.
       rescan();
@@ -374,6 +390,7 @@ export function createChannelScheduler(
       for (const { abort } of live.values()) abort.abort(Object.assign(new Error(reason), { approvalCloseCode: "approval_cancelled_by_stop" }));
       const interrupted = storage.interruptActive(reason);
       live.clear();
+      deferredResumes.clear();
       if (interrupted.ok) {
         for (const turn of interrupted.value) ended(turn, interrupted.revision);
         if (lifecycle === "suspending") { lifecycle = "running"; emitSession({ type: "lifecycle", lifecycle, revision: interrupted.revision }); }

@@ -15,6 +15,8 @@ import { LineDecoder, LineWriter } from "./framing.ts";
 const strings = (value: unknown) => Array.isArray(value) && value.every((id: unknown) => typeof id === "string");
 function message(value: any): value is RpcResponse | RpcNotification | RpcSessionNotification {
   if (!value || value.jsonrpc !== "2.0") return false;
+  if (value.method === "session/event" && value.params?.type === "reminders_due") return Number.isSafeInteger(value.params.revision)
+    && value.params.revision >= 0 && (value.params.nextDueAt === null || typeof value.params.nextDueAt === "string");
   if (value.method === "session/event") return value.params?.type === "lifecycle" && Number.isSafeInteger(value.params.revision)
     && ["running", "suspending", "suspended"].includes(value.params.lifecycle);
   if (value.method === "channel/event") {
@@ -24,6 +26,12 @@ function message(value: any): value is RpcResponse | RpcNotification | RpcSessio
     if (event.type === "channel_state") return ["open", "suspending", "suspended", "retired"].includes(event.lifecycle)
       && (event.displayName === undefined || typeof event.displayName === "string") && (event.policy === undefined || typeof event.policy === "string");
     if (event.type === "item_withdrawn") return typeof event.item === "string";
+    if (event.type === "reminder_changed") return typeof event.reminder?.id === "string" && event.reminder.channel === value.params.channel;
+    if (event.type === "reminder_cancelled") return typeof event.reminderId === "string" && ["host", "agent", "channel_retired"].includes(event.by);
+    if (event.type === "reminder_fired" || event.type === "reminder_expired") {
+      return typeof event.reminderId === "string" && typeof event.occurrenceId === "string" && typeof event.scheduledAt === "string"
+        && (event.type === "reminder_fired" ? typeof event.firedAt === "string" && typeof event.noticeId === "string" : typeof event.expiredAt === "string");
+    }
     if (typeof event.turnId !== "string") return false;
     switch (event.type) {
       case "turn_started": case "turn_took": return strings(event.items);

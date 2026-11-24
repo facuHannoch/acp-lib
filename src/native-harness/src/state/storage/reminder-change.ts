@@ -9,9 +9,10 @@ export interface ReminderReceipt {
 interface ReminderChanges {
   receipt(reminderId: string, changeId: number): ReminderReceipt | undefined;
   highWater(reminderId: string): number;
-  original(reminderId: string): string | undefined;
+  originalCreate(reminderId: string): ReminderReceipt | undefined;
+  defaultedExpiry(reminderId: string): boolean;
   get(reminderId: string): Reminder | undefined;
-  put(reminder: Reminder, original?: string): void;
+  put(reminder: Reminder, defaultedExpiry?: boolean, original?: string): void;
   saveReceipt(receipt: ReminderReceipt): void;
   channelStatus(channel: string): "open" | "suspended" | "suspending" | "retired" | undefined;
   validPolicies(names: readonly string[]): boolean;
@@ -43,7 +44,13 @@ export function applyReminderChange(store: ReminderChanges, change: ReminderChan
   };
   const row = store.get(reminderId);
   if (change.op === "create") {
-    if (row) return persist(store.original(reminderId) === fingerprint ? accept(row) : block("conflict"));
+    if (reminderId.startsWith("agent-reminder:")) return persist(block("conflict"));
+    const original = store.originalCreate(reminderId);
+    if (original) {
+      if (original.fingerprint !== fingerprint) return persist(block("conflict"));
+      return persist(row ? accept(row) : { ...original.result, ...id });
+    }
+    if (row) return persist(block("conflict"));
     const fields = change.payload;
     const schedule = normalizeReminderSchedule(fields.schedule.at, fields.acceptedAt, fields.expiresAfter, now);
     if (!schedule) return persist(block("invalid_schedule"));
@@ -53,7 +60,7 @@ export function applyReminderChange(store: ReminderChanges, change: ReminderChan
     if (!store.validPolicies(policyNames)) return persist(block("invalid_policy"));
     const reminder: Reminder = { ...schedule, id: reminderId, channel: fields.channel, createdBy: "host",
       policyNames, text: fields.text, state: "active", nextRunAt: schedule.schedule.at };
-    store.put(reminder, fingerprint);
+    store.put(reminder, fields.expiresAfter === undefined, fingerprint);
     return persist(accept(reminder));
   }
   if (!row) return persist(block("not_found"));
@@ -67,8 +74,10 @@ export function applyReminderChange(store: ReminderChanges, change: ReminderChan
   const channel = store.channelStatus(row.channel);
   if (!channel || channel === "retired") return persist(block(channel === "retired" ? "channel_retired" : "channel_missing"));
   if (!store.validPolicies(row.policyNames)) return persist(block("invalid_policy"));
+  const defaulted = fields.expiresAfter === undefined && store.defaultedExpiry(reminderId);
+  const grace = fields.expiresAfter !== undefined ? fields.expiresAfter : defaulted ? undefined : row.expiresAfter;
   const schedule = fields.schedule !== undefined || fields.expiresAfter !== undefined
-    ? normalizeReminderSchedule(fields.schedule?.at ?? row.schedule.at, fields.acceptedAt ?? row.acceptedAt, fields.expiresAfter, now)
+    ? normalizeReminderSchedule(fields.schedule?.at ?? row.schedule.at, fields.acceptedAt ?? row.acceptedAt, grace, now)
     : row;
   if (!schedule) return persist(block("invalid_schedule"));
   const state = fields.state ?? (row.state === "blocked" ? "active" : row.state);
@@ -78,6 +87,6 @@ export function applyReminderChange(store: ReminderChanges, change: ReminderChan
     nextRunAt: state === "active" ? schedule.schedule.at : null,
   };
   delete reminder.blockedReason;
-  store.put(reminder);
+  store.put(reminder, defaulted);
   return persist(accept(reminder));
 }

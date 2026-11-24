@@ -1,3 +1,4 @@
+import { reminderInstant } from "../util/reminder-schedule.ts";
 import type { ReminderChange, ReminderListParams } from "../contracts/reminders.ts";
 import { SESSION_INPUT_MAX_BYTES } from "../contracts/input-limits.ts";
 
@@ -24,10 +25,15 @@ function positive(value: unknown, field: string): number {
   return value as number;
 }
 
+function instant(value: unknown, field: string) {
+  const raw = text(value, field), ms = reminderInstant(raw);
+  return ms === undefined ? raw : new Date(ms).toISOString();
+}
+
 function schedule(value: unknown) {
   const input = record(value);
   keys(input, ["at"]);
-  return { at: text(input.at, "schedule.at") };
+  return { at: instant(input.at, "schedule.at") };
 }
 
 function grace(value: unknown) {
@@ -54,7 +60,7 @@ export function parseReminderChange(value: unknown): ReminderChange {
       const expiresAfter = grace(payload.expiresAfter);
       return { ...id, op: "create", payload: {
         channel: text(payload.channel, "channel"), schedule: schedule(payload.schedule),
-        text: text(payload.text, "text"), acceptedAt: text(payload.acceptedAt, "acceptedAt"),
+        text: text(payload.text, "text"), acceptedAt: instant(payload.acceptedAt, "acceptedAt"),
         policyNames: policyNames(payload.policyNames), ...(expiresAfter === undefined ? {} : { expiresAfter }),
       } };
     }
@@ -70,7 +76,7 @@ export function parseReminderChange(value: unknown): ReminderChange {
         ...(expiresAfter === undefined ? {} : { expiresAfter }),
       };
       return { ...id, op: "update", payload: payload.schedule === undefined ? edit
-        : { ...edit, schedule: schedule(payload.schedule), acceptedAt: text(payload.acceptedAt, "acceptedAt") } };
+        : { ...edit, schedule: schedule(payload.schedule), acceptedAt: instant(payload.acceptedAt, "acceptedAt") } };
     }
     case "cancel":
       keys(payload, []);

@@ -96,8 +96,10 @@ test("notice continuation preserves both completed replies and emits turn_took",
 test("acceptance does not await inference; idle includes pending work and values cross a copy boundary", async () => {
   let release!: () => void;
   const gate = new Promise<void>(r => { release = r; });
+  let entered!: () => void;
+  const firstInference = new Promise<void>(resolve => { entered = resolve; });
   const session = createSession({ systemPrompt: "test", configureTurn: () => ({ tools: [], executeTool: async () => "unused",
-    model: async messages => { await gate; return { role: "assistant", content: lastInput(messages), calls: [] }; },
+    model: async messages => { entered(); await gate; return { role: "assistant", content: lastInput(messages), calls: [] }; },
   }) });
   const client = new HarnessClient(createInProcessTransport(createProtocolServer(async () => ({ session, close() {} }))));
   try {
@@ -106,7 +108,7 @@ test("acceptance does not await inference; idle includes pending work and values
     const log = collect(client, 1);
     const input = push("a", "1");
     const accepted = client.push(input); input.item.content[0]!.text = "mutated";
-    await accepted; await client.push(push("a", "2"));
+    await accepted; await firstInference; await client.push(push("a", "2"));
     expect(await client.idle()).toEqual({ idle: false });
     release(); await log.done;
     expect(log.events.map(e => e.event).filter(e => e.type === "message_completed").map(e => e.parts![0]?.text)).toEqual(["hello", "hello"]);

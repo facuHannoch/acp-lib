@@ -71,10 +71,8 @@ const blocked = (change: PendingChannelChange, reason: NonNullable<ChannelChange
  * 1. (awaited) everything except resumes. Suspension returns a promise, but
  *    with no running turn it commits at once; nothing else can run meanwhile
  *    because the session is not started and no resume has happened yet.
- * 2. (the returned function, synchronous) resumes. Resuming a checkpoint makes
- *    its turn run on the next microtask, so the caller must read the load view
- *    and start holding notifications in the same synchronous block: that keeps
- *    every event of the resumed work behind the open response.
+ * 2. (the returned function, synchronous) resumes. A checkpoint's running
+ *    state is committed here, with its executor deferred until session.start.
  *
  * For each entry the lifecycle step is decided before the name and policy are
  * written, so a blocked entry writes neither. */

@@ -1,3 +1,4 @@
+import { normalizeReminderSchedule, resolveAgentReminder } from "../../util/reminder-schedule.ts";
 import { applyReminderChange } from "./reminder-change.ts";
 import type { Reminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
 import type { ReminderTables } from "./reminder-tables.ts";
@@ -166,7 +167,7 @@ function checkMessage(message: unknown): Stored {
 }
 
 function session(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: 6, createdAt: meta.createdAt,
+  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
     lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
 
@@ -201,6 +202,13 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
  * and its checkpoint survive, in every lifecycle); a clean session suspension
  * keeps all. A `suspending` channel never committed and returns to `open`. A
  * clean state with nothing to change is left unwritten. */
+function refreshReminderWake(tables: Tables, meta: Meta) {
+  if (meta.formatVersion !== 7) return;
+  const wake = tables.reminders.wake();
+  const nextDueAt = meta.lifecycle === "running" ? tables.reminders.eligible(null, 1)[0]?.reminder.nextRunAt ?? null : null;
+  if (nextDueAt !== wake.nextDueAt) tables.reminders.setWake({ nextDueAt, reminderRevision: wake.reminderRevision + 1 });
+}
+
 export function recover(tables: Tables, upgrade?: () => void): void {
   tables.transaction(() => {
     if (upgrade) upgrade();
@@ -234,6 +242,7 @@ export function recover(tables: Tables, upgrade?: () => void): void {
       if (changed) tables.setModelState(state);
     }
     if (meta.formatVersion < 6) { meta.formatVersion = 6; changed = true; }
+    refreshReminderWake(tables, meta);
     if (changed) tables.setMeta({ ...meta, revision: meta.revision + 1 });
   });
 }
@@ -269,7 +278,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return tables.transaction(() => {
         const meta = tables.getMeta(), before = JSON.stringify(meta);
         const value = work(meta);
-        if (!readOnly && JSON.stringify(meta) !== before) refreshWake(meta);
+        if (!readOnly && JSON.stringify(meta) !== before) refreshReminderWake(tables, meta);
         if (JSON.stringify(meta) !== before) tables.setMeta(meta);
         // Results never alias rows a backend may keep in memory.
         return { ok: true as const, value: structuredClone(value), revision: meta.revision };
@@ -451,20 +460,30 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       meta.formatVersion = 7;
     }
   };
-  const putReminder = (meta: Meta, reminder: Reminder, original?: string) => {
+  const putReminder = (meta: Meta, reminder: Reminder, defaultedExpiry?: boolean, original?: string) => {
     activateReminders(meta);
     const existing = reminders.get(reminder.id);
     const revision = seq(meta);
-    reminders.put({ sequence: existing?.sequence ?? revision, reminder, original: existing?.original ?? original });
+    reminders.put({ sequence: existing?.sequence ?? revision, reminder, defaultedExpiry: defaultedExpiry ?? existing?.defaultedExpiry ?? false, original: existing?.original ?? original });
   };
   const validReminderPolicies = (names: readonly string[]) =>
     names.every(name => name !== legacy && Object.hasOwn(activeConfig.policies, name));
-  const refreshWake = (meta: Meta) => {
-    if (meta.formatVersion !== 7) return;
-    const wake = reminders.wake();
-    const nextDueAt = meta.lifecycle === "running" ? reminders.eligible(null, 1)[0]?.reminder.nextRunAt ?? null : null;
-    if (nextDueAt !== wake.nextDueAt) reminders.setWake({ nextDueAt, reminderRevision: wake.reminderRevision + 1 });
-  };
+  function unblockReminders(meta: Meta, channelId?: string) {
+    const unblocked: Reminder[] = [];
+    let after = 0;
+    for (;;) {
+      const batch = reminders.blocked(channelId, after, 100);
+      for (const { reminder } of batch) {
+        if (tables.channel(reminder.channel)?.lifecycle !== "open" || !validReminderPolicies(reminder.policyNames)) continue;
+        const { blockedReason: _block, ...fields } = reminder;
+        const active: Reminder = { ...fields, state: "active", nextRunAt: reminder.schedule.at };
+        putReminder(meta, active);
+        unblocked.push(active);
+      }
+      if (batch.length < 100) return unblocked.length ? { unblockedReminders: unblocked } : {};
+      after = batch.at(-1)!.sequence;
+    }
+  }
   return {
     startCall: (turnId, itemIds) => run(meta => {
       if (!/^[1-9]\d*$/.test(turnId) || !Number.isSafeInteger(Number(turnId))) fail("invalid_input", "Invalid turn ID");
@@ -548,11 +567,38 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     changeReminder: (change, wallTime) => run(meta => {
       requireCompatible();
       return applyReminderChange({
-        receipt: reminders.receipt, highWater: reminders.highWater, original: id => reminders.get(id)?.original,
-        get: id => reminders.get(id)?.reminder, put: (reminder, original) => putReminder(meta, reminder, original),
+        receipt: reminders.receipt, highWater: reminders.highWater, originalCreate: reminders.originalCreate,
+        defaultedExpiry: id => reminders.get(id)?.defaultedExpiry ?? false,
+        get: id => reminders.get(id)?.reminder, put: (reminder, defaulted, original) => putReminder(meta, reminder, defaulted, original),
         saveReceipt(receipt) { activateReminders(meta); reminders.saveReceipt(receipt); seq(meta); },
         channelStatus: channel => tables.channel(channel)?.lifecycle, validPolicies: validReminderPolicies,
       }, change, wallTime);
+    }),
+    scheduleAgentReminder: (turnId, invocationId, schedule, body, inherited, grace, wallTime) => run(meta => {
+      requireCompatible();
+      const turn = running(turnId);
+      const id = `agent-reminder:${invocationId}`;
+      const existing = reminders.get(id)?.reminder;
+      if (existing) return { reminder: existing, created: false };
+      const anchor = new Date(wallTime).toISOString();
+      const at = resolveAgentReminder(schedule, wallTime);
+      const timing = at && normalizeReminderSchedule(at, anchor, grace, wallTime);
+      if (!timing) return fail("invalid_input", "Invalid reminder schedule");
+      const policyNames = [...new Set(inherited.filter(name => name !== legacy))].sort();
+      if (!validReminderPolicies(policyNames)) return fail("invalid_policy", "Unknown reminder policy");
+      const creatorId = tables.itemsOfTurn(turnId).find(item => item.kind === "participant_message")?.senderId;
+      const reminder: Reminder = { ...timing, id, channel: turn.channelId, createdBy: "agent",
+        ...(creatorId === undefined ? {} : { creatorId }), policyNames, text: body, state: "active", nextRunAt: timing.schedule.at };
+      putReminder(meta, reminder, grace === undefined);
+      return { reminder, created: true };
+    }),
+    cancelAgentReminder: (turnId, id) => run(meta => {
+      requireCompatible();
+      const turn = running(turnId), reminder = reminders.get(id)?.reminder;
+      if (!reminder || reminder.channel !== turn.channelId) return fail("not_found", "Unknown reminder");
+      const changed = !["done", "cancelled", "expired"].includes(reminder.state);
+      if (changed) putReminder(meta, { ...reminder, state: "cancelled", nextRunAt: null });
+      return { id, alreadyQueued: reminder.noticeId !== undefined, changed };
     }),
     readReminder: id => run(() => reminders.get(id)?.reminder, true),
     listReminders: ({ channel, after, limit = 50 }) => run(meta => {
@@ -709,7 +755,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
 
     resume: () => run(meta => {
       requireCompatible();
-      if (meta.lifecycle === "running") return { session: session(meta), turns: [] };
+      if (meta.lifecycle === "running") return { session: session(meta), turns: [], ...unblockReminders(meta) };
       if (meta.lifecycle !== "suspended") fail("invalid_state", "Session is still suspending");
       // Turns of individually suspended (or retired) channels are not ours to resume.
       const saved = tables.turns().filter(turn => turn.state.status === "suspended"
@@ -718,7 +764,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (foreign) fail("incompatible", `Turn ${foreign.turnId} was checkpointed under a different configuration`);
       const turns = saved.map(turn => { const live: TurnRow = { ...turn, state: { status: "running", ...(turn.state.status === "suspended" && turn.state.dispatchedCallIds !== undefined ? { dispatchedCallIds: turn.state.dispatchedCallIds } : {}) } }; tables.putTurn(live); return full(live); });
       meta.lifecycle = "running"; seq(meta);
-      return { session: session(meta), turns };
+      return { session: session(meta), turns, ...unblockReminders(meta) };
     }),
 
     interruptActive: reason => run(meta => {
@@ -785,7 +831,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     resumeChannel: channelId => run(meta => {
       requireCompatible();
       const channel = channelOf(channelId);
-      if (channel.lifecycle === "open") return { channel: view(channel) };
+      if (channel.lifecycle === "open") return { channel: view(channel), ...unblockReminders(meta, channel.channelId) };
       if (channel.lifecycle === "suspending") fail("invalid_state", `Channel ${channel.channelId} is still suspending`);
       const saved = tables.liveTurn(channel.channelId);
       const cont = saved?.state.status === "suspended" && meta.lifecycle === "running" ? saved : undefined;
@@ -796,7 +842,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       let turn: StoredTurn | undefined;
       if (cont) { const live: TurnRow = { ...cont, state: { status: "running", ...(cont.state.status === "suspended" && cont.state.dispatchedCallIds !== undefined ? { dispatchedCallIds: cont.state.dispatchedCallIds } : {}) } }; tables.putTurn(live); turn = full(live); }
       seq(meta);
-      return { channel: view(row), ...(turn ? { turn } : {}) };
+      return { channel: view(row), ...(turn ? { turn } : {}), ...unblockReminders(meta, channel.channelId) };
     }),
 
     deleteChannel: channelId => run(meta => {
@@ -806,7 +852,19 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (tables.pendingItems(channel.channelId).length) fail("channel_busy", `Channel ${channel.channelId} has pending input`);
       const row: ChannelRow = { ...channel, lifecycle: "retired" };
       tables.putChannel(row); seq(meta);
-      return view(row);
+      const cancelledReminderIds: string[] = [];
+      let after = 0;
+      for (;;) {
+        const batch = reminders.list(channelId, after, 100);
+        for (const { reminder } of batch) {
+          if (reminder.state !== "active" && reminder.state !== "paused" && reminder.state !== "blocked") continue;
+          putReminder(meta, { ...reminder, state: "cancelled", nextRunAt: null });
+          cancelledReminderIds.push(reminder.id);
+        }
+        if (batch.length < 100) break;
+        after = batch.at(-1)!.sequence;
+      }
+      return cancelledReminderIds.length ? { ...view(row), cancelledReminderIds } : view(row);
     }),
 
     withdrawItem: (channelId, itemId) => run(meta => {
@@ -937,7 +995,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         && !snapshot.channels.some(channel => channel.lifecycle === "suspending")
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: 5, exportedAt: now(), snapshot,
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: meta.formatVersion === 7 ? 6 : 5, exportedAt: now(), snapshot,
+        ...(meta.formatVersion === 7 ? { reminderState: reminders.archive() } : {}),
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };
       return archive;
     }),

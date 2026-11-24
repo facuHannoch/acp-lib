@@ -712,3 +712,15 @@ Search can span native channels in one session. Open a hit using its
 a split message or fixed neighbor window. To run the cumulative offline
 stdio fixture, from the acp-lib root run
 `bun test test/native/rehearsal.test.ts -t "cumulative real stdio"`.
+
+### One-off reminders
+
+The native tools `schedule_reminder`, `list_reminders` and
+`cancel_reminder` use the current channel and its tool policies. Schedule
+with a UTC `at` or a relative `in` such as `5m`. Hosts can apply versioned
+changes at startup or through `reminder/change`, and read current state with
+`reminder/get` and `reminder/list`. A live session arms its own timer.
+A stopped harness needs a host to reopen it before any due work can run.
+
+Run `bun test test/reminder-stdio.test.ts` from this package to verify cold
+open, replay, process death and the idle-stop fence with a scripted model.

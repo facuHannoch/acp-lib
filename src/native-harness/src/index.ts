@@ -1,3 +1,7 @@
+import { executeReminderTool, isReminderTool, reminderAction, reminderDefinitions } from "./capabilities/tools/reminders/index.ts";
+import { createReminderRuntime } from "./runtime/reminders.ts";
+import { wallReminderClock } from "./runtime/reminder-timer.ts";
+import type { ReminderSessionEvent } from "./contracts/reminders.ts";
 import { isTimelineTool } from "./util/timeline-tool-names.ts";
 import { runTimelineTool, timelineArgumentsProblem, timelineDefinitions } from "./capabilities/tools/timeline/index.ts";
 import { messagePosition } from "./util/message-position.ts";
@@ -77,7 +81,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   // the revoked set mirrors storage; the executor belongs to the connection.
   const revoked = options.catalog ? store.readRevokedTools() : undefined;
   if (revoked && !revoked.ok) throw new Error(revoked.error.message);
-  if (options.catalog?.catalog.some(tool => isTimelineTool(tool.name))) throw new Error("Timeline tool names are reserved");
+  if (options.catalog?.catalog.some(tool => isTimelineTool(tool.name) || isReminderTool(tool.name))) throw new Error("Native tool names are reserved");
   const catalog = options.catalog ? createToolCatalog(options.catalog, revoked?.value ?? []) : undefined;
   const limits = { ...TOOL_LIMITS, ...options.toolLimits };
   let executor: FunctionExecutor | undefined;
@@ -105,7 +109,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
     const offer = (policies: readonly string[]): { tools: ToolDefinition[]; fixedToolCount?: number } => {
       const allowed = <T extends ToolDefinition>(tools: readonly T[]) => tools.filter(tool => toolDecision(config, policies, tool.name) !== "deny");
       const definition = ({ name, description, parameters }: ToolDefinition): ToolDefinition => ({ name, description, parameters });
-      const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel" && !isTimelineTool(tool.name)), notifyChannelDefinition,
+      const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel" && !isTimelineTool(tool.name) && !isReminderTool(tool.name)), notifyChannelDefinition, ...reminderDefinitions,
         ...((owner.value === undefined ? options.timelineTools : config.timelineTools) ? timelineDefinitions : [])]);
       if (!catalog) { offered = new Set(builtins.map(tool => tool.name)); return { tools: [...builtins] }; }
       const available = catalog.offered();
@@ -130,7 +134,8 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       append,
       dispatchTool(call, execute) {
         const registration = catalog?.get(call.name), reader = !!catalog && call.name === READ_TOOL_RESULT;
-        const retrieval = isTimelineTool(call.name);
+        const retrieval = isTimelineTool(call.name), reminder = isReminderTool(call.name);
+        const action = reminder ? reminderAction(call.name, JSON.parse(call.arguments)) : undefined;
         const id = invocationId(turn.turnId, call.id);
         let policies: readonly string[];
         return dispatchWithPolicy({ channel: turn.channelId, turnId: turn.turnId, call,
@@ -138,8 +143,9 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
           decide: () => toolDecision(config, policies = policySnapshot(), call.name),
           // Catalog tools and the reader must have been offered by this request,
           // still be available, and carry arguments their definition accepts.
-          ...(registration || reader || retrieval ? { refuse: () => {
+          ...(registration || reader || retrieval || reminder ? { refuse: () => {
             if (!offered.has(call.name)) return { code: "tool_unavailable", detail: "it was not offered for this request" };
+            if (reminder) return action ? undefined : { code: "invalid_arguments", detail: "Invalid reminder arguments" };
             if (retrieval) {
               const detail = timelineArgumentsProblem(call.name, JSON.parse(call.arguments));
               return detail ? { code: "invalid_arguments", detail } : undefined;
@@ -150,7 +156,11 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
             const problem = schemaProblem(registration.parameters, JSON.parse(call.arguments));
             return problem ? { code: "invalid_arguments", detail: problem } : undefined;
           } } : {}),
-          execute: retrieval ? async (_call, signal) => runTimelineTool(store, call.name, JSON.parse(call.arguments), signal) : registration ? (_call, signal) => {
+          execute: reminder ? async () => {
+            if (!action) throw new Error("Invalid reminder arguments");
+            return executeReminderTool(store, action, turn.channelId, turn.turnId, id, policies, reminderClock.now(),
+              (event, revision) => emit({ channel: turn.channelId, event, revision }));
+          } : retrieval ? async (_call, signal) => runTimelineTool(store, call.name, JSON.parse(call.arguments), signal) : registration ? (_call, signal) => {
             // Dispatch evidence is committed. From here the effect is the host's.
             if (!executor) throw new CallbackLost("No connection serves this tool's handler");
             return runFunction({ executor, registration, limits, signal: signal ?? port.signal, defaultDeadlineMs: catalog!.defaultDeadlineMs,
@@ -165,7 +175,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
           recordSkip: (content, code) => {
             append({ role: "tool", callId: call.id, content, outcome: { status: "skipped", code } });
             // Built-in tools keep their event stream as it was: a skip is silent.
-            if (registration || reader || retrieval) emit({ channel: turn.channelId, ...(recorded ? { revision: recorded.revision } : {}),
+            if (registration || reader || retrieval || reminder) emit({ channel: turn.channelId, ...(recorded ? { revision: recorded.revision } : {}),
               event: { type: "tool_call", turnId: String(turn.turnId), id: call.id, name: call.name, status: "skipped", output: content, invocationId: id } });
           },
           mark: () => {
@@ -262,12 +272,46 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       invocations: turnId => turnInvocations(read(), turnId, waiting()),
     };
   }
+  const reminderClock = options.reminderClock ?? wallReminderClock;
+  const reminderWakeEvents = fanout<ReminderSessionEvent>();
+  const reminderExecutable = () => {
+    if (stopped) return false;
+    const result = store.executionCompatible();
+    return result.ok && result.value;
+  };
+  let stopped = false;
+  let startupProcessed = false;
+  const reminderRuntime = createReminderRuntime(store, reminderClock, reminderExecutable,
+    (channel, event, revision) => emit({ channel, event, revision }),
+    reminderWakeEvents.publish, scheduler.wakeCommittedChannel);
+  const stop = (reason: string) => {
+    stopped = true;
+    reminderRuntime.stop();
+    return scheduler.stop(reason);
+  };
+  changes.subscribe(() => reminderRuntime.refresh());
+  function processStartup() { if (!startupProcessed) { startupProcessed = true; reminderRuntime.process(); } }
   return {
     ...(tools ? { tools } : {}),
+    reminders: {
+      readReminder: id => store.readReminder(id), listReminders: params => store.listReminders(params),
+      reminderWake: () => store.reminderWake(), change: change => reminderRuntime.change(change),
+      executable: reminderExecutable, processStartup, releaseTimer: reminderRuntime.stop, subscribeWake: reminderWakeEvents.subscribe,
+      conditionalStop(windowMs) {
+        if (status().execution === "working" || !scheduler.agent.idle() || (approvals.waiting?.().length ?? 0) > 0) return { stopped: false, reason: "busy" };
+        const wake = store.reminderWake();
+        if (!wake.ok) throw new Error(wake.error.message);
+        if (wake.value.nextDueAt !== null && Date.parse(wake.value.nextDueAt) <= reminderClock.now() + windowMs)
+          return { stopped: false, reason: "next_due_soon" };
+        stop("Stopped by the host");
+        return { stopped: true };
+      },
+    },
     agent, channels: scheduler.channels, approvals, operatorReads: store, readModelCalls: (after, limit) => store.readCalls(after, limit), turnPhase: id => phases.get(id),
     store: { snapshot: () => read().timeline, subscribe: listener => changes.subscribe(listener) },
-    snapshot: read, status, start: scheduler.start,
-    suspend: scheduler.suspend, resume: scheduler.resume, stop: scheduler.stop,
+    snapshot: read, status,
+    start() { processStartup(); scheduler.start(); reminderRuntime.start(); },
+    suspend: scheduler.suspend, resume: scheduler.resume, stop,
     subscribe: events.subscribe, subscribeSession: lifecycle.subscribe,
   };
 }
