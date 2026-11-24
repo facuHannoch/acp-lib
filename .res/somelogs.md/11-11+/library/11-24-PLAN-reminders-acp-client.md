@@ -223,3 +223,15 @@ and its revision.
 
 Pending with the user: the idle-window floor (per Agent or global); whether the 15-minute consumer minimum applies to
 agent-created routines; the `expiresAfter` default durations; whether to schedule R7.
+
+## User decisions, round 3 (2026-11-24)
+
+- **Idle-stop window:** a setting per Agent (`harness.idleStopWindowMs`), overridable per conversation. The atomic stop passes the
+  largest window among conversations that have a reminder pending, so a conversation can only keep the harness up longer for
+  itself; the call itself still carries one value. Floor and ceiling remain (defaults to be set in step 5).
+- **Default `expiresAfter` (proposal, needs harness agreement):** the grace after the scheduled instant is twice the lead time
+  (creation to scheduled instant), capped at 1 day: 5 min lead gives 10 min, 1 hour gives 2 hours, 12 hours or more gives 1 day.
+  Resolved to an absolute expiry at creation. For repeating schedules the lead is the interval, per occurrence. Open: a floor for
+  very short leads; whether the window is counted from the scheduled instant (assumed) or from creation.
+- **Minimum interval:** question raised whether the 15-minute consumer minimum covers agent-created routines, and whether the
+  harness should provide it to acp-client. Recommendation recorded in the reply; pending the user's answer.
