@@ -1,6 +1,7 @@
+import { RoutineAdmission } from "./reminders/routine-guard.ts";
 import type { ReminderChange } from "../persistence/reminders.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
-import { routineTransport, type ReminderWireOpen } from "./reminders/routine-wire.ts";
+import { routineTransport, type ReminderWireOpen, type RoutineConfig } from "./reminders/routine-wire.ts";
 import type { ResponseMessage } from "../types.ts";
 import { codeOf } from "./errors.ts";
 import type { HarnessClient, ItemStatus, PendingChannelChange, StoredMessage, TurnStatus } from "../native-harness/src/client.ts";
@@ -50,29 +51,39 @@ export async function readCompleteMessage(client: HarnessClient, messageId: stri
 
 /** The catalog and startup edits are installed before recovered work can start. */
 export async function openOrCreate(
-  client: HarnessClient, config: Pick<Parameters<HarnessClient["openSession"]>[0], "sessionId" | "config">,
+  client: HarnessClient, config: { sessionId: string; config?: RoutineConfig },
   batch: PendingChannelChange[], tools: Parameters<HarnessClient["openSession"]>[0]["tools"], signal: AbortSignal, reminders?: ReminderSync,
 ) {
+  const admission = reminders?.routineAdmission ?? new RoutineAdmission();
+  admission.configForOpen(config.config); // Validate before marking any journal entry maybe sent.
   const changes = { ...(batch.length ? { channelChanges: batch } : {}), ...(tools ? { tools } : {}) };
   const originals: ReminderChange[] = [];
   let staged = await reminders?.stage(originals) ?? [];
-  const execute = async (fresh: boolean) => {
+  let proofFailed = false;
+  const execute = async (fresh: boolean, recoveringCreate = false) => {
     signal.throwIfAborted();
-    const params = { sessionId: config.sessionId, config: config.config, ...changes,
+    const params = { sessionId: config.sessionId, config: admission.configForOpen(config.config), ...changes,
       ...(fresh ? { participants: [], channels: {} } : {}) };
     const request = (): Promise<ReminderWireOpen> => {
       const payload = { ...params, ...(staged.length ? { reminderChanges: staged } : {}) };
       return fresh ? routineTransport(client).createSession({ ...payload, participants: [], channels: {} }) : routineTransport(client).openSession(payload);
     };
     let result: ReminderWireOpen;
+    let proofReplay = false;
     try {
       try { result = await request(); }
       catch (error) {
+        if (!fresh && codeOf(error) === "storage_failure") {
+          // Earlier receipts may have committed. Replay the exact frozen batch.
+          proofFailed = proofReplay = true;
+          return await request();
+        }
         if (fresh || codeOf(error) !== "timeout") throw error;
         result = await request();
       }
     } catch (error) {
-      if (!staged.length || codeOf(error) !== "invalid_params") throw error;
+      if (!recoveringCreate && !proofReplay && codeOf(error) === "invalid_config") await reminders?.restoreStaged(originals);
+      if (recoveringCreate || proofReplay || !staged.length || codeOf(error) !== "invalid_params") throw error;
       const rejected = staged;
       staged = [];
       try {
@@ -89,9 +100,16 @@ export async function openOrCreate(
   let result;
   try { result = await execute(false); }
   catch (error) {
-    if (codeOf(error) !== "not_found") throw error;
+    if (proofFailed || codeOf(error) !== "not_found") throw error;
     fresh = true;
-    result = await execute(true);
+    admission.resetBinding();
+    try { result = await execute(true); }
+    catch (createError) {
+      if (codeOf(createError) !== "storage_failure") throw createError;
+      // The failed create may already have published the session. Recover only
+      // that identity with all unacknowledged intents, without stripping.
+      result = await execute(false, true);
+    }
   }
   await reminders?.opened(client, result, config.sessionId, fresh);
   return result;

@@ -27,15 +27,18 @@ export type KnownReminderBlockReason = Extract<ReminderChangeResult, { outcome: 
 export type HarnessOpenResult = Awaited<ReturnType<HarnessClient["openSession"]>>;
 export type HarnessDescription = Awaited<ReturnType<HarnessClient["initialize"]>>["description"];
 
-export function negotiatedLimits(value: Partial<NonNullable<HarnessDescription["reminderLimits"]>> | undefined): ReminderLimits {
-  const read = (name: keyof NonNullable<HarnessDescription["reminderLimits"]>, fallback: number) => {
+type AdvertisedReminderLimits = Partial<NonNullable<HarnessDescription["reminderLimits"]>> & { maxRoutineCatchUp?: number };
+
+export function negotiatedLimits(value: AdvertisedReminderLimits | undefined, routines = false): ReminderLimits {
+  const read = (name: keyof AdvertisedReminderLimits, fallback: number) => {
     const limit = value?.[name];
     return typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0 ? limit : fallback;
   };
   return {
     oneShotLeadMs: read("minLeadMs", defaultReminderLimits.oneShotLeadMs),
     repeatIntervalMs: read("minIntervalMs", defaultReminderLimits.repeatIntervalMs),
-    perChannel: read("maxActiveRoutinesPerChannel", 0),
+    perChannel: read("maxActiveRoutinesPerChannel", routines ? 20 : 0),
+    maxRoutineCatchUp: read("maxRoutineCatchUp", 10),
     minGraceMs: read("minExpiryGraceMs", defaultReminderLimits.minGraceMs),
     maxGraceMs: read("maxExpiryGraceMs", defaultReminderLimits.maxGraceMs),
     expiryMultiplier: read("expiryMultiplier", defaultReminderLimits.expiryMultiplier),

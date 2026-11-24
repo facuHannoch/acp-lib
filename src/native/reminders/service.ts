@@ -1,3 +1,4 @@
+import { activatesRoutine } from "./routine-guard.ts";
 import { isRoutineSchedule, type MissedRuns, type RoutineOverlap } from "./routine-schedule.ts";
 import { SqliteAgentPersistence } from "../../persistence/sqlite-backend.ts";
 import { ReminderWakeSupervisor } from "./supervisor.ts";
@@ -128,6 +129,11 @@ export class ReminderService {
         if (edit.schedule && existing && routine && ("every" in edit.schedule) !== ("every" in existing.schedule)) {
           throw new ReminderError("invalid_schedule", "Routine schedule kind cannot change");
         }
+        if (routine && (op === "cancel" || status === "paused") && previous?.changes.some(change =>
+          (change.state === "pending" || change.state === "maybe_sent") && activatesRoutine(change) &&
+          !(op === "cancel" && change.op === "create" && previous.changes.every(entry => entry.state === "pending")))) {
+          throw new ReminderError("conflict", "Resolve the earlier routine activation before pausing or cancelling");
+        }
         if (routine && (op === "create" || edit.schedule || status === "active")) {
           const why = this.options.routineUnavailable ? this.options.routineUnavailable() : "Routine reminders are unavailable";
           if (why !== undefined) throw new ReminderError("routines_unavailable", why);
@@ -222,6 +228,8 @@ export function createAgentReminderService(
     ...options, persistence,
     running: () => host?.state === "running" && host.reminderSync?.supported === true,
     supported: () => host?.reminderSync?.supported,
+    routineUnavailable: () => host?.reminderSync
+      ? host.reminderSync.routineAdmission.unavailable() : "Routine reminders are unavailable",
     negotiatedLimits: () => host?.reminderSync?.supported === true ? host.reminderSync.limits : undefined,
     refresh: async (channel, id) => { await host?.refreshReminders(channel, id); },
     live: async (change) => await host?.changeReminder(change) ?? { reason: "not_found" },

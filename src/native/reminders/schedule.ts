@@ -25,7 +25,7 @@ export type ReminderExpiry =
 
 export type ReminderErrorCode = KnownReminderBlockReason
   | "routines_unavailable" | "reminders_unavailable" | "reminders_unsupported"
-  | "invalid_input" | "unauthorized";
+  | "invalid_input" | "unauthorized" | "invalid_config" | "storage_failure" | "unattended_guard_required";
 
 export class ReminderError extends Error {
   constructor(readonly code: ReminderErrorCode, message: string) {

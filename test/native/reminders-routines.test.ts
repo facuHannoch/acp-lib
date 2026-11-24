@@ -78,3 +78,149 @@ test("routine rows decode canonical schedule, migration, count and next-occurren
   expect(fromWireReminder({ ...row, policyNames: [], schedule: { every: 600_000, startAt: iso(anchor + 600_000), until: iso(anchor + 900_000) } }))
     .toMatchObject({ schedule: { every: 600_000, startAt: anchor + 600_000, until: anchor + 900_000 } });
 });
+
+import { noopLogger } from "../../src/logger.ts";
+import { openOrCreate } from "../../src/native/recovery.ts";
+import { ReminderSync } from "../../src/native/reminders/sync.ts";
+import { RoutinePeer } from "./fixtures/routine-peer.ts";
+import type { RoutineConfig, RoutineRow } from "../../src/native/reminders/routine-wire.ts";
+
+const negotiated = { reminders: true, routines: true, unattendedTurnGuard: true } as const;
+
+async function startup() {
+  const id = createAgentSessionId();
+  const channel = createAgentConversationId();
+  const persistence = await SqliteAgentPersistence.open({ path: ":memory:", agentSessionId: id });
+  await persistence.conversations.create({ agentSessionId: id, agentConversationId: channel, controllerKind: "native" });
+  const repo = persistence.reminders;
+  const sync = new ReminderSync(persistence, repo, noopLogger);
+  const peer = new RoutinePeer();
+  const service = new ReminderService({ persistence, now: () => anchor,
+    routineUnavailable: () => sync.routineAdmission.unavailable() });
+  const reminders = service.conversation(channel, true, () => {});
+  const config: RoutineConfig = { version: 1, system: "test", model: { protocol: "scripted", script: "" },
+    defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } } };
+  const open = (guard?: number, target = peer) => openOrCreate(target.client, {
+    sessionId: peer.sessionId, config: guard === undefined ? config : { ...config, limits: { unattendedTurns: guard } },
+  }, [{ channel, changeId: "1", displayName: "channel" }], undefined, new AbortController().signal, sync);
+  const saved = (id: string): RoutineRow => ({
+    id, channel, createdBy: "host", policyNames: [], text: id, state: "active",
+    acceptedAt: iso(anchor), nextRunAt: iso(anchor + 600_000), expiresAfter: null, expiresAt: null,
+    schedule: { every: 600_000, startAt: iso(anchor + 600_000) }, missedRuns: "coalesce", overlap: "skip",
+  });
+  return { persistence, repo, sync, peer, reminders, open, saved };
+}
+
+const interval = { text: "routine", schedule: { every: 600_000 } };
+
+test("routine authoring requires both capabilities and an effective guard from executable open", async () => {
+  const s = await startup();
+  try {
+    for (const capabilities of [
+      { ...negotiated, routines: false }, { ...negotiated, unattendedTurnGuard: false },
+    ]) {
+      await s.sync.initialize({ capabilities });
+      await expect(s.reminders.create(interval)).rejects.toMatchObject({ code: "routines_unavailable" });
+      await expect(s.open(3)).rejects.toThrow("must support routines");
+    }
+    expect(s.peer.calls).toEqual([]);
+    await s.sync.initialize({ capabilities: negotiated });
+    expect(s.sync.limits).toMatchObject({ repeatIntervalMs: 600_000, perChannel: 20, maxRoutineCatchUp: 10 });
+    await expect(s.open(0)).rejects.toMatchObject({ code: "invalid_config" });
+    await s.open();
+    await expect(s.reminders.create(interval)).rejects.toMatchObject({ code: "routines_unavailable" });
+    expect(await s.repo.list()).toEqual([]);
+    await s.open(3);
+    expect((await s.reminders.create(interval)).state).toBe("pending");
+    s.peer.guard = null;
+    await s.open(3);
+    expect(s.peer.calls.at(-1)?.params.config).not.toHaveProperty("limits");
+    await s.sync.dispatch(s.peer.client);
+    expect(s.peer.calls.every(call => call.method !== "change")).toBe(true);
+    await s.open(3);
+    await expect(s.open(4)).rejects.toMatchObject({ code: "invalid_config" });
+    expect((await s.repo.list())[0]?.changes[0]?.state).toBe("pending");
+  } finally { await s.persistence.close(); }
+});
+
+test("startup sends owed pause before due work and holds routine activation until guard confirmation", async () => {
+  const s = await startup();
+  try {
+    s.peer.rows.set("owed", s.saved("owed"));
+    await s.sync.initialize({ capabilities: negotiated });
+    await s.open(3);
+    const created = await s.reminders.create(interval);
+    await expect(s.reminders.pause(created.id)).rejects.toMatchObject({ code: "conflict" });
+    await s.reminders.pause("owed");
+    expect((await s.repo.wake()).effectiveAt).toBeNull();
+    const original = (await s.repo.list()).find(row => row.id === created.id)!.changes[0]!;
+    s.peer.trace.length = 0;
+    await s.sync.initialize({ capabilities: negotiated });
+    await s.open(3);
+    expect(s.peer.trace).toEqual(["guard", "channel:" + s.saved("owed").channel, "change:owed", "due"]);
+    expect((await s.repo.list()).find(row => row.id === created.id)?.changes[0]?.state).toBe("pending");
+    await s.sync.dispatch(s.peer.client);
+    expect(s.peer.calls.at(-1)).toEqual({ method: "change", params: reminderRequest(original) });
+    expect(s.peer.rows.get("owed")?.state).toBe("paused");
+    expect(s.peer.rows.get(created.id)?.state).toBe("active");
+  } finally { await s.persistence.close(); }
+});
+
+test("startup storage failure keeps the exact frozen batch and replays prior receipts on bounded retry", async () => {
+  const s = await startup();
+  try {
+    for (const id of ["first", "failure", "later"]) s.peer.rows.set(id, s.saved(id));
+    await s.sync.initialize({ capabilities: negotiated });
+    await s.open(3);
+    for (const id of ["first", "failure", "later"]) await s.reminders.update(id, { text: "updated " + id });
+    s.peer.failId = "failure";
+    s.peer.failures = 2;
+    s.peer.trace.length = 0;
+    await expect(s.open(3)).rejects.toMatchObject({ code: "storage_failure" });
+    const [attempt, retry] = s.peer.calls.slice(-2);
+    expect(attempt).toEqual(retry);
+    expect(s.peer.trace).toEqual([
+      "guard", "channel:" + s.saved("first").channel, "change:first", "change:failure",
+      "guard", "channel:" + s.saved("first").channel, "replay:first", "change:failure",
+    ]);
+    expect((await s.repo.list()).flatMap(row => row.changes.map(change => change.state))).toEqual(["maybe_sent", "maybe_sent", "maybe_sent"]);
+    expect(s.peer.rows.get("later")?.text).toBe("later");
+    await s.open(3);
+    expect(s.peer.calls.at(-1)).toEqual(attempt);
+    expect((await s.repo.list()).flatMap(row => row.changes)).toEqual([]);
+  } finally { await s.persistence.close(); }
+});
+
+test("a partially published create recovers by open with the same frozen entries and no second creation", async () => {
+  const s = await startup();
+  try {
+    s.peer.rows.set("owed", s.saved("owed"));
+    await s.repo.observe(fromWireReminder(s.saved("owed")));
+    await s.reminders.update("owed", { text: "recover after create" });
+    await s.sync.initialize({ capabilities: negotiated });
+    s.peer.failId = "owed";
+    s.peer.failures = 1;
+    await s.open(3);
+    expect(s.peer.calls.map(call => call.method)).toEqual(["open", "create", "open"]);
+    expect(s.peer.calls[1]?.params.reminderChanges).toEqual(s.peer.calls[2]?.params.reminderChanges);
+    expect(s.peer.guard).toBe(3);
+    expect(s.peer.rows.get("owed")?.text).toBe("recover after create");
+    expect(s.peer.trace.filter(step => step === "due")).toHaveLength(1);
+  } finally { await s.persistence.close(); }
+});
+
+test("live proof retry keeps payload identity and guard refusal stays visible as a blocked outcome", async () => {
+  const s = await startup();
+  try {
+    await s.sync.initialize({ capabilities: negotiated });
+    await s.open(3);
+    const item = await s.reminders.create(interval);
+    s.peer.failId = item.id;
+    s.peer.failures = 1;
+    s.peer.blockActivation = true;
+    await s.sync.dispatch(s.peer.client);
+    const [first, retry] = s.peer.calls.slice(-2);
+    expect(first).toEqual(retry);
+    expect(await s.reminders.get(item.id)).toMatchObject({ state: "blocked", reason: "unattended_guard_required" });
+  } finally { await s.persistence.close(); }
+});

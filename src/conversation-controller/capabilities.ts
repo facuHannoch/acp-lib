@@ -14,6 +14,8 @@ export interface ConversationCapabilities {
   /** Steer by injecting into the running turn; false for the `HarnessController`. */
   nativeSteering: boolean;
   reminders?: boolean;
+  /** True once an executable native open confirms an unattended-turn guard. */
+  routines?: boolean;
   /** Null when unknown: before the agent's `initialize`, and in PTY mode. */
   backend: BackendCapabilities | null;
   /**

@@ -1,3 +1,4 @@
+import { activatesRoutine, RoutineAdmission } from "./routine-guard.ts";
 import { isRoutineSchedule } from "./routine-schedule.ts";
 import { routineTransport, type ReminderWireRow, type ReminderWireResult, type ReminderWireList, type ReminderWireOpen } from "./routine-wire.ts";
 import type { AgentConversationId } from "../../agent-ids.ts";
@@ -17,7 +18,7 @@ const sweepAttempts = 3;
 
 export class ReminderSync {
   supported?: boolean;
-  private routineSupported = false;
+  readonly routineAdmission = new RoutineAdmission();
   limits = defaultReminderLimits;
   unreconciled = false;
   private sessionId?: string;
@@ -46,11 +47,14 @@ export class ReminderSync {
   settled(): Promise<void> { return this.tail; }
 
   async initialize(offered: {
-    capabilities?: Pick<Partial<HarnessDescription["capabilities"]>, "reminders">;
-    reminderLimits?: Partial<NonNullable<HarnessDescription["reminderLimits"]>>;
+    capabilities?: Pick<Partial<HarnessDescription["capabilities"]>, "reminders"> & {
+      routines?: boolean; unattendedTurnGuard?: boolean;
+    };
+    reminderLimits?: Parameters<typeof negotiatedLimits>[0];
   }): Promise<void> {
     this.supported = offered.capabilities?.reminders === true;
-    this.limits = negotiatedLimits(offered.reminderLimits);
+    this.routineAdmission.initialize(offered.capabilities?.routines, offered.capabilities?.unattendedTurnGuard, this.supported);
+    this.limits = negotiatedLimits(offered.reminderLimits, this.routineAdmission.supported);
     await this.repository.setSupported(this.supported);
   }
 
@@ -62,10 +66,24 @@ export class ReminderSync {
         .sort((a, b) => a.stagingOrder - b.stagingOrder);
       const batch: WireChange[] = [];
       let bytes = 0;
+      const held = new Set<string>();
       for (const change of entries) {
         if (batch.length === batchLimit) break;
+        const id = change.reminder.id;
+        if (held.has(id)) continue;
+        if (isRoutineSchedule(change.reminder.schedule)) {
+          if (!this.routineAdmission.supported && change.reminder.missedRuns !== undefined) {
+            held.add(id);
+            continue;
+          }
+          if (activatesRoutine(change) && this.routineAdmission.supported &&
+            (originals !== undefined || this.routineAdmission.unavailable() !== undefined)) {
+            held.add(id);
+            continue;
+          }
+        }
         try {
-          if (isRoutineSchedule(change.reminder.schedule) && !this.routineSupported) throw new Error("Routine reminders were not negotiated");
+          if (isRoutineSchedule(change.reminder.schedule) && !this.routineAdmission.supported) throw new Error("Routine reminders were not negotiated");
           const wire = change.frozenWire ?? reminderRequest(change, this.limits);
           const size = Buffer.byteLength(JSON.stringify(wire)) + 1;
           if (size > 900_000) throw new Error("Reminder entry exceeds startup frame budget");
@@ -110,6 +128,7 @@ export class ReminderSync {
       });
     }
     this.sessionId = sessionId;
+    this.routineAdmission.opened(result);
     await this.ordered(async () => {
       for (const receipt of result.reminderChanges ?? []) await this.recordReceipt(receipt);
       if (result.reminderRevision !== undefined && result.nextDueAt !== undefined) {
@@ -201,7 +220,13 @@ export class ReminderSync {
         const batch = await this.stage();
         if (!batch.length) break;
         for (const entry of batch) {
-          const receipt = await routineTransport(client).changeReminder(entry);
+          const send = () => routineTransport(client).changeReminder(entry);
+          let receipt: ReminderWireResult;
+          try { receipt = await send(); }
+          catch (error) {
+            if (codeOf(error) !== "storage_failure") throw error;
+            receipt = await send();
+          }
           if (receipt.reminderId !== entry.reminderId || receipt.changeId !== entry.changeId) throw new Error("Mismatched reminder receipt");
           const outcome = await this.ordered(() => this.recordReceipt(receipt));
           if (entry.reminderId === target?.reminderId && entry.changeId === target.changeId) own = outcome;
