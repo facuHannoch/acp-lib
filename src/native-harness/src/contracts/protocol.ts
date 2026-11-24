@@ -122,6 +122,7 @@ export interface TurnStatus {
   turnId: string; channel: string; items: string[];
   state: "running" | "suspended" | "completed" | "failed" | "interrupted";
   reason?: string;
+  attachmentFailure?: import("./attachments.ts").AttachmentFailure;
   /** Recorded calls with no recorded result; never replayed by the harness. */
   uncertainCalls?: string[];
 }
@@ -147,7 +148,7 @@ export interface ChannelStatusResult {
   pending: string[]; waitingForResume: boolean; unresolved?: TurnStatus;
 }
 export type StoredMessage = { messageId: string; channel: string; turnId: string } &
-  ({ parts: ({ type: "text"; text: string } | { type: "attachment"; id: string; text?: never; metadata?: import("./attachments.ts").AttachmentMetadata; unavailable?: true })[]; reference?: never } | { parts?: never; reference: true });
+  ({ parts: { type: "text"; text: string }[]; reference?: never } | { parts?: never; reference: true });
 
 /** Internal view retained for development and test projections. The wire uses OpenResult and focused reads. */
 export interface LoadResult {

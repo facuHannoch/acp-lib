@@ -3,6 +3,7 @@ import type { ActiveTurn, ChannelInput, ChannelNotice, SendResult, SessionAgent,
 import type { EventSink, SessionEventSink } from "../contracts/events.ts";
 import type { ChannelControls, ChannelStatus, ControlResult, LifecycleResult, SessionStatus } from "../contracts/session.ts";
 import type { AcceptItem, SessionLifecycle, SessionStorage, StorageError, StorageResult, StorageSnapshot, StoredTurn } from "../contracts/storage.ts";
+import { attachmentFailureReason, parseAttachmentFailure } from "../util/attachment-failure.ts";
 
 export interface ChannelScheduler {
   wakeCommittedChannel(channelId: string): void;
@@ -48,7 +49,7 @@ export function sessionStatus(view: Pick<StorageSnapshot, "revision" | "session"
  * publishes each one after it happens, and keeps the per-process handles
  * (promises and abort controllers) that storage cannot hold. */
 export function createChannelScheduler(
-  storage: SessionStorage, execute: TurnExecutor, emit: EventSink = () => {}, emitSession: SessionEventSink = () => {}, limits?: ContextLimits,
+  storage: SessionStorage, execute: TurnExecutor, emit: EventSink = () => {}, emitSession: SessionEventSink = () => {}, limits?: ContextLimits, imageInput = false,
 ): ChannelScheduler {
   const live = new Map<string, { turnId: number; abort: AbortController; suspension: AbortController }>();
   // Channels that may have pending input. Only an optimization and an idle
@@ -107,7 +108,8 @@ export function createChannelScheduler(
   const ended = (turn: StoredTurn, revision: number) => {
     if (turn.state.status !== "failed" && turn.state.status !== "interrupted") return;
     emit({ channel: turn.channelId, revision, event: { type: "turn_ended", turnId: String(turn.turnId), outcome: turn.state.status,
-      error: turn.state.reason, ...(turn.state.uncertainCallIds.length ? { uncertainCalls: turn.state.uncertainCallIds } : {}) } });
+      error: turn.state.reason, ...(parseAttachmentFailure(turn.state.reason) ? { attachmentFailure: parseAttachmentFailure(turn.state.reason) } : {}),
+      ...(turn.state.uncertainCallIds.length ? { uncertainCalls: turn.state.uncertainCallIds } : {}) } });
   };
 
   /** Start the channel's next turn if storage has one to start. */
@@ -177,7 +179,8 @@ export function createChannelScheduler(
     void Promise.resolve().then(() => execute(turn, port)).then(() => {}, error => {
       // Record the failure unless stop already ended the turn; either way the
       // channel stays usable.
-      const outcome = error && typeof error === "object" && "outcome" in error && typeof error.outcome === "string" ? error.outcome : String(error);
+      const attachmentFailure = error && typeof error === "object" && "attachmentFailure" in error ? error.attachmentFailure as import("../contracts/attachments.ts").AttachmentFailure | undefined : undefined;
+      const outcome = attachmentFailure ? attachmentFailureReason(attachmentFailure) : error && typeof error === "object" && "outcome" in error && typeof error.outcome === "string" ? error.outcome : String(error);
       const failed = storage.finishTurn(turnId, { status: "failed", reason: outcome });
       release();
       if (failed.ok && failed.value.finished) { ended(failed.value.turn, failed.revision); settleChannel(channelId, failed.revision); }
@@ -196,14 +199,14 @@ export function createChannelScheduler(
     suspension = undefined;
   }
 
-  function accept(item: AcceptItem, options?: { imageInput?: boolean }): SendResult {
+  function accept(item: AcceptItem): SendResult {
     if (stopped && item.kind !== "external_notice") return { accepted: false, code: "stopped", error: "This process has stopped accepting work" };
     if (stopped) {
       const known = storage.snapshot();
       if (!known.ok || !known.value.items.some(stored => stored.itemId === item.itemId))
         return { accepted: false, code: "stopped", error: "This process has stopped accepting work" };
     }
-    const result = storage.acceptItem(item, limits?.maxInputBytes, options);
+    const result = storage.acceptItem(item, limits?.maxInputBytes, { imageInput });
     if (!result.ok) {
       const code = result.error.code;
       return { accepted: false, error: result.error.message, code: code === "invalid_input" || code === "item_conflict"
@@ -330,7 +333,7 @@ export function createChannelScheduler(
     agent: {
       idle: () => live.size === 0 && (!compatible() || !started || stopped || lifecycle !== "running" || waiting.size === 0),
       send: (input: ChannelInput) => accept({ kind: "participant_message", channelId: input?.channelId, senderId: input?.participantId,
-        text: input?.text, ...(input?.parts === undefined ? {} : { parts: input.parts }), ...(input?.policy == null ? {} : { explicitPolicy: input.policy }), ...(input?.itemId === undefined ? {} : { itemId: input.itemId }) }, { imageInput: input?.imageInput }),
+        text: input?.text, ...(input?.parts === undefined ? {} : { parts: input.parts }), ...(input?.policy == null ? {} : { explicitPolicy: input.policy }), ...(input?.itemId === undefined ? {} : { itemId: input.itemId }) }),
       notifyExternal: notice => accept({ kind: "external_notice", itemId: notice.itemId, channelId: notice.channelId,
         senderId: notice.source ?? "host", externalSource: notice.source, inheritedPolicyNames: notice.policyNames, text: notice.text }),
       notify: (notice: ChannelNotice) => accept({ kind: "channel_notice", channelId: notice?.channelId,

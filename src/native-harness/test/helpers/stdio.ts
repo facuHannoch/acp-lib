@@ -13,13 +13,13 @@ export function recordWire(transport: ClientTransport) {
   return wire;
 }
 
-export interface SpawnOptions { home?: string; fault?: string; effects?: string; requests?: string; stallChannel?: string; snapshotLog?: string; streamResponses?: boolean; modelTimeoutMs?: number; reminderTime?: number; providerEndpoint?: string }
+export interface SpawnOptions { home?: string; fault?: string; effects?: string; requests?: string; stallChannel?: string; snapshotLog?: string; streamResponses?: boolean; modelTimeoutMs?: number; reminderTime?: number; providerEndpoint?: string; pathOverride?: string }
 export function spawnHarness(options: SpawnOptions = {}) {
   const temporaryHome = options.home ? undefined : mkdtempSync(join(tmpdir(), "harness-stdio-"));
   const child = Bun.spawn([process.execPath, new URL("../../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio",
     "--home", options.home ?? temporaryHome!], {
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
-    env: { ...process.env, OPENROUTER_API_KEY: options.providerEndpoint ? "fixture-key" : undefined, HARNESS_TEST_PROVIDER_ENDPOINT: options.providerEndpoint, HARNESS_TEST_FAULT: options.fault, HARNESS_TEST_EFFECTS: options.effects, HARNESS_TEST_REQUESTS: options.requests, HARNESS_TEST_STALL_CHANNEL: options.stallChannel, HARNESS_TEST_SNAPSHOT_LOG: options.snapshotLog, HARNESS_TEST_STREAM_RESPONSES: options.streamResponses ? "1" : undefined, HARNESS_TEST_MODEL_TIMEOUT_MS: options.modelTimeoutMs?.toString(), HARNESS_TEST_REMINDER_TIME: options.reminderTime?.toString() },
+    env: { ...process.env, PATH: options.pathOverride ?? process.env.PATH, OPENROUTER_API_KEY: options.providerEndpoint ? "fixture-key" : undefined, HARNESS_TEST_PROVIDER_ENDPOINT: options.providerEndpoint, HARNESS_TEST_FAULT: options.fault, HARNESS_TEST_EFFECTS: options.effects, HARNESS_TEST_REQUESTS: options.requests, HARNESS_TEST_STALL_CHANNEL: options.stallChannel, HARNESS_TEST_SNAPSHOT_LOG: options.snapshotLog, HARNESS_TEST_STREAM_RESPONSES: options.streamResponses ? "1" : undefined, HARNESS_TEST_MODEL_TIMEOUT_MS: options.modelTimeoutMs?.toString(), HARNESS_TEST_REMINDER_TIME: options.reminderTime?.toString() },
   });
   const [protocol, capture] = child.stdout.tee();
   const stdout = new Response(capture).text();

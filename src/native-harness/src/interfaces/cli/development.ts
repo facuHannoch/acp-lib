@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { createSession } from "../../index.ts";
 import type { Model } from "../../contracts/loop.ts";
 import type { PersistentSession, TurnServices } from "../../contracts/session.ts";
@@ -19,6 +20,8 @@ import { observeModel, observeSession } from "../inspector/observe.ts";
 import type { ManagedConfig } from "../../contracts/config-permissions.ts";
 import { chooseManagedConfig } from "../../runtime/config/paths.ts";
 import { resolveCredential, validateManagedConfig } from "../../runtime/config/managed.ts";
+import { createManagedAttachmentService } from "../../capabilities/attachments/service.ts";
+import { imageValidationAvailable, validateManagedImage } from "../../capabilities/attachments/image-validation.ts";
 
 export interface DevelopmentOptions {
   systemPrompt: string;
@@ -26,6 +29,8 @@ export interface DevelopmentOptions {
   instructions?: string;
   /** SQLite file for a durable session; memory when omitted. */
   database?: string;
+  /** Managed session media root; explicit databases default to PATH.media. */
+  mediaRoot?: string;
   /** Expected ID for a named session, or the ID to assign on creation. */
   sessionId?: string;
   /** Create the database (it must not exist) instead of opening it. */
@@ -52,8 +57,8 @@ export interface DevelopmentOptions {
  * listener: storage, real or scripted inference, tools and the
  * inspector's view. Opening executes nothing; the caller starts or resumes. */
 export async function openDevelopment(options: DevelopmentOptions) {
-  const sqlite = options.database ? createSqliteStorageAdapter(options.database) : undefined;
-  const adapter = sqlite ?? createMemoryStorageAdapter();
+  const sqlite = options.database ? createSqliteStorageAdapter(options.database, { mediaRoot: options.mediaRoot ?? `${options.database}.media` }) : undefined;
+  let adapter = sqlite ?? createMemoryStorageAdapter();
   let sessionId = options.sessionId ?? "development";
   if (options.database && !options.create && !existsSync(options.database))
     throw new Error(`No session database at ${options.database}. Pass --create to create it.`);
@@ -90,21 +95,33 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const scriptedTools = script ? options.scriptedTools : undefined;
   const tools = [currentTimeDefinition, ...(scriptedTools?.tools ?? []),
     ...(options.debugTools ? debugToolDefinitions : []), notifyChannelDefinition];
-  const compatibilityKey = script ? scriptedCompatibilityKey(script.modelDigest, systemPrompt)
-    : createHash("sha256").update(JSON.stringify([systemPrompt, providerModel!.model, tools.map(tool => tool.name)])).digest("hex");
+  let imageInput = managedConfig?.model.imageInput === true && (managedConfig.model.protocol === "scripted" || !options.providerFactory) && imageValidationAvailable();
+  const compatibilityKey = script ? scriptedCompatibilityKey(script.modelDigest, systemPrompt + (managedConfig?.model.imageInput === true ? "\n[image-input-enabled]" : ""))
+    : createHash("sha256").update(JSON.stringify([systemPrompt, providerModel!.model, tools.map(tool => tool.name), ...(managedConfig?.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
+  const tempMedia = sqlite ? undefined : mkdtempSync(join(tmpdir(), "harness-media-"));
+  const mediaRoot = options.database ? options.mediaRoot ?? `${options.database}.media` : join(tempMedia!, "media");
+  if (!sqlite) adapter = createMemoryStorageAdapter({ mediaRoot });
   const opened = adapter.open({ mode: options.database && !options.create ? "open" : "create",
     identity: { sessionId, compatibilityKey }, config: managedConfig, requiredScriptDigest: script?.modelDigest });
-  if (!opened.ok) throw new Error(`Cannot open session storage (${opened.error.code}): ${opened.error.message}`);
+  if (!opened.ok) { if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw new Error(`Cannot open session storage (${opened.error.code}): ${opened.error.message}`); }
   const storage = opened.value;
+  let attachments: ReturnType<typeof createManagedAttachmentService> | undefined;
+  try {
+    const compatible = storage.executionCompatible();
+    if (!compatible.ok) throw new Error(compatible.error.message);
+    if (!compatible.value) imageInput = false;
+    else attachments = createManagedAttachmentService(mediaRoot, storage, validateManagedImage);
+  }
+  catch (error) { storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw error; }
   if (savedConfig) {
     const saved = storage.saveConfig(savedConfig);
-    if (!saved.ok && saved.error.code !== "incompatible") { storage.close(); throw new Error(`Cannot save config: ${saved.error.message}`); }
+    if (!saved.ok && saved.error.code !== "incompatible") { attachments?.close(); storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw new Error(`Cannot save config: ${saved.error.message}`); }
   }
 
   const inspection = createInspection(systemPrompt, tools, storage, options.database ?? "memory");
   const captureScript = (options.environment ?? process.env).HARNESS_CAPTURE_SCRIPT_REQUESTS === "1";
   const session: PersistentSession = createSession({
-    systemPrompt, storage, config: managedConfig, captureContext: (!script || captureScript) ? inspection.capture : undefined,
+    systemPrompt, storage, config: managedConfig, imageInput, captureContext: (!script || captureScript) ? inspection.capture : undefined,
     observeModelCall: inspection.modelCall,
     configureTurn(turn) {
       const model = observeModel(inspection, turn.channelId, onRequest => {
@@ -122,7 +139,10 @@ export async function openDevelopment(options: DevelopmentOptions) {
           };
         } });
       } else if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => {
-        const next = openRouterAttempt(apiKey!, providerModel!.model, fetch, body => inspection.request(turn.channelId, body, turn.turnId));
+        const next = openRouterAttempt(apiKey!, providerModel!.model, fetch, body => inspection.request(turn.channelId, body, turn.turnId),
+          attachments ? { supported: imageInput, metadata(id) { const result = storage.readManagedAttachment(id); return result.ok ? result.value?.metadata : undefined; },
+            read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
+            verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); } } : undefined);
         return async function* (request, signal) { for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; } };
       } });
       return { model, tools, executeTool: (call, signal) => {
@@ -137,9 +157,9 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const stop = session.stop;
   session.stop = reason => { const result = stop(reason); inspection.stopped(); return result; };
   return {
-    session, inspection, storage: options.database ?? "memory",
+    session, inspection, attachments, imageInput, storage: options.database ?? "memory",
     /** The session as local clients use it: acceptance also refreshes the inspector. */
     local: { agent: observed.agent, subscribe: session.subscribe },
-    close() { session.reminders?.releaseTimer(); observed.stop(); const closed = storage.close(); if (!closed.ok) throw new Error(`Cannot close session storage (${closed.error.code}): ${closed.error.message}`); },
+    close() { session.reminders?.releaseTimer(); observed.stop(); attachments?.close(); const closed = storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); if (!closed.ok) throw new Error(`Cannot close session storage (${closed.error.code}): ${closed.error.message}`); },
   };
 }

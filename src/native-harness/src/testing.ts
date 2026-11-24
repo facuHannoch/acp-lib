@@ -100,7 +100,12 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
   const memory = createMemoryStorageAdapter();
   const noSidecar = join(mkdtempSync(join(tmpdir(), "harness-config-")), "config.json");
   const locate = (sessionId: string) => {
-    return options.adapter?.(sessionId) ?? (options.home ? createSqliteStorageAdapter(managedSessionPaths(sessionId, options.home).database) : memory);
+    if (options.adapter) return options.adapter(sessionId);
+    if (options.home) {
+      const paths = managedSessionPaths(sessionId, options.home);
+      return createSqliteStorageAdapter(paths.database, { mediaRoot: join(paths.directory, "media") });
+    }
+    return memory;
   };
   const server = createProtocolServer(async ({ mode, sessionId, config: inline, tools }) => {
     // Decision 0021: the catalog's names must not collide with the built-ins.
@@ -112,7 +117,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const config = chooseManagedConfig({ mode, sidecar: paths?.config ?? noSidecar, inline, saved: stored?.ok ? stored.value : undefined });
     const script = config.model.protocol === "scripted" ? await (options.scenarioLoader ?? loadScenario)(config.model.script) : undefined;
     const credential = config.model.protocol === "openrouter" ? resolveCredential(config.model, options.environment ?? process.env) : undefined;
-    const imageInput = !!paths && !options.adapter && config.model.imageInput === true && (config.model.protocol === "scripted" || !options.providerFactory) && imageValidationAvailable();
+    let imageInput = !!paths && !options.adapter && config.model.imageInput === true && (config.model.protocol === "scripted" || !options.providerFactory) && imageValidationAvailable();
     const compatibilityKey = script ? scriptedCompatibilityKey(script.modelDigest, config.system + (config.model.imageInput === true ? "\n[image-input-enabled]" : ""))
       : createHash("sha256").update(JSON.stringify([config.system, config.model.protocol === "openrouter" && config.model.model,
         [...BUILTINS, notifyChannelDefinition].map(tool => tool.name), ...(config.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
@@ -128,7 +133,10 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     }) : opened.value;
     let attachments: ReturnType<typeof createManagedAttachmentService> | undefined;
     try {
-      if (paths && !options.adapter) attachments = createManagedAttachmentService(join(paths.directory, "media"), storage, validateManagedImage);
+      const compatible = storage.executionCompatible();
+      if (!compatible.ok) throw new Error(compatible.error.message);
+      if (!compatible.value) imageInput = false;
+      if (compatible.value && paths && !options.adapter) attachments = createManagedAttachmentService(join(paths.directory, "media"), storage, validateManagedImage, Date.now, hit);
     } catch (error) { opened.value.close(); throw error; }
     const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
     const executeTool: ExecuteTool = async (call, signal) => {
@@ -140,18 +148,29 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const session = createSession({
       ...(script && options.reminderTime !== undefined && Number.isSafeInteger(options.reminderTime)
         ? { reminderClock: { ...wallReminderClock, now: () => options.reminderTime! } } : {}), ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
-      revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, ...(catalog ? { catalog } : {}), configureTurn(turn) {
+      revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, imageInput, ...(catalog ? { catalog } : {}), configureTurn(turn) {
       if (config.model.protocol === "openrouter") {
         const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
         if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "", providerFetch, undefined,
           attachments ? { supported: imageInput, metadata(id) { const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined; },
-            read(metadata) { const chunks: Buffer[] = []; let offset = 0; do { const page = attachments!.read(turn.channelId, metadata.id, offset); chunks.push(Buffer.from(page.data, "base64")); offset = page.nextOffset ?? metadata.bytes; } while (offset < metadata.bytes); return Buffer.concat(chunks); } } : undefined) });
+            read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
+            verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); } } : undefined) });
         return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
       }
       const model: Model = async () => { throw new Error("Scripted model requires a reserved attempt"); };
       bindModelAttempt(model, { scripted: true, ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }), create: (step, ordinal) => {
         const next = scenarioAttempt(script!, turn.channelId, step!);
         return async function* (request, signal) {
+          // Offline rehearsal can observe the real provider projection while
+          // retaining scripted records as the source of model decisions.
+          if (fixtureEndpoint && imageInput && attachments && request.messages.some(message => message.role === "user" && message.parts)) {
+            const probe = openRouterAttempt("fixture", "scripted-fixture", providerFetch, undefined, {
+              supported: true, metadata(id) { const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined; },
+              read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
+              verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); },
+            });
+            for await (const event of probe(request, signal)) if (event.type === "failure") throw new Error(event.code ?? event.message);
+          }
           if (options.attempts) appendFileSync(options.attempts, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, step, ordinal, itemIds: request.takenItemIds })}\n`);
           if (options.captureRequests) {
             const requests = models.get(turn.channelId) ?? [];

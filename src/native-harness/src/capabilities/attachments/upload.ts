@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { ATTACHMENT_LIMITS, type AttachmentMetadata } from "../../contracts/attachments.ts";
 
@@ -86,22 +86,34 @@ export function createUploadManager(options: {
       if (pending) return pending;
       const work = (async () => {
       if (upload.offset !== upload.metadata.bytes) throw new UploadError("invalid_attachment", "Incomplete upload");
-      const hash = createHash("sha256"), buffer = Buffer.alloc(64 * 1024);
-      for (let pos = 0; pos < upload.offset;) {
-        const count = readSync(upload.fd, buffer, 0, Math.min(buffer.length, upload.offset - pos), pos);
-        if (!count) throw new UploadError("invalid_attachment", "Incomplete upload");
-        hash.update(buffer.subarray(0, count)); pos += count;
-      }
-      if (hash.digest("hex") !== upload.metadata.sha256) throw new UploadError("invalid_attachment", "Digest mismatch");
+      const digest = () => {
+        const hash = createHash("sha256"), buffer = Buffer.alloc(64 * 1024);
+        for (let pos = 0; pos < upload.offset;) {
+          const count = readSync(upload.fd, buffer, 0, Math.min(buffer.length, upload.offset - pos), pos);
+          if (!count) throw new UploadError("invalid_attachment", "Incomplete upload");
+          hash.update(buffer.subarray(0, count)); pos += count;
+        }
+        return hash.digest("hex");
+      };
+      if (digest() !== upload.metadata.sha256) throw new UploadError("invalid_attachment", "Digest mismatch");
       if (upload.metadata.mediaType.startsWith("image/")) {
         const controller = new AbortController(); upload.validation = controller;
         try { await options.validateImage(upload.path, upload.metadata, controller.signal); }
         finally { upload.validation = undefined; }
         if (controller.signal.aborted || uploads.get(uploadId) !== upload) throw new UploadError("invalid_attachment", "Image validation cancelled");
       }
+      const original = fstatSync(upload.fd);
+      let staged: ReturnType<typeof lstatSync>;
+      try { staged = lstatSync(upload.path); } catch { throw new UploadError("invalid_attachment", "Staged attachment is unavailable"); }
+      if (!original.isFile() || !staged.isFile() || original.dev !== staged.dev || original.ino !== staged.ino || original.size !== upload.metadata.bytes || digest() !== upload.metadata.sha256)
+        throw new UploadError("invalid_attachment", "Staged attachment changed during validation");
       fsyncSync(upload.fd);
       const target = join(options.root, upload.metadata.id);
       renameSync(upload.path, target);
+      let published: ReturnType<typeof lstatSync>;
+      try { published = lstatSync(target); } catch { throw new UploadError("invalid_attachment", "Published attachment is unavailable"); }
+      if (!published.isFile() || published.dev !== original.dev || published.ino !== original.ino)
+        throw new UploadError("invalid_attachment", "Published attachment changed during validation");
       const directory = openSync(options.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       try { fsyncSync(directory); } finally { closeSync(directory); }
       // If this callback fails, the published orphan is recovered by the owner.

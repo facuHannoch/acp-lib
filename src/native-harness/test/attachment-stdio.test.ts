@@ -9,7 +9,7 @@ test("stdio managed general-file upload, ordered push and download survive reope
   const home = mkdtempSync(join(tmpdir(), "a1-stdio-")), script = join(home, "scenario.jsonl");
   writeFileSync(script, [{ type: "scenario", version: 1, name: "file" }, { type: "model", content: "done" }].map(x => JSON.stringify(x)).join("\n") + "\n");
   const data = Buffer.alloc(600000, 0x5a), sha256 = createHash("sha256").update(data).digest("hex");
-  let id = "";
+  let id = "", archive: Uint8Array | undefined;
   try {
     const first = spawnHarness({ home });
     try {
@@ -36,6 +36,8 @@ test("stdio managed general-file upload, ordered push and download survive reope
       const message = history.messages.find(entry => "itemId" in entry && entry.itemId === "msg");
       expect(message).toMatchObject({ parts: [{ type: "text", text: "before" }, { type: "attachment", id, metadata: { filename: "data.bin", bytes: data.length } }, { type: "text", text: "after" }] });
       expect(JSON.stringify(history)).not.toContain(data.subarray(0, 30).toString("base64"));
+      await first.client.suspend();
+      archive = await first.client.exportArchive();
     } finally { await first.close(); }
     const second = spawnHarness({ home });
     try {
@@ -44,6 +46,15 @@ test("stdio managed general-file upload, ordered push and download survive reope
       const two = await second.client.readAttachment({ channel: "a", id, offset: one.nextOffset! });
       expect(Buffer.concat([Buffer.from(one.data, "base64"), Buffer.from(two.data, "base64")])).toEqual(data);
     } finally { await second.close(); }
+    const destination = spawnHarness({ home });
+    try {
+      await destination.client.initialize();
+      await destination.client.importArchive(archive!, "copy");
+      await destination.client.openSession({ sessionId: "copy" });
+      const one = await destination.client.readAttachment({ channel: "a", id, offset: 0 });
+      const two = await destination.client.readAttachment({ channel: "a", id, offset: one.nextOffset! });
+      expect(Buffer.concat([Buffer.from(one.data, "base64"), Buffer.from(two.data, "base64")])).toEqual(data);
+    } finally { await destination.close(); }
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 20000);
 
@@ -93,6 +104,9 @@ test("real stdio vision negotiates per session and sends active images through a
       expect((await vision.client.push({ channel: "a", item })).accepted).toBe(true);
       const until = async (predicate: () => boolean) => { const deadline = Date.now() + 10000; while (!predicate() && Date.now() < deadline) await Bun.sleep(20); expect(predicate()).toBe(true); };
       await until(() => ended >= 1);
+      const history = await vision.client.channelMessages({ channel: "a" });
+      expect(history.messages.find(message => message.itemId === "vision-item")).toMatchObject({ parts: [{ type: "text", text: "before" }, { type: "attachment", id: imageId, metadata: { mediaType: "image/png" } }, { type: "text", text: "after" }] });
+      expect(JSON.stringify(history)).not.toContain(image.toString("base64"));
       expect((await vision.client.push({ channel: "a", item })).duplicate).toBe(true);
       await expect(vision.client.push({ channel: "a", item: { ...item, content: [{ type: "text", text: "changed" }, { type: "attachment", id: imageId }] } })).rejects.toMatchObject({ code: "item_conflict" });
       expect((await vision.client.push({ channel: "a", item: { ...item, id: "only", content: [{ type: "attachment", id: imageId }] } })).accepted).toBe(true);
@@ -112,6 +126,16 @@ test("real stdio vision negotiates per session and sends active images through a
       const chunks: Buffer[] = []; let offset = 0;
       do { const page = await reopened.client.readAttachment({ channel: "a", id: retainedImageId, offset }); chunks.push(Buffer.from(page.data, "base64")); offset = page.nextOffset ?? -1; } while (offset >= 0);
       expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(retainedDigest);
+      rmSync(join(home, "vision", "media", retainedImageId));
+      let failure: import("../src/contracts/attachments.ts").AttachmentFailure | undefined;
+      reopened.client.onChannelEvent(({ event }) => { if (event.type === "turn_ended" && event.attachmentFailure) failure = event.attachmentFailure; });
+      await reopened.client.push({ channel: "a", item: { id: "missing", kind: "user_message", sender: "human", content: [{ type: "attachment", id: retainedImageId }] } });
+      const deadline = Date.now() + 5000; while (!failure && Date.now() < deadline) await Bun.sleep(10);
+      expect(failure).toEqual({ code: "attachment_unavailable", attachmentIds: [retainedImageId] });
+      expect(requests.length).toBe(3);
+      const item = (await reopened.client.reconcileChannel({ channel: "a", itemIds: ["missing"] })).items[0]!;
+      const recovered = await reopened.client.reconcileChannel({ channel: "a", turnIds: [item.turnId!] });
+      expect(recovered.turns[0]?.attachmentFailure).toEqual(failure);
     } finally { await reopened.close(); }
   } finally { provider.stop(true); rmSync(home, { recursive: true, force: true }); }
 }, 30000);
@@ -128,3 +152,50 @@ test("scripted image capability requires explicit opt-in", async () => {
     expect(result.imageInput).toBe(true);
   } finally { await server.close(); rmSync(home, { recursive: true, force: true }); }
 }, 15000);
+
+test("missing image tools suppress vision while general file upload remains available", async () => {
+  const home = mkdtempSync(join(tmpdir(), "a1-no-decoder-")), script = join(home, "scenario.jsonl");
+  writeFileSync(script, [{ type: "scenario", version: 1, name: "no-decoder" }, { type: "model", content: "done" }].map(x => JSON.stringify(x)).join("\n") + "\n");
+  const server = spawnHarness({ home, pathOverride: "/nonexistent" });
+  try {
+    const init = await server.client.initialize(); expect(init.description.capabilities.managedAttachments).toBe(true);
+    const opened = await server.client.createSession({ sessionId: "s", participants: [], channels: {}, channelChanges: [{ channel: "a", changeId: "a" }], config: { version: 1, system: "test", model: { protocol: "scripted", script, imageInput: true }, defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } } } });
+    expect(opened.imageInput).toBeUndefined();
+    const bytes = Buffer.from("plain file");
+    const upload = await server.client.beginAttachment({ channel: "a", filename: "x.txt", mediaType: "text/plain", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+    await server.client.writeAttachment({ channel: "a", uploadId: upload.uploadId, offset: 0, data: bytes.toString("base64") });
+    const metadata = await server.client.finalizeAttachment({ channel: "a", uploadId: upload.uploadId });
+    const page = await server.client.readAttachment({ channel: "a", id: metadata.id, offset: 0 });
+    expect(Buffer.from(page.data, "base64")).toEqual(bytes);
+  } finally { await server.close(); rmSync(home, { recursive: true, force: true }); }
+}, 15000);
+
+for (const fault of ["attachmentPublished:1", "attachmentReady:1", "acceptItem:1"] as const) test(`stdio recovers attachment publication and acceptance after ${fault}`, async () => {
+  const home = mkdtempSync(join(tmpdir(), "a1-crash-")), script = join(home, "scenario.jsonl");
+  writeFileSync(script, [{ type: "scenario", version: 1, name: "crash" }, { type: "model", content: "done" }].map(x => JSON.stringify(x)).join("\n") + "\n");
+  const bytes = Buffer.from("durable crash fixture"), sha256 = createHash("sha256").update(bytes).digest("hex");
+  try {
+    const first = spawnHarness({ home, fault });
+    let id = "";
+    try {
+      await first.client.initialize();
+      await first.client.createSession({ sessionId: "s", participants: [], channels: {}, channelChanges: [{ channel: "a", changeId: "a" }], config: { version: 1, system: "test", model: { protocol: "scripted", script }, defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } } } });
+      const upload = await first.client.beginAttachment({ channel: "a", filename: "data.txt", mediaType: "text/plain", bytes: bytes.length, sha256 }); id = upload.attachmentId;
+      await first.client.writeAttachment({ channel: "a", uploadId: upload.uploadId, offset: 0, data: bytes.toString("base64") });
+      if (fault === "acceptItem:1") {
+        await first.client.finalizeAttachment({ channel: "a", uploadId: upload.uploadId });
+        await expect(first.client.push({ channel: "a", item: { id: "input", kind: "user_message", sender: "p", content: [{ type: "attachment", id }] } })).rejects.toThrow();
+      } else await expect(first.client.finalizeAttachment({ channel: "a", uploadId: upload.uploadId })).rejects.toThrow();
+      expect(await first.child.exited).not.toBe(0);
+    } finally { first.client.close(); first.child.kill(); }
+    const second = spawnHarness({ home });
+    try {
+      await second.client.initialize(); await second.client.openSession({ sessionId: "s" });
+      if (fault === "attachmentPublished:1") await expect(second.client.readAttachment({ channel: "a", id, offset: 0 })).rejects.toMatchObject({ code: "not_found" });
+      else {
+        expect(Buffer.from((await second.client.readAttachment({ channel: "a", id, offset: 0 })).data, "base64")).toEqual(bytes);
+        if (fault === "acceptItem:1") expect((await second.client.push({ channel: "a", item: { id: "input", kind: "user_message", sender: "p", content: [{ type: "attachment", id }] } })).duplicate).toBe(true);
+      }
+    } finally { await second.close(); }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 20000);

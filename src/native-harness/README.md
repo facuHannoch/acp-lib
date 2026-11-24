@@ -609,6 +609,28 @@ Run `bun test test/protocol.test.ts test/stdio.test.ts` for transport parity and
 framing/process lifecycle checks. Child stdin in Bun uses IPC and may require
 local IPC permissions in sandboxed environments. All scenarios are offline.
 
+### Managed attachments
+
+Managed stdio sessions store files in `<home>/<sessionId>/media`; development
+with an explicit `--db PATH` uses `PATH.media`. The paired web chat can upload
+and download files, and memory-backed development uses a temporary media root.
+The host can use `beginAttachment`, `writeAttachment`, `finalizeAttachment`,
+`attachmentStatus`, `abortAttachment` and `readAttachment` on `HarnessClient`.
+Chunks are at most 512 KiB decoded; each file is at most 20 MiB. Finalization
+checks length and SHA-256 before committing ready metadata. A push may contain
+ordered text and attachment references, including an attachment-only input.
+Text-only pushes retain their existing retry identity.
+
+Set `model.imageInput: true` explicitly to enable PNG, JPEG and WebP input
+when the local validator is available. Initialize reports attachment protocol
+support; create/open reports the effective image capability and limits. A
+text-only model rejects an image push before acceptance. Ready files belong to
+their uploading channel until a referenced message enters the shared timeline;
+then timeline readers may download them. History and diagnostics contain
+references and metadata, not image bytes. Complete session exports include
+retained attachment bytes and fail if those bytes are missing or the bounded
+archive cannot contain them.
+
 ## Consumer tools and host callbacks
 
 A host can register functions for the model to call

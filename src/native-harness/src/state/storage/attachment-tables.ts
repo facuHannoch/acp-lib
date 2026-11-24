@@ -55,6 +55,16 @@ export function sqliteAttachmentTables(db: Database) {
     readyIds(): string[] {
       return present() ? query<{ id: string }, []>("SELECT id FROM attachment_files ORDER BY id").all().map(row => row.id) : [];
     },
+    retained() {
+      if (!present()) return [];
+      return query<Row, []>(`SELECT f.* FROM attachment_files f
+        WHERE EXISTS (SELECT 1 FROM attachment_items a WHERE a.attachment_id=f.id) ORDER BY f.id`).all().map(project);
+    },
+    restore(baseFormat: 6 | 7 | 8, records: readonly { metadata: AttachmentMetadata; readyAt: string }[]) {
+      activate();
+      query("INSERT INTO meta (key,value) VALUES ('attachmentBaseFormat', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(baseFormat));
+      for (const record of records) this.publish(record.metadata, record.readyAt);
+    },
     /** Caller executes inside its owner transaction after flushing file bytes. */
     publish(metadata: AttachmentMetadata, readyAt: string) {
       activate();

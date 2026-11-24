@@ -337,7 +337,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
       else return bad("Import source must be a path or a transfer");
       const payload = decodeArchive(bytes, limits.maxBytes) as SessionFilePayload<SessionArchive>;
-      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6, 7].includes(payload.archive?.archiveVersion))
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6, 7, 8].includes(payload.archive?.archiveVersion))
         throw new Fault("invalid_archive", "Invalid session file payload");
       try { validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { throw new Fault("invalid_archive", String(error)); }
       const sessionId = p.sessionId ?? payload.archive?.snapshot?.session?.sessionId;
@@ -514,7 +514,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     // send returns once the item is committed to the inbox (Received) or
     // refused. It never waits for inference; the outcome arrives as events.
     const result = session.agent.send({ channelId: channel, participantId: sender, itemId: id, ...(item.policy == null ? {} : { policy: text(item.policy) }),
-      text: parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n"), ...(mixed ? { parts, imageInput: current.imageInput === true } : {}) });
+      text: parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n"), ...(mixed ? { parts } : {}) });
     if (!result.accepted) throw new Fault(result.code === "invalid_input" ? "invalid_params" : result.code, result.error);
     const policy = session.operatorReads
       ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]?.policy

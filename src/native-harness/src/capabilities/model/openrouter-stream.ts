@@ -12,7 +12,7 @@ function wireMessage(message: Message): unknown {
 /** OpenRouter SSE translation stays at the provider boundary; tool fragments are
  * private until a valid terminal response is assembled by the adapter. */
 export function openRouterAttempt(apiKey: string, model: string, fetcher: typeof fetch = fetch, onRequest?: (body: string) => void,
-  vision?: Parameters<typeof projectVisionParts>[1]): ModelAttempt {
+  vision?: Parameters<typeof projectVisionParts>[1] & { verify?: (metadata: import("../../contracts/attachments.ts").AttachmentMetadata, signal: AbortSignal) => Promise<void> }): ModelAttempt {
   return async function* (request, signal) {
     const imageUrls: string[] = [];
     let messages: unknown[];
@@ -33,6 +33,7 @@ export function openRouterAttempt(apiKey: string, model: string, fetcher: typeof
       if (images.size && !vision!.supported) throw new VisionInputError("unsupported_image", "The configured model does not support image input");
       const bytes = new Map<string, Uint8Array>();
       for (const [id, metadata] of images) try {
+        await vision!.verify?.(metadata!, signal);
         const value = vision!.read(metadata!);
         if (value.length !== metadata!.bytes || createHash("sha256").update(value).digest("hex") !== metadata!.sha256) throw new Error("Integrity failure");
         bytes.set(id, value);

@@ -89,6 +89,8 @@ export interface PersistentSessionOptions {
   reminderClock?: import("./reminders.ts").ReminderClock;
   /** Local opt-in when there is no managed configuration. */
   timelineTools?: boolean;
+  /** Trusted assembly has verified the opted-in model and image validator. */
+  imageInput?: boolean;
   systemPrompt: string;
   /** Optional assertion of the storage owner's validated config. Omission uses
    * the owner snapshot; legacy allow applies only when that snapshot is absent. */

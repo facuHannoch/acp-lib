@@ -13,6 +13,12 @@ export interface AttachmentMetadata {
   readonly sha256: string;
 }
 
+/** A provider boundary refused an image request without sending a partial one. */
+export interface AttachmentFailure {
+  code: "unsupported_image" | "attachment_unavailable" | "transfer_limit";
+  attachmentIds: string[];
+}
+
 /** Limits apply to decoded bytes, not base64 or transport frames. */
 export const ATTACHMENT_LIMITS = {
   fileBytes: 20 * 1024 * 1024,

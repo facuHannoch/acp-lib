@@ -9,6 +9,8 @@ import { createHash } from "node:crypto";
 import { createUploadManager } from "../src/capabilities/attachments/upload.ts";
 import { readAttachment } from "../src/capabilities/attachments/read.ts";
 import { CONTEXT_LIMITS } from "../src/capabilities/context/session.ts";
+import { encodeSessionFile, decodeSessionFile } from "../src/state/storage/session-file.ts";
+import { validateArchive } from "../src/state/storage/archive.ts";
 import type { StorageResult, SessionArchive } from "../src/contracts/storage.ts";
 function take<T>(result: StorageResult<T>): T { if (!result.ok) throw Error(JSON.stringify(result.error)); return result.value; }
 const identity = { sessionId: "a1-rh4-fixture", compatibilityKey: "test" };
@@ -152,7 +154,7 @@ test("durable publication activates format 9 through the owning session and surv
   const home = mkdtempSync(join(tmpdir(), "a1-owner-nine-")), path = join(home, "sqlite"), root = join(home, "media");
   try {
     copyFileSync(new URL("./fixtures/attachments-rh4/format-8.sqlite", import.meta.url), path);
-    const adapter = createSqliteStorageAdapter(path), store = take(adapter.open({ mode: "open", identity, config }));
+    const adapter = createSqliteStorageAdapter(path, { mediaRoot: root }), store = take(adapter.open({ mode: "open", identity, config }));
     const data = Buffer.from("managed fixture bytes"), sha256 = createHash("sha256").update(data).digest("hex");
     const uploads = createUploadManager({ root, validateImage() { throw Error("unexpected image"); }, publishReady: metadata => { take(store.registerReadyAttachment(metadata)); } });
     const begin = uploads.begin({ channel: "a", filename: "fixture.txt", mediaType: "text/plain", bytes: data.length, sha256 });
@@ -199,6 +201,34 @@ test("durable publication activates format 9 through the owning session and surv
         const afterResume = take(resumed.readInferenceContext({ channelId: "a", turnId: turn!.turn.turnId, limits: CONTEXT_LIMITS }));
         if ("code" in afterResume) throw Error("Unexpected context limit after resume");
         expect(afterResume.required.map(entry => entry.itemId)).toContain("file-only");
+        take(resumed.appendMessage(turn!.turn.turnId, { role: "assistant", content: "finished", calls: [] }));
+        take(resumed.finishTurn(turn!.turn.turnId, { status: "completed" }));
+        const archive = take(resumed.exportArchive());
+        expect(archive.archiveVersion).toBe(8);
+        const decoded = decodeSessionFile(encodeSessionFile(archive, 268435456), 268435456);
+        const checked = validateArchive(decoded);
+        expect(checked.attachmentState?.files[0]?.bytes).toEqual(new Uint8Array(data));
+        const corrupt = structuredClone(checked);
+        corrupt.attachmentState!.files[0]!.bytes[0] = corrupt.attachmentState!.files[0]!.bytes[0]! ^ 1;
+        expect(() => validateArchive(corrupt)).toThrow();
+        const missing = structuredClone(checked);
+        missing.attachmentState!.files = [];
+        expect(() => validateArchive(missing)).toThrow();
+        const copyPath = join(home, "archive-copy"), copyRoot = join(home, "archive-copy-media");
+        const copy = createSqliteStorageAdapter(copyPath, { mediaRoot: copyRoot });
+        take(copy.importArchive(checked));
+        const restored = take(copy.open({ mode: "open", identity, config }));
+        try {
+          expect(take(restored.readSession()).formatVersion).toBe(9);
+          expect(take(restored.readReminder("routine"))).toMatchObject({ id: "routine" });
+          const copied = take(restored.readManagedAttachment(metadata.id));
+          expect(copied?.timelineVisible).toBe(true);
+          const copyLookup = () => copied && { ...copied, timelineReadable: true };
+          expect(Buffer.from(readAttachment({ root: copyRoot, channel: "a", id: metadata.id, offset: 0, lookup: copyLookup }).data, "base64")).toEqual(data);
+          expect(take(restored.exportArchive()).reminderState?.guard?.counters).toEqual([{ channel: "a", spent: 0 }]);
+        } finally { take(restored.close()); }
+        rmSync(join(root, metadata.id));
+        expect(resumed.exportArchive()).toMatchObject({ ok: false, error: { code: "attachment_unavailable" } });
       } finally { take(resumed.close()); }
     } finally { take(reopened.close()); }
   } finally { rmSync(home, { recursive: true, force: true }); }

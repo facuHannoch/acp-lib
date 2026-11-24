@@ -6,8 +6,6 @@ export interface ChannelInput {
   text: string;
   /** Ordered mixed parts; callers supply a matching newline-joined text projection. */
   parts?: readonly import("./attachments.ts").InputPart[];
-  /** Trusted assembly declares that the configured model accepts images. */
-  imageInput?: boolean;
   itemId?: string;
   policy?: string | null;
 }

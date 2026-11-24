@@ -8,6 +8,7 @@ import { unattendedAdmission } from "../../capabilities/reminders/unattended.ts"
 import { normalizeReminderSchedule, resolveAgentReminder } from "../../util/reminder-schedule.ts";
 import { createHash } from "node:crypto";
 import { validateMixedParts, mixedPartsSignature } from "../../util/attachment-input.ts";
+import { encodeSessionFile, SessionFileError } from "./session-file.ts";
 import { applyReminderChange } from "./reminder-change.ts";
 import type { OneOffReminder, Reminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
 import type { ReminderTables } from "./reminder-tables.ts";
@@ -362,13 +363,14 @@ function uncertain(tables: Tables, turn: TurnRow): string[] {
 }
 
 /** The contract over any backend. `ownerKey` is the key passed to this open. */
-export function createEngine(tables: Tables, ownerKey: string, release: () => void, config?: ManagedConfig, incompatibleViewOnly = false, recoveredReminderEvents: ReminderDeliveryEvent[] = []): SessionStorage {
+export function createEngine(tables: Tables, ownerKey: string, release: () => void, config?: ManagedConfig, incompatibleViewOnly = false, recoveredReminderEvents: ReminderDeliveryEvent[] = [],
+  readFiles?: (records: ReturnType<NonNullable<Tables["attachments"]>["retained"]>, maxBytes: number) => NonNullable<SessionArchive["attachmentState"]>["files"]): SessionStorage {
   let closed = false;
   // This is the config validated at open, not the separately mutable saved copy.
   const ownerSnapshot = config === undefined ? undefined : structuredClone(config);
   const now = () => new Date().toISOString();
 
-  function run<T>(work: (meta: Meta) => T, readOnly = false): StorageResult<T> {
+  function run<T>(work: (meta: Meta) => T, readOnly = false, alreadyDetached = false): StorageResult<T> {
     if (closed) return failure(new Fail("closed", "Storage handle is closed"));
     if (incompatibleViewOnly && !readOnly) return failure(new Fail("incompatible", "Stored policy is not available in the open configuration"));
     try {
@@ -378,7 +380,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         if (!readOnly && JSON.stringify(meta) !== before) refreshReminderWake(tables, meta);
         if (JSON.stringify(meta) !== before) tables.setMeta(meta);
         // Results never alias rows a backend may keep in memory.
-        return { ok: true as const, value: structuredClone(value), revision: meta.revision };
+        return { ok: true as const, value: alreadyDetached ? value : structuredClone(value), revision: meta.revision };
       });
     } catch (error) { return failure(error); }
   }
@@ -644,6 +646,16 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return row ? { metadata: row.metadata, timelineVisible: attachments.isTimelineVisible(id) } : undefined;
     }, true),
     managedAttachmentIds: () => run(() => tables.attachments?.readyIds() ?? [], true),
+    unreferencedAttachments: readyBefore => run(() => {
+      if (!Number.isFinite(Date.parse(readyBefore))) fail("invalid_input", "Invalid cleanup deadline");
+      return tables.attachments?.unreferencedBefore(readyBefore).map(row => row.metadata) ?? [];
+    }, true),
+    reclaimAttachment: (id, readyBefore) => run(meta => {
+      if (!text(id) || !Number.isFinite(Date.parse(readyBefore))) fail("invalid_input", "Invalid cleanup request");
+      const removed = tables.attachments?.reclaim(id, readyBefore) ?? false;
+      if (removed) seq(meta);
+      return removed;
+    }),
     startCall: (turnId, itemIds) => run(meta => {
       if (!/^[1-9]\d*$/.test(turnId) || !Number.isSafeInteger(Number(turnId))) fail("invalid_input", "Invalid turn ID");
       const turn = running(Number(turnId));
@@ -1250,6 +1262,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }, true),
     snapshot: () => run(() => readSnapshot(tables), true),
 
+    // Snapshot rows and file buffers are newly allocated. Avoid a second full
+    // copy here so the bounded encoder stays within its archive memory budget.
     exportArchive: () => run(meta => {
       const snapshot = readSnapshot(tables);
       if (snapshot.modelCalls.some(call => call.outcome === "running" || call.attempts.some(attempt => attempt.outcome === "running")))
@@ -1259,19 +1273,36 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
       let archiveFormat = meta.formatVersion;
+      let attachmentState: SessionArchive["attachmentState"];
       if (archiveFormat === 9) {
         const attachments = tables.attachments;
-        if (!attachments || attachments.hasRetained()) throw new Fail("invalid_archive", "Attachment-bearing export is unavailable");
+        if (!attachments) throw new Fail("invalid_archive", "Attachment storage is unavailable");
         const base = attachments.baseFormat();
         if (base !== 6 && base !== 7 && base !== 8) throw new Fail("invalid_archive", "Invalid attachment base format");
         archiveFormat = base;
-        snapshot.session.formatVersion = base;
+        const records = attachments.retained();
+        if (records.length) {
+          if (!readFiles) throw new Fail("attachment_unavailable", "Managed attachment files are unavailable");
+          const placeholder = { format: "harness-session", archiveVersion: 8, exportedAt: now(), snapshot,
+            ...(base >= 7 ? { reminderState: reminders.archive() } : {}), allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber },
+            attachmentState: { baseFormat: base, files: records.map(record => ({ ...record, bytes: new Uint8Array() })) } };
+          const max = 268435456;
+          const header = (size: number) => size < 24 ? 1 : size <= 255 ? 2 : size <= 65535 ? 3 : size <= 0xffffffff ? 5 : 9;
+          let required: number;
+          try { required = encodeSessionFile({ archive: placeholder, config: ownerSnapshot ?? null }, max).length; }
+          catch (error) { if (error instanceof SessionFileError && error.code === "transfer_limit") throw new Fail("transfer_limit", error.message); throw error; }
+          for (const record of records) required += record.metadata.bytes + header(record.metadata.bytes) - 1;
+          if (!Number.isSafeInteger(required) || required > max) throw new Fail("transfer_limit", "Session file exceeds limit");
+          try { attachmentState = { baseFormat: base, files: readFiles(records, max - required + records.reduce((n, record) => n + record.metadata.bytes, 0)) }; }
+          catch (error) { const code = (error as { code?: string }).code; throw new Fail(code === "transfer_limit" ? "transfer_limit" : "attachment_unavailable", String(error)); }
+        } else snapshot.session.formatVersion = base;
       }
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: archiveFormat >= 8 ? 7 : archiveFormat === 7 ? 6 : 5, exportedAt: now(), snapshot,
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: attachmentState ? 8 : archiveFormat >= 8 ? 7 : archiveFormat === 7 ? 6 : 5, exportedAt: now(), snapshot,
+        ...(attachmentState ? { attachmentState } : {}),
         ...(archiveFormat >= 7 ? { reminderState: reminders.archive() } : {}),
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };
       return archive;
-    }),
+    }, false, true),
 
     close() {
       if (closed) return { ok: true, value: undefined, revision: 0 };

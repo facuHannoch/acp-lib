@@ -49,3 +49,28 @@ export function readAttachment(input: { root: string; channel: string; id: strin
     throw new AttachmentReadError("attachment_unavailable", "Attachment bytes are unavailable or corrupt");
   } finally { if (fd !== undefined) closeSync(fd); }
 }
+
+/** Inference needs the complete file; unlike paged download this allocates at
+ * most one validated file (20 MiB), and verifies it in a single read pass. */
+export function readAttachmentForInference(input: { root: string; channel: string; id: string;
+  lookup: (id: string) => { metadata: AttachmentMetadata; timelineVisible: boolean; timelineReadable: boolean } | undefined;
+}): Uint8Array {
+  const found = input.lookup(input.id);
+  if (!found || !mayReadAttachment({ ownerChannel: found.metadata.channel, requestingChannel: input.channel,
+    timelineVisible: found.timelineVisible, timelineReadable: found.timelineReadable })) throw new AttachmentReadError("not_found", "Unknown attachment");
+  const metadata = found.metadata;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(metadata.id) || metadata.id !== input.id
+    || !Number.isSafeInteger(metadata.bytes) || metadata.bytes < 1 || metadata.bytes > ATTACHMENT_LIMITS.fileBytes)
+    throw new AttachmentReadError("attachment_unavailable", "Invalid stored attachment metadata");
+  let fd: number | undefined;
+  try {
+    fd = openSync(join(input.root, metadata.id), constants.O_RDONLY | constants.O_NOFOLLOW);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size !== metadata.bytes) throw Error("Invalid length");
+    const bytes = Buffer.alloc(metadata.bytes); let offset = 0;
+    while (offset < bytes.length) { const n = readSync(fd, bytes, offset, bytes.length - offset, offset); if (!n) throw Error("Unexpected end of file"); offset += n; }
+    if (createHash("sha256").update(bytes).digest("hex") !== metadata.sha256) throw Error("Digest mismatch");
+    return bytes;
+  } catch { throw new AttachmentReadError("attachment_unavailable", "Attachment bytes are unavailable or corrupt"); }
+  finally { if (fd !== undefined) closeSync(fd); }
+}

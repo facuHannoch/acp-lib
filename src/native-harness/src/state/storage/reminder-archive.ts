@@ -24,7 +24,7 @@ export function validateReminderArchive(state: ReminderArchiveState | undefined,
       !row.schedule || !iso(row.acceptedAt) ||
       !["active", "paused", "blocked", "done", "cancelled", "expired"].includes(row.state)) return false;
     if (isRoutine(row)) {
-      if (snapshot.session.formatVersion !== 8 || !state.guard ||
+      if (snapshot.session.formatVersion < 8 || !state.guard ||
           !["coalesce", "skip", "each"].includes(row.missedRuns) || !["skip", "queue"].includes(row.overlap) ||
           (row.remainingCount !== undefined && !integer(row.remainingCount)) ||
           (row.state === "active" ? !iso(row.nextRunAt) : row.nextRunAt !== null)) return false;
@@ -73,7 +73,7 @@ export function validateReminderArchive(state: ReminderArchiveState | undefined,
   if ((!state.rows.length && !state.receipts.length && !state.guard) || state.listingRevision < state.rows.length ||
     state.wake.nextDueAt !== nextDueAt || (nextDueAt !== null && !state.wake.reminderRevision)) return bad();
   if (state.dispositions !== undefined) {
-    if (snapshot.session.formatVersion !== 8 || !Array.isArray(state.dispositions)) return bad();
+    if (snapshot.session.formatVersion < 8 || !Array.isArray(state.dispositions)) return bad();
     for (const entry of state.dispositions) {
       if (!entry || !ids.has(entry.reminderId)) return bad();
       if (entry.type === "routine_disposition") {

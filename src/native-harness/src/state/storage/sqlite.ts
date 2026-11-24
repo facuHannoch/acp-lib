@@ -1,6 +1,8 @@
 import { bindUnattendedGuard, checkUnattendedGuard } from "./engine.ts";
 import { sqliteReminderTables } from "./sqlite-reminders.ts";
 import { sqliteAttachmentTables } from "./attachment-tables.ts";
+import { readArchiveFiles } from "./attachment-files.ts";
+import { acquireImportLease, publishAttachmentImport, recoverAttachmentImport } from "./attachment-import.ts";
 import { historicalCandidate, historicalRetrievalProjection, encodedTimelineToken, retrievalMessage, timelineBytes, timelineIndexText } from "../../util/timeline-text.ts";
 import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import { entryOverhead, type ContextRow } from "./inference.ts";
@@ -529,7 +531,7 @@ interface SavedSessionHeader { sessionId: string; config: PortableSessionConfig 
 /** One SQLite file holds one session. Ownership is SQLite's exclusive file
  * lock, held from open to close: a second handle, in this or any process,
  * fails immediately, and the operating system releases it if the owner dies. */
-export function createSqliteStorageAdapter(path: string): SessionStorageAdapter & {
+export function createSqliteStorageAdapter(path: string, adapterOptions: { mediaRoot?: string } = {}): SessionStorageAdapter & {
   /** Inspect the saved identity and config without taking session ownership. */
   readSavedHeader(): StorageResult<SavedSessionHeader>;
 } {
@@ -556,22 +558,31 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
       return result.ok ? { ...result, value: result.value.config } : result;
     },
     importSessionFile(payload, options) {
+      let releaseLease: (() => void) | undefined;
       try {
         const { archive, config } = validateSessionPayload(payload);
         if (options?.sessionId !== undefined && (typeof options.sessionId !== "string" || !options.sessionId.trim())) throw new Fail("invalid_input", "sessionId must be a nonempty string");
+        const root = adapterOptions.mediaRoot ?? `${path}.media`;
+        releaseLease = acquireImportLease(path); recoverAttachmentImport(path, root);
         const meta = archiveMeta(archive, options?.sessionId);
-        publish(path, meta, tables => { restoreArchive(tables, archive); tables.setConfig(config); });
+        const publishDatabase = () => publish(path, meta, tables => { restoreArchive(tables, archive); tables.setConfig(config); });
+        if (archive.archiveVersion === 8) publishAttachmentImport(path, root, archive, publishDatabase); else publishDatabase();
         return { ok: true, value: storedSession(meta), revision: meta.revision };
       } catch (error) { return failure(error); }
+      finally { releaseLease?.(); }
     },
     open(options) {
       let db: Database | undefined;
+      let releaseLease: (() => void) | undefined;
       try {
         const identity = options?.identity;
         if (!identity || typeof identity.sessionId !== "string" || !identity.sessionId.trim() || typeof identity.compatibilityKey !== "string"
           || (options.mode !== "create" && options.mode !== "open")) throw new Fail("invalid_input", "Open needs a mode, sessionId and compatibilityKey");
         let config; try { config = options.config === undefined ? undefined : validateManagedConfig(options.config); } catch (error) { throw new Fail("invalid_input", String(error)); }
         if (options.mode === "create") checkScriptIdentity(identity.compatibilityKey, options.requiredScriptDigest);
+        if (options.mode === "open" && !existsSync(path) && !existsSync(`${path}.attachment-import`)) throw new Fail("not_found", `No session exists at ${path}`);
+        releaseLease = acquireImportLease(path);
+        recoverAttachmentImport(path, adapterOptions.mediaRoot ?? `${path}.media`);
         if (options.mode === "create") publish(path, { sessionId: identity.sessionId, formatVersion: 6, createdAt: new Date().toISOString(),
           compatibilityKey: identity.compatibilityKey, lifecycle: "running", revision: 0, nextTurnId: 1, nextItemNumber: 1 });
         else if (!existsSync(path)) throw new Fail("not_found", `No session exists at ${path}`);
@@ -625,7 +636,8 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           if (tables.getMeta().formatVersion >= 6) installContextPolicyIndex(owner);
           refreshRetrieval(owner, tables.entries);
         });
-        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config, false, reminderEvents), revision: tables.getMeta().revision };
+        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config, false, reminderEvents,
+          (records, maxBytes) => readArchiveFiles(adapterOptions.mediaRoot ?? `${path}.media`, records, maxBytes)), revision: tables.getMeta().revision };
       } catch (error) {
         try { db?.close(); } catch { /* The original failure is the one to report. */ }
         const code = (error as { code?: string }).code;
@@ -633,16 +645,22 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         if (code === "SQLITE_NOTADB" || code === "SQLITE_CORRUPT") return failure(new Fail("incompatible", "File is not a readable harness session"));
         return failure(error);
       }
+      finally { releaseLease?.(); }
     },
     importArchive(raw, options) {
+      let releaseLease: (() => void) | undefined;
       try {
         const archive = validateArchive(raw);
         if (options?.sessionId !== undefined && (typeof options.sessionId !== "string" || !options.sessionId.trim()))
           throw new Fail("invalid_input", "sessionId must be a nonempty string");
+        const root = adapterOptions.mediaRoot ?? `${path}.media`;
+        releaseLease = acquireImportLease(path); recoverAttachmentImport(path, root);
         const meta = archiveMeta(archive, options?.sessionId);
-        publish(path, meta, tables => restoreArchive(tables, archive));
+        const publishDatabase = () => publish(path, meta, tables => restoreArchive(tables, archive));
+        if (archive.archiveVersion === 8) publishAttachmentImport(path, root, archive, publishDatabase); else publishDatabase();
         return { ok: true, value: storedSession(meta), revision: meta.revision };
       } catch (error) { return failure(error); }
+      finally { releaseLease?.(); }
     },
   };
 }

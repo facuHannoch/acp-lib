@@ -25,7 +25,10 @@ export interface ChannelObservation {
 
 /** Ordered storage position scoped to a session and channel, distinct from message identity. */
 export type MessagePosition = string;
-export type ConversationMessage = (StoredMessage | {
+type ParticipantMessage = { messageId: string; channel: string; turnId: string; parts: (
+  { type: "text"; text: string } | { type: "attachment"; id: string; text?: never; metadata?: import("./attachments.ts").AttachmentMetadata; unavailable?: true }
+)[] };
+export type ConversationMessage = (ParticipantMessage | {
   messageId: string; channel: string; turnId: string; omitted: true;
 }) & { position: MessagePosition; actor: { kind: "participant"; id: string }; itemId: string } |
   ((StoredMessage | { messageId: string; channel: string; turnId: string; omitted: true }) &

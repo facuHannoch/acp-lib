@@ -18,7 +18,8 @@
   .message.you { background: #253c5b; margin-left: 30px; } .message.error { border: 1px solid #c76464; }
   .message small { display: block; color: #a3b4d1; margin-bottom: 7px; }
   .message div { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
-  #compose { padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid #30394b; }
+  #compose { padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid #30394b; flex-wrap: wrap; }
+  #files { width: auto; max-width: 100%; font-size: 13px; }
   textarea { resize: none; min-height: 48px; max-height: 180px; flex: 1; }
   #waiting { min-height: 20px; color: #a3b4d1; font-size: 13px; padding: 0 20px; }
   .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid #4c6384; border-top-color: #a4c5ff; border-radius: 50%; animation: spin .8s linear infinite; margin-right: 7px; }
@@ -35,7 +36,7 @@
   </header>
   <main id="messages" role="log" aria-live="polite"></main>
   <div id="waiting" role="status"></div>
-  <form id="compose"><textarea id="text" rows="2" placeholder="Message the agent…" aria-label="Message" disabled></textarea><button id="send" disabled>Send</button></form>
+  <form id="compose"><textarea id="text" rows="2" placeholder="Message the agent…" aria-label="Message" disabled></textarea><input id="files" type="file" multiple aria-label="Attach files" disabled><button id="send" disabled>Send</button></form>
 </div>
 <script>
   const $ = id => document.getElementById(id);
@@ -52,38 +53,90 @@
     const card = document.createElement('article'); card.className = 'message ' + type;
     const name = document.createElement('small'); name.textContent = label;
     const content = document.createElement('div'); content.textContent = text;
-    card.append(name, content); $('messages').append(card); $('messages').scrollTop = $('messages').scrollHeight;
+    card.append(name, content); $('messages').append(card); $('messages').scrollTop = $('messages').scrollHeight; return card;
   }
   $('connect').onsubmit = event => {
     event.preventDefault(); source?.close(); generation++; pending = 0; waiting();
     channelId = $('channel').value.trim(); participantId = $('participant').value.trim();
     if (!channelId || !participantId) return;
-    connected = false; $('send').disabled = $('text').disabled = true; $('messages').replaceChildren();
+    connected = false; $('send').disabled = $('text').disabled = $('files').disabled = true; $('messages').replaceChildren();
     status('Connecting…');
     source = new EventSource('/events?channelId=' + encodeURIComponent(channelId) + '&token=' + encodeURIComponent(token));
     source.addEventListener('ready', () => {
-      connected = true; $('send').disabled = $('text').disabled = false;
+      connected = true; $('send').disabled = $('text').disabled = $('files').disabled = false;
       status('Connected · ' + channelId + ' · ' + participantId);
     });
     source.onmessage = event => { const output = JSON.parse(event.data); add('Agent', output.text, output.type === 'error' ? 'error' : ''); };
     source.onerror = () => {
-      connected = false; $('send').disabled = $('text').disabled = true;
+      connected = false; $('send').disabled = $('text').disabled = $('files').disabled = true;
       source.close(); status('Connection lost. Use the startup pairing link and press Connect to reconnect.');
     };
   };
   const inputMaxBytes = __SESSION_INPUT_MAX_BYTES__;
+  async function post(path, body) {
+    const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify(body) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || 'Request failed (' + response.status + ')');
+    return result;
+  }
+  // Web Crypto is unavailable on ordinary LAN HTTP; this bounded fallback keeps
+  // uploads usable on a paired device without sending unhashed bytes first.
+  function sha256Fallback(input) {
+    const k = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+    const length = Math.ceil((input.length + 9) / 64) * 64, data = new Uint8Array(length); data.set(input); data[input.length] = 128;
+    const view = new DataView(data.buffer); view.setUint32(length - 8, Math.floor(input.length / 0x20000000)); view.setUint32(length - 4, input.length * 8);
+    const h = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19], w = new Uint32Array(64);
+    const r = (x, n) => (x >>> n) | (x << (32 - n));
+    for (let off = 0; off < length; off += 64) {
+      for (let i = 0; i < 16; i++) w[i] = view.getUint32(off + 4 * i);
+      for (let i = 16; i < 64; i++) { const a = w[i-15], b = w[i-2]; w[i] = (w[i-16] + (r(a,7)^r(a,18)^(a>>>3)) + w[i-7] + (r(b,17)^r(b,19)^(b>>>10))) >>> 0; }
+      let [a,b,c,d,e,f,g,z] = h;
+      for (let i = 0; i < 64; i++) { const t1 = (z+(r(e,6)^r(e,11)^r(e,25))+((e&f)^(~e&g))+k[i]+w[i])>>>0, t2 = ((r(a,2)^r(a,13)^r(a,22))+((a&b)^(a&c)^(b&c)))>>>0; z=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0; }
+      for (const [i, n] of [a,b,c,d,e,f,g,z].entries()) h[i] = (h[i] + n) >>> 0;
+    }
+    return h.map(n => n.toString(16).padStart(8, '0')).join('');
+  }
+  async function upload(file, channel) {
+    if (!file.size || file.size > 20 * 1024 * 1024) throw new Error('File must be between 1 byte and 20 MiB');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const digest = globalThis.crypto?.subtle ? Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), n => n.toString(16).padStart(2, '0')).join('') : sha256Fallback(bytes);
+    const begun = await post('/attachments/begin', { channel, filename: file.name, mediaType: file.type || 'application/octet-stream', bytes: bytes.length, sha256: digest });
+    try {
+      for (let offset = 0; offset < bytes.length; offset += 384000) {
+        const chunk = bytes.subarray(offset, offset + 384000); let binary = '';
+        for (let i = 0; i < chunk.length; i += 8192) binary += String.fromCharCode(...chunk.subarray(i, i + 8192));
+        await post('/attachments/write', { channel, uploadId: begun.uploadId, offset, data: btoa(binary) });
+      }
+      return await post('/attachments/finalize', { channel, uploadId: begun.uploadId });
+    } catch (error) { await post('/attachments/abort', { channel, uploadId: begun.uploadId }).catch(() => {}); throw error; }
+  }
+  function attachDownload(card, channel, metadata) {
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Download ' + metadata.filename;
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const chunks = []; let offset = 0;
+        do { const page = await post('/attachments/read', { channel, id: metadata.id, offset }); const raw = atob(page.data), bytes = new Uint8Array(raw.length); for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i); chunks.push(bytes); offset = page.nextOffset ?? -1; } while (offset >= 0);
+        const url = URL.createObjectURL(new Blob(chunks, { type: metadata.mediaType })), link = document.createElement('a'); link.href = url; link.download = metadata.filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) { add('Error', String(error), 'error'); } finally { button.disabled = false; }
+    };
+    card.append(button);
+  }
   $('compose').onsubmit = async event => {
-    event.preventDefault(); const text = $('text').value.trim();
-    if (!connected || !text) return;
+    event.preventDefault(); const text = $('text').value.trim(), files = [...$('files').files];
+    if (!connected || (!text && !files.length)) return;
+    if (files.length > 8) { add('Error', 'Attach at most 8 files', 'error'); return; }
     if (new TextEncoder().encode(text).length > inputMaxBytes) {
       add('Error', 'Input exceeds the ' + inputMaxBytes + '-byte UTF-8 limit', 'error');
       return;
     }
-    const submittedGeneration = generation;
-    add(participantId, text, 'you'); $('text').value = ''; pending++; waiting();
+    const submittedGeneration = generation, channel = channelId, participant = participantId;
+    $('text').value = ''; $('files').value = ''; pending++; waiting();
     try {
-      const response = await fetch('/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({channelId, participantId, text}) });
-      if (!response.ok) throw new Error((await response.json().catch(() => null))?.error || 'Request failed (' + response.status + ')');
+      const uploaded = []; for (const file of files) uploaded.push(await upload(file, channel));
+      const parts = [...(text ? [{ type: 'text', text }] : []), ...uploaded.map(metadata => ({ type: 'attachment', id: metadata.id }))];
+      const card = add(participant, text || 'Attachment', 'you'); for (const metadata of uploaded) attachDownload(card, channel, metadata);
+      await post('/messages', { channelId: channel, participantId: participant, text, ...(uploaded.length ? { parts } : {}) });
       // The answer arrives on SSE; printing this HTTP response would duplicate it.
     } catch (error) { if (generation === submittedGeneration) add('Error', String(error), 'error'); }
     finally { if (generation === submittedGeneration) { pending--; waiting(); } }

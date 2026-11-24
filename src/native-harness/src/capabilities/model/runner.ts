@@ -4,7 +4,8 @@ import type { StorageResult, TimelineEntry } from "../../contracts/storage.ts";
 /** One deadline covers the first attempt, retry wait and retry. */
 export const MODEL_EXECUTION_DEFAULTS: Readonly<ModelExecutionSettings> = { timeoutMs: 120_000, retryDelayMs: 1_000, maxRetries: 1 };
 export class ModelCallError extends Error {
-  constructor(readonly outcome: Exclude<CallOutcome, "running" | "succeeded">, message: string) { super(message); this.name = "ModelCallError"; }
+  constructor(readonly outcome: Exclude<CallOutcome, "running" | "succeeded">, message: string,
+    readonly attachmentFailure?: import("../../contracts/attachments.ts").AttachmentFailure) { super(message); this.name = "ModelCallError"; }
 }
 class ModelStorageError extends Error {}
 function take<T>(result: StorageResult<T>): T {
@@ -40,11 +41,12 @@ export async function runModelCall(options: RunModelCallOptions): Promise<{ resp
   const call = take(options.store.startCall(options.turnId, options.itemIds));
   options.started?.(call.callId);
   let deadline = 0, output = false;
-  const finish = (outcome: Exclude<CallOutcome, "running" | "succeeded">, detail: string = outcome): never => {
+  const finish = (outcome: Exclude<CallOutcome, "running" | "succeeded">, detail: string = outcome,
+    attachmentFailure?: import("../../contracts/attachments.ts").AttachmentFailure): never => {
     const result = options.store.finishCall(call.callId, outcome);
     if (!result.ok && !(outcome === "interrupted" && result.error.code === "invalid_state")) take(result);
     if (output) options.incomplete?.({ messageId: call.messageId, reason: outcome });
-    throw new ModelCallError(outcome, detail);
+    throw new ModelCallError(outcome, detail, attachmentFailure);
   };
   for (let ordinal = 0; ordinal <= Math.min(1, settings.maxRetries); ordinal++) {
     if (options.signal?.aborted) return finish("interrupted");
@@ -102,7 +104,7 @@ export async function runModelCall(options: RunModelCallOptions): Promise<{ resp
     const attemptOutcome = failure === "transient" ? "transient_failure" : failure === "provider" ? "provider_failure" : failure;
     take(options.store.finishAttempt(call.callId, attempt.attemptId, attemptOutcome));
     if (terminal?.type === "failure" && terminal.message === "script_exhausted" && options.scripted) return finish("failed", "script_exhausted");
-    if (terminal?.type === "failure" && terminal.code) return finish("failed", JSON.stringify({ code: terminal.code, attachmentIds: terminal.attachmentIds ?? [] }));
+    if (terminal?.type === "failure" && terminal.code) return finish("failed", terminal.message, { code: terminal.code, attachmentIds: [...terminal.attachmentIds ?? []] });
     if (failure !== "transient" || output || ordinal >= Math.min(1, settings.maxRetries)) return finish(failure === "incomplete" ? "incomplete" : "failed");
     if (deadline - Date.now() < settings.retryDelayMs) return finish("timeout");
     const delay = await new Promise<"ready" | "interrupted">(resolve => {

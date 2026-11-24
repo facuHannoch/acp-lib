@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import type { AttachmentMetadata } from "../../contracts/attachments.ts";
 import { ATTACHMENT_LIMITS } from "../../contracts/attachments.ts";
@@ -47,7 +47,20 @@ export function runImageTool(command: string, args: readonly string[], input: Ui
 export async function validateManagedImage(path: string, metadata: AttachmentMetadata, signal?: AbortSignal): Promise<void> {
   const format = formats[metadata.mediaType];
   if (!format) throw new UploadError("invalid_attachment", "Only PNG, JPEG and WebP images are supported");
-  const data = readFileSync(path);
+  if (!Number.isSafeInteger(metadata.bytes) || metadata.bytes < 1 || metadata.bytes > ATTACHMENT_LIMITS.fileBytes)
+    throw new UploadError("invalid_attachment", "Invalid image length");
+  let data: Buffer;
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  catch { throw new UploadError("invalid_attachment", "Image file is unavailable"); }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size !== metadata.bytes) throw new UploadError("invalid_attachment", "Invalid image length");
+    data = Buffer.alloc(metadata.bytes); let offset = 0;
+    while (offset < data.length) { const count = readSync(fd, data, offset, data.length - offset, offset); if (!count) throw new UploadError("invalid_attachment", "Invalid image length"); offset += count; }
+    if (fstatSync(fd).size !== metadata.bytes) throw new UploadError("invalid_attachment", "Invalid image length");
+  }
+  finally { closeSync(fd); }
   if (data.length !== metadata.bytes || data.length > ATTACHMENT_LIMITS.fileBytes) throw new UploadError("invalid_attachment", "Invalid image length");
   const common = ["-v", "error", "-protocol_whitelist", "pipe", "-max_alloc", "268435456", "-f", format.demuxer, "-i", "pipe:0"];
   const result = await runImageTool("ffprobe", [...common, "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json"], data, { signal });

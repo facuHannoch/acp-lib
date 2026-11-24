@@ -38,7 +38,7 @@ export interface ChannelEvent {
     | (import("./reminders.ts").ReminderChannelEvent & { turnId?: never })
     | import("./operator-controls.ts").ApprovalClosedEvent
     | ({ type: "approval_requested" } & import("./config-permissions.ts").ApprovalRequest)
-    | { type: "turn_ended"; turnId: string; outcome: "completed" | "failed" | "interrupted"; error?: string; uncertainCalls?: string[] };
+    | { type: "turn_ended"; turnId: string; outcome: "completed" | "failed" | "interrupted"; error?: string; uncertainCalls?: string[]; attachmentFailure?: import("./attachments.ts").AttachmentFailure };
 }
 export type EventSink = (event: ChannelEvent) => void;
 

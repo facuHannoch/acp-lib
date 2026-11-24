@@ -30,7 +30,7 @@ export type StorageErrorCode =
   /** Export refused: active or pending work exists and the session is not suspended. */
   | "busy"
   | "invalid_archive"
-  | "serialization_error" | "storage_failure" | "transfer_limit" | "invalid_cursor" | "unsupported_image";
+  | "serialization_error" | "storage_failure" | "transfer_limit" | "invalid_cursor" | "unsupported_image" | "attachment_unavailable";
 
 /** A failed mutation leaves no partial domain changes. Do not retry blindly. */
 export interface StorageError { code: StorageErrorCode; message: string }
@@ -231,7 +231,9 @@ export interface StorageSnapshot {
  * Version 5 adds external notices. */
 export interface SessionArchive {
   format: "harness-session";
-  archiveVersion: 5 | 6 | 7;
+  archiveVersion: 5 | 6 | 7 | 8;
+  /** Complete retained managed bytes, only in logical archive 8. */
+  attachmentState?: { baseFormat: 6 | 7 | 8; files: Array<{ metadata: import("./attachments.ts").AttachmentMetadata; readyAt: string; bytes: Uint8Array }> };
   reminderState?: import("./reminders.ts").ReminderArchiveState;
   exportedAt: string;
   snapshot: StorageSnapshot;
@@ -311,6 +313,9 @@ export interface SessionStorage extends ModelCallStore, ReminderStorage, Timelin
   readManagedAttachment(id: string): StorageResult<{ metadata: import("./attachments.ts").AttachmentMetadata; timelineVisible: boolean } | undefined>;
   /** IDs with committed ready metadata, for owner-only crash recovery. */
   managedAttachmentIds(): StorageResult<string[]>;
+  /** Owner-only cleanup fence; accepted references prevent reclamation. */
+  unreferencedAttachments(readyBefore: string): StorageResult<import("./attachments.ts").AttachmentMetadata[]>;
+  reclaimAttachment(id: string, readyBefore: string): StorageResult<boolean>;
   readSession(): StorageResult<StoredSession>;
   readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
   readReadyChannels(intake?: IntakeLimit): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
