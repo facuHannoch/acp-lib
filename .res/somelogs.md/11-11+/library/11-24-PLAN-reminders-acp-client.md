@@ -1,264 +1,218 @@
 # Plan: reminders, acp-client half
 
-Status: planning only, 2026-11-24 (core-p), revision 4 (haurness-l's planning answers a to e, and their contract-grounding proposals for questions 6 to 9, folded in; planning decisions, not a frozen wire contract; exact caps, codes and shapes are Gate 1 contract work). No code, no briefs sent, no runtime briefs until haurness-l
-releases the wire decisions below. Grounded in `../11-23-SPEC-reminders-and-routines.md` (reviews 1 and 2), the code on
-`integration-r456-status` (`src/native/host.ts`, `records.ts`, `src/persistence/channels.ts`, SQLite schema 21) and,
-since revision 2, the harness's `0004-DESIGN-reminder-tools/SPEC.md` (a local untracked draft in the haurness-l
-worktree; no branch contains it yet; "Proposed for v1"). Where the draft and revision 1 disagreed, the draft wins; the
-changes are listed in "What changed from revision 1". Cod1a and Clad1a stay on the native harness tool gates; this plan
-does not use them. Implementer and reviewer for this track are cod2a and clad2a, when the user schedules it.
+Status: planning only, 2026-11-24 (core-p), revision 5. The user's decisions and the harness's wire contract answers
+arrived; this revision folds them in. No code, no briefs sent yet. Grounded in `../11-23-SPEC-reminders-and-routines.md`
+(reviews 1 and 2), the harness `0004-DESIGN-reminder-tools/SPEC.md` (an untracked draft in the haurness-l worktree), the
+planning answers of 2026-11-24 and the contract answers below, and the code on `integration-r456-status`
+(`src/native/host.ts`, `records.ts`, `src/persistence/channels.ts`, SQLite schema 21). The harness contract is still a
+draft until Gate 1 freezes it: the open points are listed at the end. Implementer and reviewer for this track are cod2a and
+clad2a; Cod1a and Clad1a stay on the native harness tool gates.
 
-## What the harness draft settles (design level) and what it leaves open
+## Decisions (the user, 2026-11-24)
 
-Settled enough to design against:
-- **One open fence.** On an executable `session/create|open` (not the legacy load): recover committed state, apply pending
-  channel changes in their startup order, apply reminder intents in their SUBMITTED order against the resulting channel
-  state, process eligible due reminders on that state, return the intent outcomes and the next eligible due time (null
-  when none), then release eligible work to the scheduler. An offline cancel or pause therefore wins over an overdue
-  occurrence not yet queued; a committed notice is already the inbox's. Inspection-only opens do no reminder writes or
-  firing.
-- **Intent identity.** Each mutation intent has an id distinct from its target reminder id; a retry with the same intent
-  ids returns their recorded outcomes without reapplying or queuing duplicate notices; reusing an intent id with changed
-  arguments is a conflict; a state-dependent rejection is `blocked` with a reason, and acp-client keeps it visible until
-  corrected or removed.
-- **Absolute UTC only.** acp-client resolves relative schedules (`in`) once, before staging; the harness never sees `in`;
-  replay keeps the original due time.
-- **`nextDueAt`** is revisioned, returned on executable open and published when the earliest eligible deadline changes;
-  null when none; the host uses the revision to avoid replacing a newer value with an older one. The open response is
-  authoritative for a missed update. Fire carries reminder id, scheduled occurrence time and notice id; cancel carries the
-  reminder id. Design around authoritative state reconciliation at open: do NOT assume historical event replay.
-- **Wake.** acp-client persists one next reported deadline per Agent beside the pending intents; effective deadline =
-  min(that value, the eligible deadline of any pending create or edit). At the deadline it lazy-starts; a running harness
-  has its own timer; a stopped one processes due work on open; no wake RPC, no periodic starts. The consumer lists cached
-  records plus pending intents without opening a stopped harness (the cache is last-confirmed state). Accepted v1 window:
-  if the harness commits before acp-client persists the new wake time, a crash leaves a stale deadline, recovered at the
-  next eligible open, possibly late; a wake may also pay a cold start.
-- **Host operations.** create, get, list (one channel or the whole session; opaque cursor, stable order), update, pause,
-  resume, cancel; a host write NAMES the destination channel and SUPPLIES any additional policy names, which the harness
-  validates at creation; the consumer capability applies to native conversations only; the tool catalog and permission gate
-  apply to the agent tools, not to host writes.
-- **Notices.** The notice id derives from reminder id and scheduled instant; a fired event means "the notice was queued";
-  the eventual turn follows the normal channel events.
+- Spec defaults confirmed: coalesce missed runs, skip on overlap, 5-minute harness and 15-minute consumer minimum interval,
+  20 per channel. Reminder text is stored in the clear.
+- Only the SQLite owner arms the wake timer.
+- `stop()` of the harness only keeps the wake armed (stopping to save resources is the idle-stop case and the reminders are
+  still wanted). `agent.close()` clears the timer; the stored wake time remains and the timer is set again when the Agent next
+  starts. To silence reminders the consumer suspends the session or the channel, which removes them from the next due time.
+- Creating a reminder while the harness is stopped on a backend without the repository: REFUSE with a typed error
+  `reminders_unavailable`, saying the harness must be running or the backend needs the repository (starting the harness inside
+  `create` would add a second, slower and failable behaviour; custom backends without the repository are rare).
+- `expiresAfter` is an optional field on the create tool of the agent AND on the consumer API: omitted, the defaults apply; a
+  duration sets its own window; `null` means always deliver and tell the agent how late it is ("remind me before the 3pm
+  meeting" expires at 3pm; "check the deploy in 10 minutes" expires quickly). This replaces my 30-second late-wake tolerance
+  proposal: lateness is judged per reminder by the harness, not by a fixed host number.
 
-Planning answers from haurness-l (2026-11-24; planning decisions, not a frozen wire contract):
-- **Whole-session list (reconcile):** a bounded list with opaque session- and scope-bound cursors, deterministic stable
-  ordering (proposed: reminder id), and a revision fence that detects an invalidated sweep so the host can restart it. The
-  wake value comes ONLY from the executable open and revisioned deadline updates: do not depend on list pages sharing the
-  open fence; if the contract adds a deadline read next to the list, it carries its own revision. Exact cursor and page
-  limits and the recovery under churn are contract work.
-- **Host writes** are attributed to the host. acp-client forwards ONLY optional additional `policyNames` supplied by an
-  authorized consumer; the harness resolves the destination channel's policy at firing, so the channel policy is NOT
-  copied into the additional names.
-- **`{ every }` without `startAt`:** acp-client sends an absolute `startAt`, resolved ONCE at acceptance, on both the live
-  and the stopped path, so retries are stable; the harness-local defaults are a contract detail.
-- **Correction of a blocked intent** is a NEW intent id; once the host has durably recorded the blocked outcome it stops
-  resending that intent and keeps it visible locally until corrected or discarded; the id is never reused; the harness's
-  retention of recorded outcomes (dedup) is pinned separately.
-- **Inspect-only:** `session/open` has no explicit inspect-only flag, and omitting intents is NOT a safe read-only signal.
-  For a stopped session acp-client serves cached reminders plus pending intents WITHOUT launching it; every acp-client
-  open is an executable open. If a remote inspect-only path is ever needed it is negotiated explicitly and requires no
-  writes, no firing and no scheduler release.
-- Event replay stays unassumed; idle-stop and capability negotiation stay gated; the routine defaults stay pending review.
+## The harness wire contract (answers received 2026-11-24; draft until Gate 1)
 
-Still open (wire dependencies; haurness-l is deciding): exact fields, echoes, versions, codes and limits; the capability
-name and runtime negotiation; an explicit event-replay guarantee (revision 2 assumes none); a race-free idle-stop fence
-(the existing `session/idle` is only a read); routine defaults (catch-up, overlap, minimum interval, limits), still
-proposed in the harness draft; daylight-saving gaps and folds; the unattended-turn guard (a prerequisite for enabling
-unattended routines).
+1. **Where changes travel:** inside the open, next to `channelChanges`: a `reminderChanges` field on the session create and
+   open requests, applied AFTER the channel changes and BEFORE recovered or due work (a cancel made while stopped must land
+   before a past-due reminder fires at open). The same cutoff rule as channel changes: after the open, changes go through the
+   live reminder requests.
+2. **Changes, results, reasons** (mirrors decision 0020): an entry `{ reminderId, changeId, op: create | update | cancel,
+   payload }`, `changeId` being acp-client's version, echoed back; a result `{ reminderId, changeId, outcome: applied |
+   blocked, reason? }`; blocked reasons `invalid_policy`, `channel_missing`, `channel_retired`, `invalid_schedule`,
+   `limit_exceeded`, `conflict`. A create repeated with the same id and payload is `applied` and returns the existing
+   reminder; the same id with a different payload is `blocked: conflict`; a cancel of something cancelled or finished is
+   `applied`; an update of something unknown is `blocked: not_found`. A malformed batch is rejected whole before anything
+   applies; otherwise each entry stands alone.
+3. **Next due time:** one session-wide value `nextDueAt: string | null` (ISO UTC, leaving out suspended channels), in the open's
+   response and in a session event `reminders_due { nextDueAt, revision }` emitted whenever it changes; not per channel.
+4. **Events, no replay on open:** `reminder_fired { reminderId, occurrenceId, scheduledAt, firedAt, noticeId, missed? }`,
+   `reminder_cancelled { reminderId, by: host | agent | channel_retired | completed }`, `reminder_changed { reminder }` (a
+   create, an edit, a pause or a resume). The open's view carries each reminder's current state (state, lastRunAt, last
+   occurrence) and acp-client compares it with its cache; what a missed fire produced is already in the recovery view's turns
+   and items.
+5. **Idle stop:** one atomic call `session/stop { ifIdle: true, unlessDueWithinMs? }`, returning `{ stopped: boolean }`: the
+   harness checks idle (no running turn, nothing waiting in an inbox, no pending approval) and that no reminder is due within
+   the window, then stops, in one step; any failed check changes nothing. acp-client passes the window (it knows the startup
+   time); the harness owns the idle check.
+6. **Limits:** refusals are `blocked: limit_exceeded` on a change; on a live request, a typed error with the same code.
+   acp-client's stricter local check usually fires first.
+7. **Capability:** one flag, `capabilities.reminders: true` in `initialize` (covers the requests, the events and
+   `reminderChanges` at open); acp-client's consumer flag stays `conversationCapabilities.reminders`.
+8. **Schedules:** absolute only on the wire: `{ at }`, `{ every, startAt }`, `{ cron, timezone }`. The public API accepts `in`
+   and acp-client converts before sending; the agent's own tools accept `in` and the harness converts; a host request carrying
+   `in` gets `invalid_schedule`.
 
-## What changed from revision 1
+Earlier planning answers still holding: the reconcile list is bounded and restartable (opaque session- and scope-bound
+cursors, ordered by reminder id, a revision fence, an explicit cursor-invalidated response; the wake never depends on it);
+host writes are attributed to the host and only optional consumer-supplied additional `policyNames` are forwarded (an
+unknown name is a recorded `blocked: invalid_policy`, no mutation; narrower consumer authorization is applied by acp-client
+BEFORE recording anything); an `every` without `startAt` gets an absolute `startAt` resolved once at acceptance, live or
+stopped; the harness retains recorded outcomes for the session lifetime (no silent expiry); no acp-client open is
+inspect-only (a stopped session is read from the cache plus pending changes); event replay is not assumed; the harness's
+accepted crash window (it commits before acp-client persists the wake) stays documented.
 
-1. Intents are keyed by their OWN id (distinct from the reminder id); they are ordered; once an intent may have been sent it
-   is FROZEN (a change after that is a new intent with a new id: reusing an id with changed arguments is a conflict).
-2. Coalescing is allowed only among never-sent intents; the "cancel supersedes create" shortcut applies only if the create
-   was never sent.
-3. Blocked intents are first-class: kept and listed until corrected (a new intent) or removed (a local discard control).
-4. The reported deadline carries a REVISION; a response or event older than the stored revision never replaces it.
-5. An explicit authoritative reconcile after open (the whole-session host list, paged) refreshes the cache and the wake;
-   no reliance on missed events being replayed.
-6. Pending intents contribute to the wake only when eligible (not for a suspended or retiring channel, not paused).
-7. Open sequence wording fixed to `session/create|open` (the earlier "load view" is the legacy path).
-8. Acceptance now names the draft's joint scenarios (lost open response, missed deadline event, the accepted crash window).
-9. Host writes: attributed to the host; only the consumer's optional additional policy names are forwarded (never the channel
-   policy); `startAt` for an `every` intent is resolved once at acceptance.
-10. Reconcile is a bounded, restartable sweep (opaque cursor, ordered by reminder id, a revision fence), never the source of
-    the wake value; no acp-client open is inspect-only, so a stopped session is read from the cache and pending intents.
+## What changed from revision 4
+
+1. The wire is now concrete: `reminderChanges` with `{ reminderId, changeId, op, payload }`, per-reminder versions echoed back,
+   outcomes `applied | blocked` with the listed reasons.
+2. The store mirrors decision 0020's shape, not an intent log with free ids: a per-reminder ordered sequence of entries with a
+   strictly increasing `changeId`. A sent entry is IMMUTABLE: because a create with the same id but a different payload is a
+   `conflict`, an edit of a reminder whose create MAY have been sent is a NEW `update` entry with a higher `changeId`, never a
+   merge into the create; only never-sent entries may be merged. An acknowledgement clears an entry only if its `changeId` is
+   the newest sent for that reminder.
+3. Reconcile is primarily the open's view of each reminder's current state compared with the cache; the paged sweep remains
+   for completeness and under a bounded restart budget.
+4. The late-wake tolerance is gone: `expiresAfter` per reminder decides lateness.
+5. Idle stop is unblocked at the contract level (`session/stop { ifIdle, unlessDueWithinMs }`).
+6. `create` while the harness is stopped without the repository: typed error `reminders_unavailable`.
+7. The wake value comes from the open's `nextDueAt` and the `reminders_due` event with their revision; acp-client's effective
+   wake = min(that value, the eligible deadline of any pending create or edit).
 
 ## What exists to build on
 
-- Open sequence: `host.ts #open` runs `initialize`, then `startupBatch()` (pending channel changes from the durable
-  `channels?` repository), then `openOrCreate(..., batch)`, then `acknowledgeOpen`. Reminder intents ride the same open,
-  after the channel changes, in submitted order.
-- `ChannelPersistence` is the pattern for the intents (coalesced desire, version as wire id, clear only the confirmed
-  version, one transaction with the conversation write), with the reminder-specific change that intent ids are distinct
-  from targets and become immutable once possibly sent.
+- Open sequence: `host.ts #open` runs `initialize`, then `startupBatch()` (pending channel changes from the durable `channels?`
+  repository), then `openOrCreate(..., batch)`, then `acknowledgeOpen`. `reminderChanges` ride the same open, after the channel
+  changes.
+- `ChannelPersistence` is the pattern: a coalesced desire, a version as the wire id, clear only the confirmed version, one
+  transaction with the conversation write; the reminder store adds immutability of sent entries.
 - Lazy start: `ensureStarted()` is single-flight; `agent.harness.start()` exists. A wake calls it.
-- Not built: any host-owned timer, `idleStopMs` for the native host (the only `idleStopMs` today is the orchestrator
-  pool's), `conversationCapabilities.reminders`, the reminder wire, an inspect-only/executable open distinction in the
-  host (check in step 0).
+- Not built: any host-owned timer, `idleStopMs` for the native host (the only `idleStopMs` today is the orchestrator pool's),
+  `conversationCapabilities.reminders`, the reminder wire.
 
 ## Pieces and order
 
 Every step ends with the full suite (RAM-backed `TMPDIR`), new tests about 20x in isolation, a clean-copy gate and clad2a
-review. Steps 0-2 can proceed before the wire decisions land only if their wire-facing part is isolated behind one adapter
-file; haurness-l asked for no runtime briefs yet, so nothing starts.
+review. Steps 0-2 touch the wire only through one adapter file.
 
-**Step 0: grounding and decisions.** A report only: host start/stop paths; where the timer and wake index belong (host
-vs `src/native/reminders/`); the storage shape (below); whether the host's open already distinguishes executable from
-inspect-only opens; the policy-names and creator decisions for host-created reminders; how the reconcile list pages
-within the open budget. Storage recommendation to check: a sibling `reminders?` repository with `capabilities.reminders`
-(schema 22), three parts: (a) `reminder_intents`: intent id, target reminder id, kind (create, update, pause, resume,
-cancel), payload, global submitted-order sequence, state `pending | maybe_sent | applied | blocked(reason)`, never mutated
-after `maybe_sent`; (b) `reminder_cache`: last-confirmed reminders per conversation (id, schedule, text, state, next
-run, revision); (c) `wake_index`: one row per Agent: reported `nextDueAt` plus its revision, and the derived effective
-deadline. Gate: report reviewed; the wire questions answered.
+**Step 0: grounding and decisions.** A report only: host start/stop paths; where the timer and wake index belong (host vs
+`src/native/reminders/`); the store shape; the open's reminder view size and paging; how pause and resume travel (see
+questions); the typed errors (`reminders_unavailable`, the blocked reasons); how `expiresAfter` flows on both APIs. Gate:
+report reviewed.
 
-**Step 1: durable store and wake index (no timers, no wire).** The repository above, transaction-scoped like `channels?`:
-append an intent (assign id and sequence), mark `maybe_sent` before a send, record an outcome (`applied`, `blocked` with
-reason, or conflict) durably: `applied` clears the intent; a recorded `blocked` outcome stops the resend but the intent stays
-visible, with its reason, until corrected (a NEW intent id, never a reused one) or discarded, coalesce only never-sent intents (a cancel supersedes a
-never-sent create or update and nets to nothing; an update merges onto a never-sent create), a local `discard` of a
-blocked intent, the cache rows, and the effective deadline recomputed as min(stored `nextDueAt`, eligible pending create or
-edit deadlines): pending cancels, pauses, intents for a suspended or retiring channel contribute nothing. A response or
-event with an older revision never replaces the stored one. No unresolved intent is ever expired locally; a `maybe_sent` intent is resent on every open until an outcome is recorded (an
-explicit stale outcome, if the contract adds one, is kept visible like a blocked one). A conversation delete removes its
-intents and cache rows in the same transaction. SQLite schema 22 with an upgrade test from 21; the memory implementation for backends without it
-(no durable intents, no wake across restart; documented). Gate: repository tests (the coalescing table, freeze after
-`maybe_sent`, clear-only-confirmed, older-revision rejection, wake recompute, transactional delete), the upgrade test.
+**Step 1: durable store and wake index (no timers, no wire).** A `reminders?` repository with `capabilities.reminders`
+(schema 22), transaction-scoped like `channels?`: (a) `reminder_changes`: per reminder, ordered entries `{ changeId, op,
+payload, state: pending | maybe_sent | applied | blocked(reason) }`, `changeId` strictly increasing per reminder, an entry
+immutable once `maybe_sent` (mark it before a send); coalescing only among never-sent entries (a cancel supersedes a never-sent
+create or update and nets to nothing); an acknowledgement clears an entry only for the newest sent `changeId`; a recorded
+`blocked` outcome stops the resend but stays visible with its reason until corrected (a new entry, a higher `changeId`) or
+discarded; no unresolved entry is ever expired locally; (b) `reminder_cache`: last-confirmed reminders per conversation (id,
+schedule, text, state, next run, revision, last run); (c) `wake_index`: one row per Agent: the reported `nextDueAt` and its
+revision plus the derived effective wake (min of that and the eligible deadlines of pending create or edit entries; none for a
+cancel, a pause, a suspended or retiring target). An older revision never replaces a newer one. A conversation delete removes
+its entries and cache rows in the same transaction. SQLite schema 22 with an upgrade test from 21; the memory implementation for
+backends without it (no durable changes, no wake across a restart; creating while stopped is refused with
+`reminders_unavailable`). Gate: repository tests (the coalescing table, freeze after `maybe_sent`, an edit after a possibly-sent
+create becomes an update, clear-only-newest, older-revision rejection, wake recompute, transactional delete), the upgrade test.
 
-**Step 2: local validation and the library model.** `Reminder` type; `conversation.reminders` (create, get, list, update,
-pause, resume, cancel, `discardBlocked`); `agent.reminders.list()` (whole Agent, paged); `conversationCapabilities.reminders`
-(true native, false ACP). Local validation before any write: schedule syntax (`at`, `every`, `cron` with timezone; `in`
-converted to an absolute `at` at acceptance, also for a running harness; for `every` without `startAt`, resolve `startAt`
-locally to an absolute instant so a replay is stable), the 15-minute consumer minimum for repeating schedules, a known
-policy name when config is known, typed errors for limits and for a missing capability. Host writes name the channel (the
-conversation's) and are attributed to the host; only optional additional `policyNames` passed by an authorized consumer are
-forwarded (the harness resolves the channel's own policy at firing, so it is never copied into them). The library applies any
-narrower consumer authorization BEFORE appending an intent (typed error, nothing recorded); an unknown additional policy name
-is a harness outcome, `blocked` `invalid_policy`, with no reminder mutation, kept visible. Harness-running path: a request, done on confirmation; harness-stopped path: intent plus wake index
-in one transaction, `state: "pending"`. Events (created, fired, changed, confirmed, blocked, cancelled) on the existing
-conversation event path, deduplicating fires by notice id. A client-supplied reminder id is validated. Lists with the
-harness stopped: cached plus pending intents marked pending; blocked intents stay listed. Gate: unit tests against a fake
-harness client; a crash-retry test (the same intent id twice yields one reminder; a changed payload under the same id is a
-conflict, not a silent overwrite).
+**Step 2: local validation and the library model.** `Reminder` type; `conversation.reminders` (create, get, list, update, pause,
+resume, cancel, `discardBlocked`), `agent.reminders.list()` (paged); `conversationCapabilities.reminders` (true native, false
+ACP: a typed error). Local validation before any write: schedule syntax (`at`, `every`, `cron` with timezone; `in` converted to an
+absolute `at` at acceptance, live or stopped; an `every` without `startAt` gets one resolved at acceptance), the 15-minute
+consumer minimum for repeating schedules, `expiresAfter` (omitted, a duration, or `null`), narrower consumer authorization and any
+optional additional policy names (host writes are attributed to the host; the channel policy is never copied), typed errors for
+limits and for `reminders_unavailable`. Harness-running path: a live request, done on confirmation; harness-stopped path (with
+the repository): a change plus the wake index in one transaction, `state: "pending"`. Events (created, fired, changed,
+confirmed, blocked, cancelled) on the existing conversation event path, deduplicating fires by notice id. Lists with the
+harness stopped: cache plus pending; blocked stay listed. Gate: unit tests against a fake harness client; a crash-retry test (the
+same `changeId` twice gives one reminder; a changed payload under the same id is a conflict, not an overwrite).
 
-**Step 3: startup ordering, confirmation and reconcile.** In `#open`, after `startupBatch` and in the same open request:
-send reminder intents in submitted order, marking each `maybe_sent` first. Ordering rule to hold and test: channel changes
-applied, then reminder intents, then eligible due reminders, then the open fence completes. A reminder created for a
-conversation retired in the same batch comes back `blocked` (reason from the harness); one for a channel suspended in the same
-batch is held, not fired; an offline cancel or pause beats an overdue occurrence. Each outcome is recorded by intent id:
-`applied` clears it; `blocked` keeps it visible; a conflict is surfaced as a defect; the reported `nextDueAt` replaces the
-wake index only with a newer revision. After the open completes, reconcile authoritatively with a bounded, restartable SWEEP: page the whole-session host list
-(bounded pages, opaque session- and scope-bound cursor, stable order by reminder id) into the cache, under the list's
-revision fence; if the fence reports the sweep invalidated (churn), restart it, bounded by a restart budget (then keep the
-cache as last-confirmed state, flagged unreconciled, and retry on the next trigger; it never blocks the open or a wake).
-The sweep never feeds the wake value: that comes only from the open and the revisioned deadline updates (a separate
-deadline read, if the contract adds one, has its own revision); no dependence on missed events. A crash between the harness
-applying and acp-client clearing: the resend by intent id returns the recorded outcome (test with a real stdio restart;
-this is the draft's "replay after a lost open response"). Every acp-client open is executable: acp-client never opens a stopped session merely to read it (the cache plus pending
-intents answer `list` and `get`), because omitting intents is not a safe read-only signal. Gate: ordering tests with a
-scripted fake harness for each interleaving; sweep tests (an invalidated sweep restarts within its budget; pages, ordering
-and cursor reuse across scopes are rejected); real-stdio restart tests when the harness side exists.
+**Step 3: startup ordering, confirmation and reconcile.** In `#open`, after `startupBatch`, in the same open request: send
+`reminderChanges`, each marked `maybe_sent` first. Order held and tested: channel changes, then reminder changes, then due work,
+then the open fence. A reminder for a conversation retired in the same batch comes back `blocked: channel_retired`; one for a
+channel suspended in the same batch is held; an offline cancel or pause beats an overdue occurrence. Outcomes by
+`reminderId` + `changeId`: `applied` clears (newest only); `blocked` is recorded and stays visible; `conflict` is surfaced as a
+defect; `nextDueAt` and its revision update the wake index only if newer. After the open, reconcile: compare the open's
+per-reminder current state with the cache; run the bounded, restartable paged sweep when the view is not complete (cursor
+invalidated: restart within a budget, then keep the cache last-confirmed, flagged unreconciled); the sweep never feeds the wake.
+A crash between the harness applying and acp-client clearing: the resend returns the recorded outcome (a real stdio restart
+test: the draft's "replay after a lost open response"). Every acp-client open is executable: a stopped session is never opened
+just to read it. Gate: ordering tests with a scripted fake harness for each interleaving; sweep tests (an invalidated sweep
+restarts within its budget, a cursor from another scope is rejected); real-stdio restart tests when the harness side exists.
 
-**Step 4: wake timer and the late-wake window.** A host-owned timer armed from the wake index; at expiry `ensureStarted()`
-(single-flight with any other start; the cancellable start and `harness_unresponsive` unchanged); opening is enough, no
-wake request. A running harness: the wake does nothing. The timer rearms on every index change, is cleared on
-`Agent.close()`, and is rebuilt at Agent construction from the stored index (an overdue index starts the harness once at
-once). Accepted window, documented: a cold start means the turn begins after the due time by the start time plus the open;
-the crash window of the draft (the harness commits before acp-client persists the wake) recovers at the next eligible open,
-possibly late; a missed deadline event is repaired by the open response and the reconcile. Proposed numbers (not in the
-draft): a wake fire up to the start deadline (30 s) late is not a failure. Backoff: a failed wake start retries on the
-existing restart budget (3 in 60 s), then the index stays and the host surfaces `HarnessUnavailableError`; it must not
-spin. Injectable clock. Gate: fake-clock tests (fire, rearm, race with a manual `start()`, race with `close()`, overdue
-at construction, failed start does not loop, an older-revision event after a newer one).
+**Step 4: wake timer, stop and close.** A host-owned timer, armed only by the SQLite owner, from the wake index; at expiry
+`ensureStarted()` (single-flight with any other start; the cancellable start and `harness_unresponsive` unchanged); opening is
+enough, no wake request; a running harness has its own timer. Rearm on every index change; `harness.stop()` keeps the wake
+armed; `agent.close()` clears the timer and the stored wake remains; rebuilt at Agent construction (an overdue index starts the
+harness once, at once). A failed wake start retries on the existing restart budget (3 in 60 s), then the index stays and
+`HarnessUnavailableError` surfaces; it must not spin. Lateness is the harness's per-reminder `expiresAfter` outcome (no host
+tolerance number); the accepted crash window and the cold-start delay are documented; a missed `reminders_due` event is repaired
+by the open response and the reconcile. Injectable clock. Gate: fake-clock tests (fire, rearm, race with a manual `start()`, race
+with `close()`, `stop()` keeping the wake, overdue at construction, a failed start does not loop, an older revision after a
+newer one, only the owner arms).
 
-**Step 5: idle stop (blocked on the harness idle fence).** `harness.idleStopMs` (off by default). Stop only when
-acp-client has no turn running or held, no pending permission, no held channel or reminder intent, and the harness reports
-idle (turn, inbox, approval; future reminders are not work) through a race-free fence: the existing `session/idle` is only
-a read, so this step stays blocked until the harness defines an atomic idle-and-stop fence. Not when the reported
-`nextDueAt` is inside the window (about twice the measured startup time; floor and ceiling configurable). After a stop,
-arm the wake for the next due time; activity starts it again, racing the stop safely (started once). Gate: fake-harness tests
-for each non-idle reason, the window boundary, stop then wake, stop racing a send.
+**Step 5: idle stop.** `harness.idleStopMs` (off by default). Stop through the atomic call `session/stop { ifIdle: true,
+unlessDueWithinMs }` with the window (about twice the measured startup time, with a floor and a ceiling, configurable); acp-client
+also requires no turn running or held on its side, no pending permission, no held channel or reminder change; `{ stopped: false }`
+changes nothing. After a stop, arm the wake for the next due time; activity starts the harness again, racing the stop safely
+(started once). Gate: fake-harness tests for each non-idle reason, the window boundary, stop then wake, stop racing a send.
 
-**Step 6: routines on the library side** (the draft's step 3, after the routine decisions): routine options on the model,
-the 15-minute minimum, update, pause and resume intents with the freeze rule, the catch-up counters (missed, skipped) from
-the harness; no schedule computation in acp-client beyond the local minimum check and the wake value. Enabling consumer
-routines is gated on the harness's unattended-turn guard (a capability to negotiate).
+**Step 6: routines on the library side** (the draft's step 3, after the routine decisions): routine options on the model, the
+15-minute minimum, update, pause and resume changes with the freeze rule, the catch-up counters from the harness; no schedule
+computation in acp-client beyond the local minimum check and the wake value. Enabling consumer routines is gated on the harness's
+unattended-turn guard.
 
-**Step 7: real-stdio joint acceptance** (with the harness implementation; a live provider only with the user's approval,
-otherwise the deterministic fixture model), including the draft's joint scenarios:
+**Step 7: real-stdio joint acceptance** (with the harness implementation; a live provider only with the user's approval, otherwise
+the deterministic fixture model):
 1. Stop a harness holding a saved reminder: no process runs; the wake starts it once; one notice to the original channel;
    `reminder_fired` once; the list shows it done.
 2. Cancel an overdue reminder while stopped: zero notices on open.
-3. Offline create, cancel and update of different reminders in one open, each confirmed by intent id; none duplicated after a
-   kill between apply and clear (the lost open response).
-4. A missed deadline event: acp-client misses a nextDueAt update; the open response and the reconcile repair the wake.
-5. The accepted crash window: the harness commits and advances, acp-client dies before persisting the wake; the next eligible
-   open recovers it, late; assert the documented behaviour.
+3. Offline create, cancel and update of different reminders in one open, each confirmed by `changeId`; none duplicated after a kill
+   between apply and clear (the lost open response).
+4. A missed `reminders_due` event: the open response and the reconcile repair the wake.
+5. The accepted crash window: the harness commits and advances, acp-client dies before persisting the wake; the next eligible open
+   recovers it, late (or expired by `expiresAfter`); assert the documented behaviour.
 6. Delete a conversation with an offline pending reminder: nothing fires, the cache is clean.
-7. Overdue at open after downtime: fires once (coalesced for a routine), late but not lost.
-8. A suspended channel: held, excluded from the wake, no wake loop and no idle-stop restart loop; resume runs it.
-9. Idle stop with a reminder far away: the harness stops and wakes at the due time; with one inside the window it stays up.
+7. Overdue at open after downtime: fires once (coalesced for a routine), unless it expired.
+8. A suspended channel: held, excluded from the wake, no wake loop, no idle-stop restart loop; resume runs it.
+9. Idle stop with a reminder far away: stops and wakes at the due time; with one inside the window the atomic stop refuses.
 10. A wake racing the harness's own timer: one firing.
-11. An agent-created reminder (a tool call in a turn): appears via the created event, in the cache after the next open, and wakes
+11. An agent-created reminder (a tool call in a turn): appears via `reminder_changed`, in the cache after the next open, and wakes
     after an idle stop.
+12. `expiresAfter`: omitted (the default), a duration, and `null` (delivered late with its lateness told to the agent).
+13. `harness.stop()` keeps the wake armed; `agent.close()` clears it and a new Agent re-arms it from the stored time.
 Gate: the real-stdio file passing 20x, plus the suite.
 
-**Step 8: documentation** (library guide, the spec's open item resolved, limitations kept: wakes only while acp-client runs; the
-narrow crash window; the cold-start delay; the cache is last-confirmed state).
+**Step 8: documentation** (library guide; the spec's open item resolved; limitations kept: wakes only while acp-client runs; the
+narrow crash window; the cold-start delay; the cache is last-confirmed state; `reminders_unavailable`).
 
-Suggested slicing for briefs (nothing starts until haurness-l releases the wire decisions and the user schedules it): R7 =
-steps 0-2 (store, model, validation: harness-free), R8 = steps 3-5 (wire, timer, idle), R9 = steps 6-8.
+Suggested slicing for briefs: R7 = steps 0-2 (store, model, validation: harness-free), R8 = steps 3-5 (wire, timer, idle), R9 =
+steps 6-8. Nothing starts until the user schedules it.
 
-## Open contract questions
+## Open points to pin with the harness (Gate 1; none blocks R7)
 
-Settled at design level by the harness draft (details open): intents inside the open next to `channelChanges` on
-`session/create|open`, applied in submitted order after channel changes; a distinct intent id, replay of the recorded
-outcome, a conflict for changed arguments, `blocked` with a reason for a state rejection; revisioned `nextDueAt`, null if
-none, on the open and as an event; fire fields (reminder id, scheduled occurrence time, notice id) and the cancel field
-(reminder id); no assumption of event replay; absolute UTC only (no `in` from acp-client).
+1. **Method names:** the contract text says `reminderChanges` go on the session "create and load"; the earlier planning answer said
+   the executable open `session/create|open` (not the legacy load). Which exact methods carry them?
+2. **`changeId` semantics:** it mirrors decision 0020 (a per-reminder version, echoed). Pin: a replay with the same `changeId` and
+   the same payload returns the recorded outcome; the same `changeId` with a different payload is a `conflict`; a lower `changeId`
+   than the recorded one is applied as a no-op or reported stale?
+3. **Pause and resume:** the ops are `create | update | cancel`, while `reminder_changed` mentions pause and resume: are they
+   `update` payloads?
+4. **Blocked reasons and events:** `not_found` (an update of something unknown) is missing from the reasons list; `expired`
+   (from `expiresAfter`) is missing from `reminder_cancelled.by` (or does an expired one fire late?). Pin the outcome and the
+   report for an expired reminder, and the `expiresAfter` default values.
+5. **Revision on the open:** does the open's response carry the `revision` for `nextDueAt` (the event does)?
+6. **The open's reminder view:** is it complete or bounded/paged (limits are 20 per channel, but many channels)?
+7. **Capability for the unattended guard:** separate flag, needed to enable consumer routines.
+8. **Repository naming:** the answers mention a `channels?` repository for the refusal check; the plan uses a new `reminders?`
+   repository (schema 22): refuse when the harness is stopped and `reminders?` is absent.
+9. **Sweep and retention** (earlier grounding): the page cap, the cursor lifetime, the invalidation code, and the session-lifetime
+   retention of recorded outcomes remain Gate 1.
 
-Still wire dependencies for haurness-l:
-1. **Exact fields:** the `reminderIntents` shape (an intent id, a target reminder id, a kind, a payload), the echo and
-   revision fields on outcomes, the result codes and blocked reasons (`channel_retired`, `invalid_policy`,
-   `invalid_schedule`, limit exceeded, conflict), and the limits (minimum interval, active count).
-2. **Capability and negotiation:** the advertised name (and runtime negotiation) for reminder intents, and for the unattended
-   guard; acp-client refuses `reminders: true` and refuses to send intents without it (a typed error, never a silent pending).
-3. **Event replay:** an explicit statement whether an open (or a subscription) replays fires or cancels missed while
-   acp-client was down; revision 2 assumes none and reconciles from state.
-4. **Idle fence:** an atomic idle-and-stop (or a fence token) because `session/idle` is only a read; with it, `nextDueAt`.
-5. **Routine decisions:** catch-up (coalesce), overlap (skip), minimum interval (5 min harness, 15 min consumer, local),
-   limits, daylight-saving gaps and folds, and how a prior occurrence stays identifiable through take, completion and restart.
-
-Answered (planning level) by haurness-l, 2026-11-24: the reconcile list (bounded, opaque scope-bound cursor, stable order by
-reminder id, a revision fence; the wake never depends on it); host writes (attributed to the host; only consumer-supplied
-additional policy names are forwarded); the absolute `startAt` for an `every` intent (resolved once at acceptance, live and
-stopped); the correction of a blocked intent (a new intent id; a durably recorded blocked outcome stops the resend); inspect-only
-(no flag; a stopped session is read from the cache and pending intents; no acp-client open is inspect-only).
-
-Contract grounding proposed by haurness-l (2026-11-24; planning guidance, exact caps, codes and shapes are Gate 1):
-6. **Sweep:** capped pages; cursors bound to the session, the scope and the reminder-list revision; an explicit
-   cursor-invalidated response so acp-client restarts within its OWN budget (plan step 3). The cap and the code are Gate 1.
-7. **Retention:** the harness never silently expires its dedup and then accepts the same id as new. Draft default: retain
-   the durable intent identity, signature and outcome for the session lifetime. If pruning is needed later, a durable
-   rejection fence or an explicit stale outcome must exist before it is allowed, and the client handling is defined then.
-   For acp-client: an unresolved intent is NEVER retired locally as "too old"; it is resent until an outcome is recorded; a
-   future explicit stale outcome is handled like a blocked one (kept visible, with its reason, until corrected or discarded).
-8. **Authority:** host writes are scoped to the owning, authenticated and authorized harness host connection under the
-   existing host authority; acp-client applies any NARROWER consumer authorization BEFORE submitting (an unauthorized caller
-   is refused with a typed error and no intent is recorded). A valid-shape intent naming an unknown additional policy
-   records a `blocked` `invalid_policy` outcome with no reminder mutation; an unauthorized caller is refused before any intent
-   is recorded on the harness. Exact codes and shape: contract review.
-9. **Remote inspect-only:** deferred unless needed; negotiated explicitly (no writes, no firing, no scheduler release).
-
-For the user and spec owners (unchanged where not answered):
-10. **Defaults:** coalesce for missed runs, skip for overlap, 5 and 15 minutes, 20 per channel.
-11. **Wake ownership:** one row per Agent in acp-client's database; with several Agents sharing a database, only the SQLite
-    owner arms the timer (proposed).
-12. **Backends without the repository:** `create` with the harness stopped fails with a typed error rather than recording an
-    intent a restart loses (proposed).
-13. **ACP conversations:** the capability is false and `create` throws a typed error; no interim emulation.
-14. **Idle-stop window:** measured startup time with a floor; per Agent or global.
-15. **Late-wake tolerance:** the 30 s figure is a proposal.
-16. **`stop()` and the wake:** an explicit `stop()` keeps the wake armed (proposed); confirm or give a disarm control.
-17. **Confidentiality:** reminder text and policy names are stored in the clear in acp-client's database (intents and cache).
+Questions resolved for the user and spec owners: defaults confirmed; text in the clear; only the SQLite owner arms the timer;
+stop keeps the wake and close clears the timer; `reminders_unavailable`; `expiresAfter` on both APIs. Still pending: the idle
+window floor and whether it is per Agent or global; whether the 15-minute consumer minimum should also apply to agent-created
+routines (the agent tool goes through the harness); and the `expiresAfter` defaults.
