@@ -8,10 +8,16 @@ test("summary paging returns earlier whole calls before an oversized call", asyn
   const call = (id: string, providerRequestId?: string) => ({ callId: id, turnId: "1", channel: "a", messageId: `model:${id}`,
     startedAt: "start", endedAt: "end", outcome: "succeeded", attempts: [{ attemptId: `${id}:0`, ordinal: 0, startedAt: "start", endedAt: "end", outcome: "succeeded", ...(providerRequestId ? { providerRequestId } : {}) }] });
   const modelCalls = [call("1"), call("2", "x".repeat(1_048_576)), call("3")];
-  const session = { subscribe() { return () => {}; }, subscribeSession() { return () => {}; }, approvals: { setConsumer() {}, disconnect() {} }, start() {}, snapshot: () => ({ modelCalls }) } as unknown as PersistentSession;
+  const session = { subscribe() { return () => {}; }, subscribeSession() { return () => {}; }, approvals: { setConsumer() {}, disconnect() {} }, start() {}, snapshot() { throw new Error("Unexpected snapshot"); }, readModelCalls(after?: string, limit = 100) {
+    const index = after === undefined ? -1 : modelCalls.findIndex(call => call.callId === after);
+    if (after !== undefined && index < 0) return { ok: false, error: { code: "not_found", message: "Unknown call cursor" } };
+    const calls = modelCalls.slice(index + 1, index + 1 + limit);
+    return { ok: true, value: { calls, ...(index + 1 + calls.length < modelCalls.length ? { next: calls.at(-1)!.callId } : {}) } };
+  } } as unknown as PersistentSession;
   const server = createProtocolServer(async () => ({ session, close() {} })), client = new HarnessClient(createInProcessTransport(server));
   try {
     await client.initialize(); await client.createSession({ sessionId: "s", participants: [], channels: {} });
+    await expect(client.modelCalls({ after: "unknown" })).rejects.toMatchObject({ code: "not_found" });
     const page = await client.modelCalls(); expect(page.calls.map(item => item.callId)).toEqual(["1"]); expect(page.next).toBe("1");
     expect((await client.modelCalls({ limit: 1 })).calls.map(item => item.callId)).toEqual(["1"]);
     await expect(client.modelCalls({ after: "1" })).rejects.toMatchObject({ code: "transfer_limit" });

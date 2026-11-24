@@ -391,14 +391,13 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     }
     if (method === "session/stop") { keys(p, []); return wireStatus(session.stop("Stopped by the host"), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
     if (method === "session/model-calls") {
-      keys(p, ["after", "limit"]); const calls = session.snapshot().modelCalls;
-      const at = p.after === undefined ? -1 : calls.findIndex(call => call.callId === text(p.after));
-      if (p.after !== undefined && at < 0) throw new Fault("not_found", "Unknown call cursor");
+      keys(p, ["after", "limit"]);
+      const after = p.after === undefined ? undefined : text(p.after);
       const limit = p.limit === undefined ? 100 : count(p.limit, 100); if (limit > 100) bad("Limit exceeds 100");
+      const { calls, next } = readValue(session.readModelCalls(after, limit)).value;
       const page = []; let bytes = 0;
-      for (const call of calls.slice(at + 1)) {
+      for (const call of calls) {
         const size = new TextEncoder().encode(JSON.stringify(call)).length + 1;
-        if (page.length >= limit) break;
         if (size > MAX_FRAME_BYTES - 1024) {
           if (page.length) break;
           throw new Fault("transfer_limit", "Call summary exceeds frame limit");
@@ -406,7 +405,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         if (bytes + size > MAX_FRAME_BYTES - 1024) break;
         page.push(call); bytes += size;
       }
-      return { calls: page, ...(at + 1 + page.length < calls.length ? { next: page.at(-1)!.callId } : {}) };
+      return { calls: page, ...(next !== undefined || page.length < calls.length ? { next: page.at(-1)!.callId } : {}) };
     }
     if (method === "session/message/read") {
       keys(p, ["messageId", "offset"]); const id = text(p.messageId), offset = p.offset;

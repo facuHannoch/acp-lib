@@ -39,7 +39,8 @@ export interface Tables extends ContextRows {
   readRange(range: Parameters<OperatorStorageReads["readTimeline"]>[0]): TimelineEntry[];
   pendingCount(channel: string): number;
   getModelState(): ModelState | undefined;
-  setModelState(state: ModelState): void;
+  setModelState(state: ModelState, changed?: readonly ModelCallSummary[]): void;
+  modelCallPage(after: string | undefined, count: number): ModelCallSummary[];
   /** Decision 0021: sorted names of revoked revocable tools; undefined if never written. */
   getRevokedTools(): string[] | undefined;
   setRevokedTools(names: string[]): void;
@@ -355,12 +356,12 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     return { call, attempt };
   };
   const finishModels = (turnId: number) => {
-    const state = tables.getModelState() ?? emptyModelState(); let changed = false;
+    const state = tables.getModelState() ?? emptyModelState(); const changed: ModelCallSummary[] = [];
     for (const call of state.calls) if (call.turnId === String(turnId) && call.outcome === "running") {
-      call.outcome = "interrupted"; call.endedAt = now(); changed = true;
+      call.outcome = "interrupted"; call.endedAt = now(); changed.push(call);
       for (const attempt of call.attempts) if (attempt.outcome === "running") { attempt.outcome = "interrupted"; attempt.endedAt = call.endedAt; }
     }
-    if (changed) tables.setModelState(state);
+    if (changed.length) tables.setModelState(state, changed);
   };
   return {
     startCall: (turnId, itemIds) => run(meta => {
@@ -372,7 +373,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (state.calls.some(call => call.turnId === turnId && call.outcome === "running")) fail("invalid_state", "Turn already has a running model call");
       const id = String(state.nextCall++), call: ModelCallSummary = { callId: id, turnId, channel: turn.channelId, messageId: `model:${id}`,
         startedAt: now(), outcome: "running", attempts: [] };
-      state.calls.push(call); state.itemIds[id] = [...itemIds]; tables.setModelState(state); seq(meta); return call;
+      state.calls.push(call); state.itemIds[id] = [...itemIds]; tables.setModelState(state, [call]); seq(meta); return call;
     }),
     startAttempt: (id, scripted) => run(meta => {
       const state = tables.getModelState() ?? emptyModelState(), call = modelCall(state, id); running(Number(call.turnId));
@@ -380,7 +381,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const ordinal = call.attempts.length, step = Object.hasOwn(state.scriptPositions, call.channel) ? state.scriptPositions[call.channel]! : 0;
       const attempt: ModelCallSummary["attempts"][number] = { attemptId: `${id}:${ordinal}`, ordinal, startedAt: now(), outcome: "running", ...(ordinal ? { retryReason: call.attempts[ordinal - 1]?.outcome } : {}), ...(scripted ? { scriptStep: step } : {}) };
       if (scripted) Object.defineProperty(state.scriptPositions, call.channel, { value: step + 1, writable: true, configurable: true, enumerable: true });
-      call.attempts.push(attempt); tables.setModelState(state); seq(meta); return attempt;
+      call.attempts.push(attempt); tables.setModelState(state, [call]); seq(meta); return attempt;
     }),
     confirm: (id, attemptId, milestone) => run(meta => {
       const state = tables.getModelState() ?? emptyModelState(); activeAttempt(state, id, attemptId);
@@ -390,9 +391,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (advanced.length) seq(meta); return advanced.map(item => item.itemId);
     }),
     recordProviderRequestId: (id, attemptId, requestId) => run(meta => {
-      const state = tables.getModelState() ?? emptyModelState(), { attempt } = activeAttempt(state, id, attemptId);
+      const state = tables.getModelState() ?? emptyModelState(), { call, attempt } = activeAttempt(state, id, attemptId);
       if (!text(requestId)) fail("invalid_input", "Invalid provider request ID");
-      if (!attempt.providerRequestId) { attempt.providerRequestId = requestId; tables.setModelState(state); seq(meta); }
+      if (!attempt.providerRequestId) { attempt.providerRequestId = requestId; tables.setModelState(state, [call]); seq(meta); }
     }),
     recordUsage: (id, attemptId, usage) => run(meta => {
       const state = tables.getModelState() ?? emptyModelState(), call = modelCall(state, id);
@@ -401,13 +402,13 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (call.outcome !== "running" || attempt.outcome !== "running" || tables.turn(Number(call.turnId))?.state.status !== "running") return;
       if (!usage || typeof usage !== "object" || Object.keys(usage).some(key => !["inputTokens", "outputTokens", "totalTokens"].includes(key))
         || Object.values(usage).some(value => !Number.isSafeInteger(value) || value < 0)) fail("invalid_input", "Invalid provider usage");
-      attempt.usage = structuredClone(usage); tables.setModelState(state); seq(meta);
+      attempt.usage = structuredClone(usage); tables.setModelState(state, [call]); seq(meta);
     }),
     finishAttempt: (id, attemptId, outcome, requestId) => run(meta => {
-      const state = tables.getModelState() ?? emptyModelState(), { attempt } = activeAttempt(state, id, attemptId);
+      const state = tables.getModelState() ?? emptyModelState(), { call, attempt } = activeAttempt(state, id, attemptId);
       if (!["transient_failure", "invalid_request", "invalid_config", "provider_failure", "incomplete", "output_limit", "timeout", "interrupted"].includes(outcome) || (requestId !== undefined && !text(requestId))) fail("invalid_input", "Invalid attempt outcome or provider ID");
       attempt.outcome = outcome; attempt.endedAt = now(); if (!attempt.providerRequestId && requestId) attempt.providerRequestId = requestId;
-      tables.setModelState(state); seq(meta);
+      tables.setModelState(state, [call]); seq(meta);
     }),
     commitResponse: (id, attemptId, response, requestId) => run(meta => {
       const state = tables.getModelState() ?? emptyModelState(), { call, attempt } = activeAttempt(state, id, attemptId), turn = running(Number(call.turnId));
@@ -426,19 +427,19 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const entry: TimelineEntry = { seq: seq(meta), at: now(), channelId: turn.channelId, turnId: turn.turnId, from: "agent", message };
       tables.addEntry({ ...entry, messageId: call.messageId }); state.entryIds[String(entry.seq)] = call.messageId; call.outcome = "succeeded"; call.endedAt = now();
       attempt.outcome = "succeeded"; attempt.endedAt = call.endedAt; if (!attempt.providerRequestId && requestId) attempt.providerRequestId = requestId;
-      tables.setModelState(state); return { ...entry, messageId: call.messageId };
+      tables.setModelState(state, [call]); return { ...entry, messageId: call.messageId };
     }),
     finishCall: (id, outcome) => run(meta => {
       const state = tables.getModelState() ?? emptyModelState(), call = modelCall(state, id); running(Number(call.turnId));
       if (call.outcome !== "running" || call.attempts.some(a => a.outcome === "running")) fail("invalid_state", "Cannot finish model call");
       if (!["failed", "incomplete", "output_limit", "timeout", "interrupted"].includes(outcome)) fail("invalid_input", "Invalid call outcome");
-      call.outcome = outcome; call.endedAt = now(); tables.setModelState(state); seq(meta);
+      call.outcome = outcome; call.endedAt = now(); tables.setModelState(state, [call]); seq(meta);
     }),
     readCalls: (after, limit = 100) => run(() => {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail("invalid_input", "Invalid model call page size");
-      const calls = (tables.getModelState() ?? emptyModelState()).calls, at = after ? calls.findIndex(call => call.callId === after) : -1;
-      if (after && at < 0) fail("not_found", "Unknown model call cursor");
-      const page = calls.slice(at + 1, at + 1 + limit); return { calls: page, ...(at + 1 + limit < calls.length ? { next: page.at(-1)!.callId } : {}) };
+      const rows = tables.modelCallPage(after, limit + 1);
+      const calls = rows.slice(0, limit);
+      return { calls, ...(rows.length > limit ? { next: calls.at(-1)!.callId } : {}) };
     }, true),
     acceptItem: (input, maxInputBytes) => run(meta => {
       const external = input?.kind === "external_notice";
