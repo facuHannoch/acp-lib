@@ -201,3 +201,66 @@ another channel retaining its own deadline, and participant admission
 followed by take/reset and bounded catch-up. Cover withdrawal before take
 and a crash between participant admission and reset. Reopen must use the
 saved counter and inbox to recover eligibility without a duplicate notice.
+
+## R9 startup and wire clarification
+
+Create and open retain the 0031 ordering and per-entry commit boundary.
+Publish the session and bind any guard enable, apply startup channel changes,
+then apply reminder entries in order. On a create/edit proof-budget error,
+the failing entry has no receipt or partial mutation. Earlier guard enable,
+channel edits and reminder receipts survive if committed. Stop at the failing
+entry, skip later entries, do not run startup reminder due processing and
+do not release unrelated scheduling on that failed request. Explicit
+checkpoint resumes retain 0014 behavior. No structured error.data field
+identifies the entry or confirms the failure point. The consumer retains
+the frozen, unacknowledged batch and retries it exactly with a bound,
+including original IDs, anchors and payloads. Durable receipts replay.
+If create already published the session, recover through executable open
+of the same confirmed session identity, with the frozen intents intact.
+
+Negotiate both initialize capabilities before sending routine configuration.
+Absence is an explicit incompatibility. The host can request one-time guard
+enable on open after negotiation. An incompatible saved guard value is
+invalid_config without a required structured error.data payload. Executable
+open confirms effective maxConsecutiveTurns. Include owed pause, cancel and
+other non-activating edits in startup so they precede due processing. Hold
+create, resume and schedule replacement until executable open confirms the
+effective guard, then send them live with their original anchors. Held
+activations alone contribute no host wake deadline. Preserve per-reminder
+order. Resolve a local intent conflict before sending a later pause or cancel
+that must win ahead of an earlier held activation.
+
+A calendar row's schedule.timezone holds its canonical zone. A calendar row
+also has top-level timezoneVersion, the version last validated for that
+schedule. A migration hold uses state blocked, blockedReason invalid_schedule
+and top-level timezoneMigration: { fromVersion, targetVersion, cause }, with
+cause invalid_schedule or proof_budget. The row keeps its saved
+timezoneVersion until successful revalidation. Successful repair removes
+timezoneMigration. The channel event is
+routine_migration_blocked { reminderId, fromVersion, targetVersion, cause }.
+Publish it after the committing transaction, before the same-commit
+reminder_changed carrying that authoritative row. Reopening against the same
+target emits neither event again for an already recorded hold. No migration
+event is emitted on successful revalidation; reminder_changed carries any
+changed authoritative row.
+
+Calendar range routine_disposition events are live and post-commit. They
+have no replay or list API and no contractual tuple ID. Publish a
+same-commit disposition before its associated reminder_fired. Storage
+retains the disposition and migration idempotency independently of whether
+a consumer received the event.
+
+A returned interval schedule always contains explicit resolved startAt,
+including when omitted on input. A replacement keeps the recurrence aligned
+to its new anchor and starts strictly after the persisted processed-through
+instant as well as respecting the minimum initial lead. Discard aligned
+matches at or below the fence without consuming the replacement count. An
+inclusive until before the first eligible instant is invalid_schedule.
+Reject an empty bounded replacement as invalid_schedule.
+
+Verification includes create and open proof-budget failures after an
+earlier successful receipt, preserved channel and guard commits, skipped
+later entries and due work, and exact retry through the same session. Pin
+the event order and authoritative migration row, same-target reopen
+idempotency, normalized startAt, inclusive until equality, and replacement
+fence alignment.
