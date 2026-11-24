@@ -1,3 +1,4 @@
+import { sqliteWebTables } from "./web-tables.ts";
 import { bindUnattendedGuard, checkUnattendedGuard } from "./engine.ts";
 import { sqliteReminderTables } from "./sqlite-reminders.ts";
 import { sqliteAttachmentTables } from "./attachment-tables.ts";
@@ -255,6 +256,7 @@ function installContextPolicyIndex(db: Database): void {
 
 function sqliteTables(db: Database): Tables & { dispose(): void } {
   const attachments = sqliteAttachmentTables(db);
+  const web = sqliteWebTables(db);
   const readItem = (row: Row): StoredItem => {
     const value = item(row), parts = attachments.parts(value.itemId);
     return parts ? { ...value, parts } : value;
@@ -362,6 +364,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     }
   };
   return {
+    web,
     attachments,
     reminders: sqliteReminderTables(db),
     contextTurnStart: (channelId, turnId) => s.contextTurnStart.get(turnId, channelId)?.started_seq,
@@ -595,14 +598,18 @@ export function createSqliteStorageAdapter(path: string, adapterOptions: { media
         try {
           try { meta = inspect.getMeta(); }
           catch { throw new Fail("incompatible", "File is not a readable harness session"); }
-          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7 && meta.formatVersion !== 8 && meta.formatVersion !== 9) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
-          const attachmentBase = meta.formatVersion === 9 ? inspect.attachments?.baseFormat() : undefined;
-          if (meta.formatVersion === 9 && attachmentBase !== 6 && attachmentBase !== 7 && attachmentBase !== 8)
+          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7 && meta.formatVersion !== 8 && meta.formatVersion !== 9 && meta.formatVersion !== 10) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
+          const webBase = meta.formatVersion === 10 ? inspect.web.baseFormat() : undefined;
+          if (meta.formatVersion === 10 && (![6, 7, 8, 9].includes(webBase ?? 0) || !inspect.web.all().length))
+            throw new Fail("incompatible", "Format 10 is missing web dispatch evidence");
+          const attachmentFormat = meta.formatVersion === 9 || webBase === 9;
+          const attachmentBase = attachmentFormat ? inspect.attachments?.baseFormat() : undefined;
+          if (attachmentFormat && attachmentBase !== 6 && attachmentBase !== 7 && attachmentBase !== 8)
             throw new Fail("incompatible", "Format 9 is missing its base format");
-          if (meta.formatVersion === 9 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
+          if (attachmentFormat && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
               WHERE type = 'table' AND name IN ('attachment_files','attachment_items','attachment_item_parts')`).get()?.count !== 3)
             throw new Fail("incompatible", "Format 9 is missing attachment storage");
-          if ((meta.formatVersion === 9 ? attachmentBase! : meta.formatVersion) >= 7 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
+          if ((attachmentFormat ? attachmentBase! : webBase ?? meta.formatVersion) >= 7 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
               WHERE type = 'table' AND name IN ('reminder_rows','reminder_receipts','reminder_creates','reminder_metadata')`).get()?.count !== 4)
             throw new Fail("incompatible", "Format 7 is missing reminder storage");
           if (meta.sessionId !== identity.sessionId) throw new Fail("incompatible", "File holds a different session");

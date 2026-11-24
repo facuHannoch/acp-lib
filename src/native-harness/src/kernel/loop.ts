@@ -29,7 +29,7 @@ export async function runTurn(
         // A skip is already paired synchronously by the gate, so interruption
         // cannot end a turn between its approval closure and its result commit.
         if (result.dispatched) {
-          context.append({ role: "tool", callId: call.id, content: result.content, ...(result.outcome ? { outcome: result.outcome } : {}) });
+          context.append({ role: "tool", callId: call.id, content: result.content, ...(result.outcome ? { outcome: result.outcome } : {}), ...(result.usage ? { usage: result.usage } : {}) });
           // A dispatched call whose executor reported a typed failure, or whose
           // wait ended at its deadline, still has a paired result: the turn goes on.
           const status = result.outcome?.status === "interrupted" ? "interrupted" : result.outcome?.status === "failed" ? "failed" : "completed";

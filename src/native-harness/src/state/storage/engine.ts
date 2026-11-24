@@ -1,3 +1,4 @@
+import { validCommittedWebUsage, validWebDispatch } from "../../util/web-usage.ts";
 import { resolveRoutineZone } from "../../capabilities/reminders/iana-zones.ts";
 import { SESSION_INTAKE_LIMITS } from "../../util/intake.ts";
 import { advanceRoutine } from "../../capabilities/reminders/routine-advance.ts";
@@ -51,6 +52,7 @@ export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], item
  * rule of the storage contract; a backend only stores rows and makes
  * `transaction` atomic (all writes of a throwing callback are undone). */
 export interface Tables extends ContextRows {
+  web: import("./web-tables.ts").WebTables;
   /** SQLite attachment metadata, absent in adapters without managed bytes. */
   attachments?: ReturnType<typeof import("./attachment-tables.ts").sqliteAttachmentTables>;
   reminders: ReminderTables;
@@ -157,8 +159,9 @@ function checkMessage(message: unknown): Stored {
   const m = message as Record<string, unknown>;
   const keys = Object.keys(m);
   if (m.role === "tool") {
-    if (typeof m.content !== "string" || !text(m.callId) || keys.some(key => !["role", "content", "callId", "outcome"].includes(key)))
+    if (typeof m.content !== "string" || !text(m.callId) || keys.some(key => !["role", "content", "callId", "outcome", "usage"].includes(key)))
       fail("invalid_input", "Tool result needs content and callId");
+    if (m.usage !== undefined && !validCommittedWebUsage(m.usage)) fail("invalid_input", "Invalid web usage");
     // Decision 0021: an optional, typed outcome. Checked here so a stored
     // result never claims a status the invocation view cannot interpret.
     if (m.outcome !== undefined) {
@@ -181,7 +184,7 @@ function checkMessage(message: unknown): Stored {
 }
 
 function session(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 9 ? 9 : meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
+  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 10 ? 10 : meta.formatVersion >= 9 ? 9 : meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
     lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
 
@@ -204,6 +207,7 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
       const id = tables.getModelState()?.entryIds[String(entry.seq)];
       return id ? { ...entry, messageId: id } : entry;
     }),
+    ...(tables.web.baseFormat() === undefined ? {} : { webDispatches: tables.web.all() }),
     modelCalls: tables.getModelState()?.calls ?? [], scriptPositions: tables.getModelState()?.scriptPositions ?? {},
     ...(tables.getRevokedTools() === undefined ? {} : { revokedTools: tables.getRevokedTools()! }),
   };
@@ -228,8 +232,20 @@ export function initialIntakeHasParticipant(items: readonly StoredItem[]) {
   return false;
 }
 
+/** Physical web format 10 retains the prior logical feature format separately. */
+function logicalFormat(tables: Tables, meta: Meta): number {
+  const physical = meta.formatVersion === 10 ? tables.web.baseFormat() ?? 0 : meta.formatVersion;
+  return physical === 9 ? tables.attachments?.baseFormat() ?? 0 : physical;
+}
+function advancePriorFormat(tables: Tables, meta: Meta, format: 7 | 8) {
+  const physical = meta.formatVersion === 10 ? tables.web.baseFormat() ?? 0 : meta.formatVersion;
+  if (physical === 9) tables.attachments?.advanceBaseFormat(format);
+  else if (meta.formatVersion === 10) tables.web.advanceBaseFormat(format);
+  else meta.formatVersion = Math.max(meta.formatVersion, format);
+}
+
 function routineHeldChannels(tables: Tables, meta: Meta): string[] {
-  const limit = meta.formatVersion >= 8 ? tables.reminders.guardLimit() : undefined;
+  const limit = logicalFormat(tables, meta) >= 8 ? tables.reminders.guardLimit() : undefined;
   if (limit === undefined) return [];
   return tables.channels().filter(({ channelId, lifecycle }) => {
     if (lifecycle !== "open" || tables.reminders.guardSpent(channelId) < limit) return false;
@@ -238,7 +254,7 @@ function routineHeldChannels(tables: Tables, meta: Meta): string[] {
 }
 
 function refreshReminderWake(tables: Tables, meta: Meta) {
-  if (meta.formatVersion < 7) return;
+  if (logicalFormat(tables, meta) < 7) return;
   const wake = tables.reminders.wake();
   const nextDueAt = meta.lifecycle === "running" ? tables.reminders.eligible(null, 1, routineHeldChannels(tables, meta))[0]?.reminder.nextRunAt ?? null : null;
   if (nextDueAt !== wake.nextDueAt) tables.reminders.setWake({ nextDueAt, reminderRevision: wake.reminderRevision + 1 });
@@ -255,14 +271,14 @@ export function bindUnattendedGuard(tables: Tables, requested: number | undefine
   if (requested === undefined || tables.reminders.guardLimit() !== undefined) return;
   tables.reminders.bindGuard(requested);
   const meta = tables.getMeta();
-  if (meta.formatVersion === 9) tables.attachments?.advanceBaseFormat(8);
-  tables.setMeta({ ...meta, formatVersion: Math.max(meta.formatVersion, 8), revision: meta.revision + 1 });
+  advancePriorFormat(tables, meta, 8);
+  tables.setMeta({ ...meta, revision: meta.revision + 1 });
 }
 
 type ReminderDeliveryEvent = { channel: string; event: ReminderChannelEvent };
 
 function migrateRoutineZones(tables: Tables, meta: Meta, events: ReminderDeliveryEvent[]) {
-  if (meta.formatVersion < 8) return false;
+  if (logicalFormat(tables, meta) < 8) return false;
   const version = resolveRoutineZone("Etc/UTC")!.timezoneVersion;
   let after = 0, changed = false;
   for (;;) {
@@ -592,10 +608,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
   };
   const reminders = tables.reminders;
   const activateReminders = (meta: Meta) => {
-    if (meta.formatVersion < 7 || (meta.formatVersion === 9 && (tables.attachments?.baseFormat() ?? 0) < 7)) {
+    if (logicalFormat(tables, meta) < 7) {
       reminders.activate();
-      if (meta.formatVersion === 9) tables.attachments?.advanceBaseFormat(7);
-      else meta.formatVersion = 7;
+      advancePriorFormat(tables, meta, 7);
     }
   };
   const putReminder = (meta: Meta, reminder: Reminder, defaultedExpiry?: boolean, original?: string) => {
@@ -636,7 +651,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const attachments = tables.attachments!;
       if (attachments.get(metadata.id)) fail("already_exists", "Attachment ID already exists");
       attachments.publish(metadata, now());
-      meta.formatVersion = 9;
+      if (meta.formatVersion === 10) tables.web.advanceBaseFormat(9);
+      else meta.formatVersion = 9;
       seq(meta);
     }),
     readManagedAttachment: id => run(() => {
@@ -757,8 +773,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         saveReceipt(receipt) {
           activateReminders(meta);
           if (routineSchedule) {
-            if (meta.formatVersion === 9) tables.attachments?.advanceBaseFormat(8);
-            else meta.formatVersion = 8;
+            advancePriorFormat(tables, meta, 8);
           }
           reminders.saveReceipt(receipt);
           seq(meta);
@@ -913,7 +928,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (tables.liveTurn(channel.channelId)) return null;
       const pending = boundaryPending(channelId, intake);
       if (!pending.length) return null;
-      const limit = meta.formatVersion >= 8 ? reminders.guardLimit() : undefined;
+      const limit = logicalFormat(tables, meta) >= 8 ? reminders.guardLimit() : undefined;
       if (limit !== undefined) {
         const spent = reminders.guardSpent(channelId);
         const admission = unattendedAdmission(limit, spent, pending.some(item => item.kind === "participant_message"));
@@ -948,17 +963,26 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         if (message.calls.length && turn.state.status === "running" && turn.state.dispatchedCallIds === undefined)
           tables.putTurn({ ...turn, state: { ...turn.state, dispatchedCallIds: [] } });
       } else if (!open.includes(message.callId)) fail("invalid_input", `No unanswered call ${message.callId} in this turn`);
+      if (message.role === "tool" && message.usage !== undefined && !tables.web.all().some(record => record.turnId === turnId && record.callId === message.callId && record.evidence.paid))
+        fail("invalid_input", "Web usage needs paid dispatch evidence");
       const entry: TimelineEntry = { seq: seq(meta), at: now(), channelId: turn.channelId, turnId,
         from: message.role === "tool" ? "tool" : "agent", message: structuredClone(message) };
       tables.addEntry(entry);
       return entry;
     }),
 
-    markToolDispatched: (turnId, callId) => run(meta => {
+    markToolDispatched: (turnId, callId, evidence) => run(meta => {
       const turn = running(turnId);
       const state = turn.state.status === "running" ? turn.state : fail("invalid_state", "Turn is not running");
       if (!text(callId) || !unanswered(tables, turnId).includes(callId)
         || state.dispatchedCallIds?.includes(callId)) fail("invalid_state", "Call is not an undispatched outstanding call of this turn");
+      if (evidence !== undefined) {
+        if (!validWebDispatch(evidence)) fail("invalid_input", "Invalid web dispatch evidence");
+        const call = tables.entriesOfTurn(turnId).flatMap(entry => entry.message.role === "assistant" ? entry.message.calls : []).find(candidate => candidate.id === callId);
+        if (!call || call.name !== evidence.operation) fail("invalid_input", "Web dispatch operation does not match call");
+        tables.web.add({ turnId, callId, evidence }, meta.formatVersion);
+        meta.formatVersion = 10;
+      }
       tables.putTurn({ ...turn, state: { ...state, dispatchedCallIds: [...(state.dispatchedCallIds ?? []), callId] } });
       seq(meta);
     }),
@@ -1156,7 +1180,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }),
 
     ownerConfig: () => run(() => ownerSnapshot, true),
-    unattendedGuard: () => run(meta => meta.formatVersion >= 8 ? reminders.guardLimit() : undefined, true),
+    unattendedGuard: () => run(meta => logicalFormat(tables, meta) >= 8 ? reminders.guardLimit() : undefined, true),
     executionCompatible: () => run(() => !incompatibleViewOnly && referencesCompatible(tables, activeConfig), true),
     importedConfig: () => run(() => tables.getConfig(), true),
     saveConfig: value => run(() => {
@@ -1175,7 +1199,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         items: channels.flatMap(channel => tables.pendingItems(channel.channelId)) };
     }, true),
     readReadyChannels: intake => run(meta => {
-      const limit = meta.formatVersion >= 8 ? reminders.guardLimit() : undefined;
+      const limit = logicalFormat(tables, meta) >= 8 ? reminders.guardLimit() : undefined;
       return { lifecycle: meta.lifecycle, channels: tables.channels()
         .filter(({ lifecycle, channelId }) => lifecycle === "open" && tables.pendingCount(channelId) > 0 &&
           (limit === undefined || reminders.guardSpent(channelId) < limit ||

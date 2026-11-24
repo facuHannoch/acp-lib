@@ -1,3 +1,4 @@
+import { memoryWebTables } from "./web-tables.ts";
 import { bindUnattendedGuard, checkUnattendedGuard } from "./engine.ts";
 import { emptyMemoryReminders, memoryReminderTables, type MemoryReminderState } from "./memory-reminders.ts";
 import { emptyMemoryAttachments, memoryAttachmentTables, type MemoryAttachmentState } from "./memory-attachments.ts";
@@ -13,6 +14,7 @@ import { validateManagedConfig } from "../../util/config.ts";
 type ContextEntry = ContextRow & { entry: TimelineEntry };
 
 interface Data {
+  web: { base?: number; records: Map<string, import("../../contracts/web.ts").StoredWebDispatch> };
   reminders: MemoryReminderState;
   attachments: MemoryAttachmentState;
   bySeq: Map<number, ContextEntry>;
@@ -31,7 +33,7 @@ interface Data {
   channels: Map<string, ChannelRow>; participants: Set<string>;
   items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[]; conversation: Map<string, TimelineEntry[]>; replies: Map<number, TimelineEntry[]>;
 }
-const empty = (meta: Meta): Data => ({ meta, reminders: emptyMemoryReminders(), attachments: emptyMemoryAttachments(), channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), historicalCandidates: [], retrievalCalls: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
+const empty = (meta: Meta): Data => ({ meta, web: { records: new Map() }, reminders: emptyMemoryReminders(), attachments: emptyMemoryAttachments(), channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), historicalCandidates: [], retrievalCalls: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
 const copy = <T>(value: T): T => structuredClone(value);
 const live = (turn: TurnRow) => turn.state.status === "running" || turn.state.status === "suspended";
 
@@ -59,7 +61,8 @@ function memoryTables(data: Data): Tables {
       bytes: base.bytes - byteLength(JSON.stringify(row.entry.message)) + byteLength(JSON.stringify(projected)) };
   };
   return {
-    attachments: memoryAttachmentTables(data.attachments, log, () => data.meta.formatVersion, id => data.items.get(id)),
+    web: memoryWebTables(data.web, log),
+    attachments: memoryAttachmentTables(data.attachments, log, () => data.meta.formatVersion === 10 ? data.web.base! : data.meta.formatVersion, id => data.items.get(id)),
     reminders: memoryReminderTables(data.reminders, log, channel => data.channels.get(channel)?.lifecycle === "open"),
     contextTurnStart(channelId, turnId) {
       const turn = data.turns.get(turnId);

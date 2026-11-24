@@ -79,7 +79,7 @@ export interface StoredSession {
   sessionId: string;
   /** Storage contract/data format revision, distinct from RPC and archive versions.
    * Revision 5 stores model calls and script reservations. Formats 2–4 upgrade on open. */
-  formatVersion: 6 | 7 | 8 | 9;
+  formatVersion: 6 | 7 | 8 | 9 | 10;
   createdAt: string;
   lifecycle: SessionLifecycle;
   /** The key supplied at create. Immutable; open never rewrites it. */
@@ -224,6 +224,7 @@ export interface StorageSnapshot {
   /** Decision 0021: names of revocable tools whose grant is revoked, sorted.
    * Absent when none ever was. Carried by export and import. */
   revokedTools?: string[];
+  webDispatches?: import("./web.ts").StoredWebDispatch[];
 }
 
 /** Logical, adapter-independent session copy. JSON-serializable. Versioned
@@ -329,7 +330,7 @@ export interface SessionStorage extends ModelCallStore, ReminderStorage, Timelin
    * dispatched. Invalid or duplicate marks write nothing; failure cannot invoke
    * the tool or emit started. After success its effect is uncertain until its
    * result commits. This evidence is never an approval grant. */
-  markToolDispatched(turnId: number, callId: string): StorageResult<void>;
+  markToolDispatched(turnId: number, callId: string, evidence?: import("./web.ts").WebDispatchEvidence): StorageResult<void>;
   /** False when stored policy references cannot be resolved by this owner. */
   unattendedGuard(): StorageResult<number | undefined>;
   executionCompatible(): StorageResult<boolean>;

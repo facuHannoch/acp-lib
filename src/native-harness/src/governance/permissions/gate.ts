@@ -88,7 +88,7 @@ export async function dispatchWithPolicy(options: {
    * available, invalid arguments), or undefined. Read before authorization
    * and again at the dispatch boundary. Policy denial retains precedence. */
   refuse?(): { code: string; detail?: string } | undefined;
-}): Promise<{ content: string; dispatched: boolean; outcome?: ToolOutcome }> {
+}): Promise<{ content: string; dispatched: boolean; outcome?: ToolOutcome; usage?: import("../../contracts/web.ts").WebResultUsage }> {
   const { call, signal, suspension } = options;
   const skip = (code: string, detail?: string) => { const content = skipped(code, detail); options.recordSkip(content, code); return { content, dispatched: false }; };
   signal.throwIfAborted();
@@ -125,5 +125,5 @@ export async function dispatchWithPolicy(options: {
   options.started();
   request?.dispatchClosed();
   const settled = await result;
-  return typeof settled === "string" ? { content: settled, dispatched: true } : { content: settled.content, dispatched: true, outcome: settled.outcome };
+  return typeof settled === "string" ? { content: settled, dispatched: true } : { content: settled.content, dispatched: true, outcome: settled.outcome, ...(settled.usage ? { usage: settled.usage } : {}) };
 }

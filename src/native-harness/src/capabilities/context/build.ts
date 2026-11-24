@@ -28,6 +28,7 @@ function unfinished(turns: readonly ContextTurnOutcome[]): string {
 export function buildSharedContext(entries: readonly ContextEntry[], systemPrompt: string, turns: readonly ContextTurnOutcome[] = []): Message[] {
   const shared = entries.map((entry) => {
     const { providerState: _opaque, ...message } = renderContextEntry(entry) as Message & { providerState?: unknown };
+    if (message.role === "tool") delete message.usage;
     return { seq: entry.seq, at: entry.at, channelId: entry.channelId, turnId: entry.turnId, from: entry.from,
       kind: entry.kind, sourceChannelId: entry.sourceChannelId, externalSource: entry.externalSource, message };
   });

@@ -32,10 +32,13 @@ export function sqliteAttachmentTables(db: Database) {
     CREATE INDEX IF NOT EXISTS attachment_items_by_item ON attachment_items(item_id);`);
     const row = query<{ value: string }, []>("SELECT value FROM meta WHERE key='formatVersion'").get();
     const format = Number(row?.value);
-    if (!Number.isSafeInteger(format) || format < 6 || format > 9) throw new Error("Unsupported session format");
-    if (format < 9) {
-      query("INSERT INTO meta (key,value) VALUES ('attachmentBaseFormat', ?)").run(String(format));
-      query("UPDATE meta SET value='9' WHERE key='formatVersion'").run();
+    if (!Number.isSafeInteger(format) || format < 6 || format > 10) throw new Error("Unsupported session format");
+    const prior = format === 10 ? Number(query<{ value: string }, []>("SELECT value FROM meta WHERE key='webBaseFormat'").get()?.value) : format;
+    if (prior < 9) {
+      if (![6, 7, 8].includes(prior)) throw new Error("Invalid attachment base format");
+      query("INSERT INTO meta (key,value) VALUES ('attachmentBaseFormat', ?)").run(String(prior));
+      if (format === 10) query("UPDATE meta SET value='9' WHERE key='webBaseFormat'").run();
+      else query("UPDATE meta SET value='9' WHERE key='formatVersion'").run();
     }
   };
   type Row = { id: string; channel: string; filename: string; media_type: string; bytes: number; sha256: string; ready_at: string };
