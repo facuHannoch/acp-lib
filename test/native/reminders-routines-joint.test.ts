@@ -277,3 +277,33 @@ test("joint production launcher delivers a timezone migration hold once and cach
     expect(holds()).toHaveLength(1);
   } finally { await s.rig.clean(); }
 }, 15_000);
+test("joint harness refuses forged schedule kind and one-off delivery edits without changing confirmed rows", async () => {
+  const s = await routineRig();
+  s.guard(4);
+  s.observeRpc();
+  try {
+    const agent = await s.rig.open();
+    const channel = await s.conversation(agent);
+    await agent.nativeHarness!.start();
+    const every = await channel.reminders.create({ text: "interval", schedule: { every: interval } });
+    const calendar = await channel.reminders.create({ text: "calendar", schedule: { cron: "0 13 * * *", timezone: "Etc/UTC" } });
+    const oneOff = await channel.reminders.create({ text: "one-off", schedule: { in: interval } });
+    expect([every.state, calendar.state, oneOff.state]).toEqual(["confirmed", "confirmed", "confirmed"]);
+    const change = s.client.changeReminder.bind(s.client);
+    const malformed = new Map<string, Extract<ReminderChange, { op: "update" }>["payload"]>([
+      [every.id, { schedule: { cron: "0 13 * * *", timezone: "Etc/UTC" }, acceptedAt: iso(Date.now()) }],
+      [calendar.id, { schedule: { every: interval }, acceptedAt: iso(Date.now()) }],
+      [oneOff.id, { overlap: "queue", missedRuns: "skip" }],
+    ]);
+    s.client.changeReminder = entry => change(entry.op === "update" && malformed.has(entry.reminderId)
+      ? { ...entry, payload: malformed.get(entry.reminderId)! } : entry);
+    for (const initial of [every, calendar, oneOff]) {
+      const result = await channel.reminders.update(initial.id, { text: "forged at the wire boundary" });
+      expect(result).toMatchObject({ state: "blocked", reason: "invalid_schedule" });
+      const persisted = (await agent.persistence.reminders!.list()).find(row => row.id === initial.id)!;
+      expect(persisted.confirmed).toMatchObject({ text: initial.text, schedule: initial.schedule });
+      expect(persisted.changes).toMatchObject([{ state: "blocked", changeId: 2, reason: "invalid_schedule" }]);
+      expect((await s.client.getReminder({ id: initial.id })).reminder.text).toBe(initial.text);
+    }
+  } finally { await s.rig.clean(); }
+}, 15_000);
