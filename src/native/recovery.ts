@@ -1,7 +1,7 @@
 import { activatesRoutine, RoutineAdmission } from "./reminders/routine-guard.ts";
 import type { ReminderChange } from "../persistence/reminders.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
-import { type ReminderWireOpen, type RoutineConfig } from "./reminders/routine-wire.ts";
+import { type ReminderWireOpen, type RoutineConfigInput } from "./reminders/routine-wire.ts";
 import type { ResponseMessage } from "../types.ts";
 import { codeOf } from "./errors.ts";
 import { HarnessClientError, type HarnessClient, type ItemStatus, type PendingChannelChange, type StoredMessage, type TurnStatus } from "../native-harness/src/client.ts";
@@ -51,7 +51,7 @@ export async function readCompleteMessage(client: HarnessClient, messageId: stri
 
 /** The catalog and startup edits are installed before recovered work can start. */
 export async function openOrCreate(
-  client: HarnessClient, config: { sessionId: string; config?: RoutineConfig },
+  client: HarnessClient, config: { sessionId: string; config?: RoutineConfigInput },
   batch: PendingChannelChange[], tools: Parameters<HarnessClient["openSession"]>[0]["tools"], signal: AbortSignal, reminders?: ReminderSync,
 ) {
   const admission = reminders?.routineAdmission ?? new RoutineAdmission();

@@ -1,6 +1,6 @@
 import type { ReminderChange } from "../../persistence/reminders.ts";
 import { HarnessIncompatibleError } from "../errors.ts";
-import type { ReminderWireOpen, RoutineConfig } from "./routine-wire.ts";
+import type { ReminderWireOpen, RoutineConfig, RoutineConfigInput } from "./routine-wire.ts";
 import { isRoutineSchedule } from "./routine-schedule.ts";
 import { ReminderError } from "./schedule.ts";
 
@@ -45,14 +45,17 @@ export class RoutineAdmission {
 
   resetBinding(): void { this.bound = undefined; }
 
-  configForOpen(config: RoutineConfig | undefined): RoutineConfig | undefined {
-    const value = config?.limits?.unattendedTurns;
-    if (value === undefined) return config;
-    if (!Number.isSafeInteger(value) || value <= 0) throw new ReminderError("invalid_config", "unattendedTurns must be a positive safe integer");
+  configForOpen(config: RoutineConfigInput | undefined): RoutineConfig | undefined {
+    if (!config) return;
+    const { limits, ...rest } = config;
+    const configured = limits?.unattendedTurns;
+    if (configured === undefined) return rest;
+    const value = configured === "unlimited" ? Number.MAX_SAFE_INTEGER : configured;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+      throw new ReminderError("invalid_config", 'unattendedTurns must be a positive safe integer or "unlimited"');
+    }
     if (!this.supported) throw new HarnessIncompatibleError("The native harness must support routines and unattendedTurnGuard to configure unattendedTurns");
-    if (this.bound !== value) return config;
-    const { limits: _previous, ...rest } = config!;
-    return rest;
+    return this.bound === value ? rest : { ...rest, limits: { unattendedTurns: value } };
   }
 
   opened(opened: ReminderWireOpen): void {
