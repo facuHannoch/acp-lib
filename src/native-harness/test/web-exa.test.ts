@@ -151,3 +151,33 @@ test("usage projection distinguishes denial, unknown, zero and legacy", async ()
   expect(webUsageView({ knownWebCall: true, dispatched: true, evidence: exa, committedUsage: { requestId: "req", usd: 0 } })).toEqual({ backend: "exa", operation: "web_fetch", requestId: "req", cost: { kind: "provider_estimate", usd: 0 } });
   expect(webUsageView({ knownWebCall: true, dispatched: true, evidence: { ...exa, backend: "http", paid: false } })).toEqual({ backend: "http", operation: "web_fetch", cost: { kind: "none" } });
 });
+
+test("registry exposes only enabled tools and freezes nonsecret dispatch attribution", async () => {
+  const { createWebRegistry } = await import("../src/capabilities/tools/web/registry.ts");
+  let exaCalls = 0, httpCalls = 0;
+  const providers = { exa: async () => { exaCalls++; return { status: 200, body: { results: [] } }; }, http: async () => { httpCalls++; return { ok: true as const, content: "{}", usage: {} }; } };
+  const result = createWebRegistry({ webSearch: { backend: "exa" }, webFetch: { backend: "http" } }, { EXA_API_KEY: "canary" }, providers);
+  expect(result.ok).toBe(true); if (!result.ok) return;
+  expect(result.value.map(x => x.definition.name)).toEqual(["web_search", "web_fetch"]);
+  expect(result.value.map(x => x.dispatch)).toEqual([{ backend: "exa", operation: "web_search", paid: true }, { backend: "http", operation: "web_fetch", paid: false }]);
+  expect(JSON.stringify(result.value)).not.toContain("canary");
+  const signal = new AbortController().signal;
+  expect(await result.value[1]!.execute({ url: "http://127.0.0.1" }, signal)).toMatchObject({ ok: false, code: "invalid_arguments" });
+  expect(httpCalls).toBe(0); expect(exaCalls).toBe(0);
+  expect(createWebRegistry({}, {}, providers)).toEqual({ ok: true, value: [] });
+  expect(createWebRegistry({ webFetch: { backend: "http" } }, {}, { exa: providers.exa })).toMatchObject({ ok: false, error: { code: "invalid_config" } });
+});
+
+test("registry freezes open-time settings and direct fetch carries no provider usage", async () => {
+  const { createWebRegistry } = await import("../src/capabilities/tools/web/registry.ts");
+  const config: import("../src/capabilities/tools/web/config.ts").WebConfig = { webSearch: { backend: "exa", maxResults: 3 }, webFetch: { backend: "http", deadlineMs: 2000 } };
+  let searchBody: any, directDeadline = 0;
+  const result = createWebRegistry(config, { EXA_API_KEY: "key" }, { exa: async request => { searchBody = request.body; return { status: 200, body: { results: [] } }; }, http: async (_url, _signal, deadline) => { directDeadline = deadline; return { ok: true, content: "{}", usage: { usd: 123, requestId: "fake" } }; } });
+  if (!result.ok) throw new Error(result.error.message);
+  config.webSearch!.maxResults = 5; config.webFetch!.deadlineMs = 60000;
+  const signal = new AbortController().signal;
+  await result.value[0]!.execute({ query: "search" }, signal);
+  expect(searchBody.numResults).toBe(3);
+  const direct = await result.value[1]!.execute({ url: "https://example.com/" }, signal);
+  expect(directDeadline).toBe(2000); expect(direct.usage).toEqual({});
+});
