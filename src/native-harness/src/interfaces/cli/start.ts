@@ -13,7 +13,7 @@ import { existsSync } from "node:fs";
 import { createSqliteStorageAdapter } from "../../state/storage/sqlite.ts";
 import { chooseManagedConfig, managedSessionPaths } from "../../runtime/config/paths.ts";
 
-export interface StartOptions { database?: string; sessionId?: string; create?: boolean; resume?: boolean; script?: string; instructions?: string; debug?: boolean; debugTools?: boolean }
+export interface StartOptions { database?: string; sessionId?: string; create?: boolean; resume?: boolean; script?: string; instructions?: string; debug?: boolean; debugTools?: boolean; timelineTools?: boolean }
 
 export async function start(options: StartOptions = {}) {
   if (options.database !== undefined && options.sessionId !== undefined)
@@ -50,6 +50,7 @@ export async function start(options: StartOptions = {}) {
   if (managed && create) await mkdir(managed.directory, { recursive: true, mode: 0o700 });
   const development = await openDevelopment({ systemPrompt, database, sessionId, create, script, managedConfig, instructions,
     debugTools: options.debug || options.debugTools,
+    timelineTools: options.timelineTools,
     debugInstructions: options.debug && instructions === undefined ? loadInstructions("agent-demo") : undefined,
     provider: script || managedConfig ? undefined : { apiKey: config.apiKey, model: config.model } });
   const { session, inspection, local } = development;

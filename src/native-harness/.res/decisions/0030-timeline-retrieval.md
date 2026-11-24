@@ -135,3 +135,9 @@ SQLite fixture asserting no snapshot or intervening-message scan for ID lookup.
 A real-stdio scripted phase must prove search, read and attributed reply through
 the production tool path. The contract is subject to independent approval before
 runtime implementation.
+
+Phrase occurrences overlap: "a a" matches twice in "a a a". A
+candidate exactly equal to the remaining original-text budget is
+verified. The trusted model-tool adapter requests an 8 KiB page under
+the storage cap so complete serialized cursors fit the active inference
+budget. Model arguments cannot raise that limit.

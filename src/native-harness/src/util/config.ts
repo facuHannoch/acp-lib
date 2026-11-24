@@ -19,7 +19,7 @@ const decision = (value: unknown, field: string): ToolDecision => value === "all
 /** Validate without side effects. Only explicitly requested legacy imports may
  * fill absent policy fields; partly specified modern configs are invalid. */
 export function validateManagedConfig(input: unknown, legacy = false): ManagedConfig {
-  const raw = record(input, "config"); keys(raw, ["version", "system", "model", "defaultPolicy", "policies"], "config");
+  const raw = record(input, "config"); keys(raw, ["version", "system", "model", "defaultPolicy", "policies", "timelineTools"], "config");
   if (raw.version !== 1) fail("config.version", "expected version 1");
   if (typeof raw.system !== "string") fail("config.system", "expected a string");
   const model = record(raw.model, "config.model");
@@ -46,7 +46,8 @@ export function validateManagedConfig(input: unknown, legacy = false): ManagedCo
     policies[policyName] = { fallback: decision(policy.fallback, `${field}.fallback`), tools };
   }
   if (!Object.hasOwn(policies, defaultPolicy)) fail("config.defaultPolicy", `unknown policy ${defaultPolicy}`);
-  return { version: 1, system: raw.system as string, model: selectedModel, defaultPolicy, policies };
+  if (raw.timelineTools !== undefined && typeof raw.timelineTools !== "boolean") fail("config.timelineTools", "expected a boolean");
+  return { ...(typeof raw.timelineTools === "boolean" ? { timelineTools: raw.timelineTools } : {}), version: 1, system: raw.system as string, model: selectedModel, defaultPolicy, policies };
 }
 
 /** Resolve only at execution open, never during validation or import. */

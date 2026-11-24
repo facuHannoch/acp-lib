@@ -1,3 +1,4 @@
+import { timelineMessageId as messageId } from "../../util/timeline-text.ts";
 import { messagePosition } from "../../util/message-position.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import type { StorageResult, TimelineEntry } from "../../contracts/storage.ts";
@@ -43,7 +44,6 @@ export function operatorRead(session: PersistentSession, method: string, p: Reco
   const scope = header.value.sessionId;
   const channel = method === "session/timeline" ? undefined : id(p.channel);
   const position = (entry: TimelineEntry) => messagePosition(scope, entry.channelId, entry.seq);
-  const messageId = (entry: TimelineEntry) => entry.itemId ? `item:${entry.itemId}` : entry.messageId ?? String(entry.seq);
   const budget = MAX_FRAME_BYTES - 1024;
   if (method === "channel/observe") {
     const found = readValue(storage.readChannel(channel!));

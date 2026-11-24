@@ -99,3 +99,13 @@ These rules are implemented from the
 | Result access | Only the channel that produced a result can read it. | A result ID seen in shared history must not grant access. | `readResult` |
 | Offered order | Built-ins, fixed entries by name, `read_tool_result`, then changeable entries by name. | A stable prefix for providers that cache it. | `offer` in `src/index.ts` |
 | Skipped built-in calls | Emit no `tool_call` event, as before. Catalog tools emit `skipped`. | Existing consumers see no new event for existing tools. | `recordSkip` in `src/index.ts` |
+
+### Timeline retrieval limits
+
+A search accepts 1024 query bytes, 32 tokens and 256 bytes per exact or
+folded token. It verifies up to 1000 candidates and 2 MiB of source text.
+The hit cap is 20 and excerpts use at most 512 UTF-8 bytes. A point read
+accepts up to 20 neighbors on each side and returns at most 20 fragments
+per page. Storage output is capped at 32 KiB of JSON. The model-tool
+adapter requests at most 8 KiB so paged JSON and its cursor can fit in
+active inference without the generic tool-result string shortening.

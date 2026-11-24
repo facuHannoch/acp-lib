@@ -25,6 +25,7 @@ export interface ContextRows {
   contextPolicies(turnId: number, limit: number, bytes: number): { names: string[]; bytes: number } | undefined;
   contextUnfinished(turnId: number, maxBytes: number): { outcome: ContextTurnOutcome; bytes: number } | undefined;
   contextEntry(seq: number): TimelineEntry;
+  contextHistoricalEntry(seq: number): TimelineEntry;
 }
 
 export function validReadLimits(limits: ContextLimits): boolean {
@@ -101,11 +102,11 @@ export function readInference(rows: ContextRows, input: Parameters<InferenceStor
     const deferred: ContextRow[] = [];
     for (const row of local) {
       if (charge([row], reserveRecords, reserveBytes))
-        localHistory.push(rows.contextEntry(row.seq));
+        localHistory.push(rows.contextHistoricalEntry(row.seq));
       else deferred.push(row);
     }
-    for (const row of shared) if (charge([row])) sharedHistory.push(rows.contextEntry(row.seq));
-    for (const row of deferred) if (charge([row])) localHistory.push(rows.contextEntry(row.seq));
+    for (const row of shared) if (charge([row])) sharedHistory.push(rows.contextHistoricalEntry(row.seq));
+    for (const row of deferred) if (charge([row])) localHistory.push(rows.contextHistoricalEntry(row.seq));
   }
   const unfinished: ContextTurnOutcome[] = [];
   const historicalTurns = new Set([...localHistory, ...sharedHistory].sort((a, b) => b.seq - a.seq).map(row => row.turnId));

@@ -4,7 +4,7 @@ import { serve } from "./serve.ts";
 import { controlLocal } from "../protocol/local.ts";
 import { localConnection } from "../../runtime/config/development.ts";
 
-const USAGE = "Usage: start [--db <path> | --session <id>] [--create] [--resume] [--script <path>] [--instructions <path>] [--debug] [--debug-tools] | chat <channelId> <participantId> | suspend | resume | status | serve --stdio [--home <directory>]";
+const USAGE = "Usage: start [--db <path> | --session <id>] [--create] [--resume] [--script <path>] [--instructions <path>] [--debug] [--debug-tools] [--timeline-tools] | chat <channelId> <participantId> | suspend | resume | status | serve --stdio [--home <directory>]";
 
 function startOptions(args: string[]) {
   const options: StartOptions = {};
@@ -13,6 +13,7 @@ function startOptions(args: string[]) {
     if (flag === "--create") options.create = true;
     else if (flag === "--resume") options.resume = true;
     else if (flag === "--debug") options.debug = true;
+    else if (flag === "--timeline-tools") options.timelineTools = true;
     else if (flag === "--debug-tools") options.debugTools = true;
     else if ((flag === "--db" || flag === "--session" || flag === "--script" || flag === "--instructions") && value && !value.startsWith("--")) {
       const key = flag === "--db" ? "database" : flag === "--session" ? "sessionId" : flag === "--script" ? "script" : "instructions";

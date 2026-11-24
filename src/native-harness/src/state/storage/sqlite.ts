@@ -1,3 +1,4 @@
+import { historicalRetrievalProjection, encodedTimelineToken, retrievalMessage, timelineBytes, timelineIndexText } from "../../util/timeline-text.ts";
 import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import { entryOverhead, type ContextRow } from "./inference.ts";
 import { checkScriptIdentity } from "./script-identity.ts";
@@ -122,6 +123,8 @@ const CONTEXT_BYTES = `${entryOverhead} + octet_length(message) + octet_length(a
     (SELECT octet_length(message_id) FROM entry_reply_ids WHERE seq = e.seq), 0)`;
 const contextHeader = (kind: string, legacy = false) =>
   `e.seq, ${legacy ? CONTEXT_BYTES.replace("coalesce(octet_length(external_source), 0)", "0") : CONTEXT_BYTES} AS bytes, ${kind} AS kind`;
+const historyHeader = () => contextHeader("'other'").replace("octet_length(message)",
+  "coalesce((SELECT octet_length(message) FROM retrieval_history_projection WHERE seq = e.seq), octet_length(e.message))");
 const contextRow = (row: Row): ContextRow => ({ seq: row.seq, bytes: row.bytes, kind: row.kind, ...(row.text_bytes === undefined ? {} : { textBytes: row.text_bytes }) });
 const CHAT = `kind = 'participant_message' OR (${REPLY})`;
 const installReadIndexes = (db: Database) => db.exec(`
@@ -137,6 +140,43 @@ const installReadIndexes = (db: Database) => db.exec(`
   CREATE TRIGGER IF NOT EXISTS reply_ids_legacy_update AFTER UPDATE OF value ON meta WHEN NEW.key = 'modelState'
     BEGIN UPDATE meta SET value = '1' WHERE key = 'replyIdsDirty'; END;
 `);
+
+// Projection version is in the key so a future tokenizer can rebuild without
+// changing the canonical session or archive format.
+function refreshRetrieval(db: Database, entries: () => TimelineEntry[]): void {
+  db.exec(`
+    INSERT OR IGNORE INTO meta VALUES ('timelineRetrievalV1Dirty', '1');
+    UPDATE meta SET value = '1' WHERE key = 'timelineRetrievalV1Dirty'
+      AND (NOT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'timeline_retrieval_v1')
+        OR NOT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'retrieval_history_projection'));
+    CREATE VIRTUAL TABLE IF NOT EXISTS timeline_retrieval_v1 USING fts5(tokens, channel UNINDEXED, bytes UNINDEXED, tokenize = ascii);
+    CREATE TABLE IF NOT EXISTS retrieval_history_projection (seq INTEGER PRIMARY KEY, message TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS reverse_entry_reply_ids ON entry_reply_ids(message_id);
+    CREATE TRIGGER IF NOT EXISTS timeline_retrieval_insert AFTER INSERT ON entries
+      BEGIN UPDATE meta SET value = '1' WHERE key = 'timelineRetrievalV1Dirty'; END;
+    CREATE TRIGGER IF NOT EXISTS timeline_retrieval_update AFTER UPDATE ON entries
+      BEGIN UPDATE meta SET value = '1' WHERE key = 'timelineRetrievalV1Dirty'; END;
+    CREATE TRIGGER IF NOT EXISTS timeline_retrieval_delete AFTER DELETE ON entries
+      BEGIN UPDATE meta SET value = '1' WHERE key = 'timelineRetrievalV1Dirty'; END;
+  `);
+  const dirty = db.prepare("SELECT value FROM meta WHERE key = 'timelineRetrievalV1Dirty'");
+  try { if ((dirty.get() as { value: string }).value === "0") return; }
+  finally { dirty.finalize(); }
+  db.exec("DELETE FROM timeline_retrieval_v1; DELETE FROM retrieval_history_projection");
+  const insert = db.prepare("INSERT INTO timeline_retrieval_v1(rowid, tokens, channel, bytes) VALUES (?, ?, ?, ?)");
+  const history = db.prepare("INSERT INTO retrieval_history_projection VALUES (?, ?)");
+  try {
+    for (const entry of entries()) {
+      const message = retrievalMessage(entry);
+      if (message) {
+        insert.run(message.seq, timelineIndexText(message.text), message.channel, timelineBytes(message.text));
+        const projected = historicalRetrievalProjection(entry.message);
+        if (projected !== entry.message) history.run(entry.seq, JSON.stringify(projected));
+      }
+    }
+  } finally { insert.finalize(); history.finalize(); }
+  db.exec("UPDATE meta SET value = '0' WHERE key = 'timelineRetrievalV1Dirty'");
+}
 
 const rebuildModelCalls = (db: Database) => db.exec(`
   DELETE FROM model_call_pages;
@@ -215,6 +255,17 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       run: (...args: any[]) => { prepared().run(...args); } };
   };
   const s = {
+    retrievalDirty: q("SELECT value FROM meta WHERE key = 'timelineRetrievalV1Dirty'"),
+    retrievalReplyDirty: q("SELECT value FROM meta WHERE key = 'replyIdsDirty'"),
+    retrievalClean: q("UPDATE meta SET value = '0' WHERE key = 'timelineRetrievalV1Dirty'"),
+    retrievalAll: q("SELECT rowid AS seq, bytes FROM timeline_retrieval_v1 WHERE timeline_retrieval_v1 MATCH ? ORDER BY rowid DESC LIMIT ?"),
+    retrievalChannel: q("SELECT rowid AS seq, bytes FROM timeline_retrieval_v1 WHERE timeline_retrieval_v1 MATCH ? AND channel = ? ORDER BY rowid DESC LIMIT ?"),
+    retrievalReverse: q("SELECT seq FROM entry_reply_ids WHERE message_id = ?"),
+    historicalInsert: q("INSERT INTO retrieval_history_projection VALUES (?, ?)"),
+    historicalEntry: q(`SELECT e.seq, e.at, e.channel_id, e.turn_id, e.sender, e.kind, e.source_channel_id, e.item_id, e.external_source,
+      coalesce((SELECT message FROM retrieval_history_projection WHERE seq = e.seq), e.message) AS message,
+      (SELECT message_id FROM entry_reply_ids WHERE seq = e.seq) AS reply_id FROM entries AS e WHERE e.seq = ?`),
+    retrievalInsert: q("INSERT INTO timeline_retrieval_v1(rowid, tokens, channel, bytes) VALUES (?, ?, ?, ?)"),
     modelCallPagesDirty: q("SELECT value FROM meta WHERE key = 'modelCallPagesDirty'"),
     callCursor: q("SELECT call_number FROM model_call_pages WHERE call_number = ?"),
     callPage: q("SELECT summary FROM model_call_pages WHERE call_number > ? ORDER BY call_number LIMIT ?"),
@@ -231,12 +282,12 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       WHEN EXISTS (SELECT 1 FROM entries AS a INDEXED BY entries_context_assistants
         WHERE a.turn_id = e.turn_id AND a.seq = e.seq AND ${ASSISTANT}) THEN 'assistant' ELSE 'other' END`)}
       FROM entries AS e WHERE turn_id = ? ORDER BY seq DESC LIMIT ?`),
-    contextLocal: q(`SELECT ${contextHeader("'other'")} FROM entries AS e
+    contextLocal: q(`SELECT ${historyHeader()} FROM entries AS e
       WHERE channel_id = ? AND seq < ? AND (${CHAT}) ORDER BY seq DESC LIMIT ?`),
     contextRecent: q(`SELECT ${contextHeader("'other'")} FROM entries AS e WHERE seq < ? ORDER BY seq DESC LIMIT ?`),
     contextRecentLegacy: q(`SELECT ${contextHeader("'other'", true)} FROM entries AS e WHERE seq < ? ORDER BY seq DESC LIMIT ?`),
     contextShared: q(`WITH recent AS MATERIALIZED (SELECT seq, channel_id FROM entries ORDER BY seq DESC LIMIT ?)
-      SELECT ${contextHeader("'other'")} FROM recent JOIN entries AS e ON e.seq = recent.seq
+      SELECT ${historyHeader()} FROM recent JOIN entries AS e ON e.seq = recent.seq
       WHERE recent.channel_id <> ? AND EXISTS (
         SELECT 1 FROM entries AS c INDEXED BY entries_conversation
         WHERE c.channel_id = recent.channel_id AND c.seq = recent.seq AND (${CHAT}))
@@ -282,6 +333,11 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     entriesOf: q("SELECT * FROM entries WHERE turn_id = ? ORDER BY seq"), entries: q("SELECT * FROM entries ORDER BY seq"),
   };
   let depth = 0;
+  const retrievalReady = () => {
+    if (s.retrievalDirty.get()?.value !== "0" || s.retrievalReplyDirty.get()?.value !== "0") {
+      throw new Fail("storage_failure", "Timeline retrieval projection requires reopen");
+    }
+  };
   return {
     contextTurnStart: (channelId, turnId) => s.contextTurnStart.get(turnId, channelId)?.started_seq,
     contextTrigger(turnId) {
@@ -306,6 +362,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       return { outcome: { turnId, channelId: row.channel_id, state: JSON.parse(row.state) }, bytes: size.bytes };
     },
     contextEntry: seq => entry(s.contextEntry.get(seq)!),
+    contextHistoricalEntry: seq => entry(s.historicalEntry.get(seq)!),
     pendingCount(id) {
       return Number(s.pendingCount.get(id)?.n ?? 0);
     },
@@ -324,6 +381,18 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
         .sort((a, b) => older ? b.seq - a.seq : a.seq - b.seq).slice(0, range.limit + 1);
       return read("1", []);
     },
+    retrievalCandidates(terms, channel, limit) {
+      retrievalReady();
+      const query = terms.map(encodedTimelineToken).join(" AND ");
+      const rows = channel === undefined ? s.retrievalAll.all(query, limit) : s.retrievalChannel.all(query, channel, limit);
+      return rows.map(row => ({ seq: row.seq, bytes: row.bytes }));
+    },
+    retrievalEntry(seq) {
+      retrievalReady();
+      const row = s.contextEntry.get(seq);
+      return row ? entry(row) : undefined;
+    },
+    retrievalReplyId(id) { retrievalReady(); return s.retrievalReverse.get(id)?.seq; },
     dispose() { for (const finalize of finalizers.splice(0)) finalize(); },
     getModelState() { const row = s.modelState.get(); return row ? JSON.parse(row.value) : undefined; },
     setModelState(state, changed) {
@@ -384,9 +453,19 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     liveTurns: () => s.liveTurns.all().map(turn),
     policyNames: () => s.policyNames.all().map(row => String(row.name)),
 
-    addEntry(e) { s.addEntry.run(e.seq, e.at, e.channelId, e.turnId, e.from, e.kind ?? null, e.sourceChannelId ?? null,
+    addEntry(e) { const clean = s.retrievalDirty.get()?.value === "0"; s.addEntry.run(e.seq, e.at, e.channelId, e.turnId, e.from, e.kind ?? null, e.sourceChannelId ?? null,
       e.itemId ?? null, JSON.stringify(e.message), e.externalSource ?? null);
-      if (e.messageId !== undefined) s.addReplyId.run(e.seq, e.messageId); },
+      if (e.messageId !== undefined) s.addReplyId.run(e.seq, e.messageId);
+      if (clean) {
+        const projected = retrievalMessage(e);
+        if (projected) {
+          s.retrievalInsert.run(e.seq, timelineIndexText(projected.text), e.channelId, timelineBytes(projected.text));
+          const historical = historicalRetrievalProjection(e.message);
+          if (historical !== e.message) s.historicalInsert.run(e.seq, JSON.stringify(historical));
+        }
+        s.retrievalClean.run();
+      }
+    },
     entriesOfTurn: turnId => s.entriesOf.all(turnId).map(entry),
     entries: () => s.entries.all().map(entry),
   };
@@ -405,7 +484,7 @@ function publish(path: string, meta: Meta, fill?: (tables: Tables) => void): voi
       db.exec(SCHEMA);
       installReadIndexes(db);
       const tables = sqliteTables(db);
-      try { tables.transaction(() => { tables.setMeta(meta); installContextPolicyIndex(db); refreshModelCalls(db); fill?.(tables); refreshReplyIds(db); }); }
+      try { tables.transaction(() => { tables.setMeta(meta); installContextPolicyIndex(db); refreshModelCalls(db); fill?.(tables); refreshReplyIds(db); refreshRetrieval(db, tables.entries); }); }
       finally { tables.dispose(); }
     } finally { db.close(); }
     try { linkSync(draft, path); }
@@ -490,7 +569,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           try {
             const view = sqliteTables(clone);
             view.transaction(() => { if (meta.formatVersion === 2) upgradeFromFormat2(clone); upgradeFromFormat3(clone); addExternalSource(clone);
-              view.setMeta({ ...view.getMeta(), formatVersion: 4 }); refreshReplyIds(clone); refreshModelCalls(clone); });
+              view.setMeta({ ...view.getMeta(), formatVersion: 4 }); refreshReplyIds(clone); refreshModelCalls(clone); refreshRetrieval(clone, view.entries); });
             return { ok: true, value: createEngine(view, identity.compatibilityKey, () => { view.dispose(); clone.close(true); owner.close(true); }, config, true), revision: meta.revision };
           } catch (error) { clone.close(); throw error; }
         }
@@ -503,6 +582,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           if (compatible)
             recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); addExternalSource(owner); } : undefined);
           if (tables.getMeta().formatVersion === 6) installContextPolicyIndex(owner);
+          refreshRetrieval(owner, tables.entries);
         });
         return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config), revision: tables.getMeta().revision };
       } catch (error) {

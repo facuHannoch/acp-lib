@@ -1,3 +1,4 @@
+import { searchTimeline, readMessageWindow } from "./retrieval.ts";
 import type { InspectionEntry } from "../../contracts/inspection.ts";
 import type { ContextTurnOutcome } from "../../contracts/context.ts";
 import type { IntakeLimit } from "../../contracts/input-limits.ts";
@@ -36,6 +37,9 @@ export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], item
  * rule of the storage contract; a backend only stores rows and makes
  * `transaction` atomic (all writes of a throwing callback are undone). */
 export interface Tables extends ContextRows {
+  retrievalCandidates(terms: readonly string[], channel: string | undefined, limit: number): Array<{ seq: number; bytes: number }>;
+  retrievalEntry(seq: number): TimelineEntry | undefined;
+  retrievalReplyId(id: string): number | undefined;
   readRange(range: Parameters<OperatorStorageReads["readTimeline"]>[0]): TimelineEntry[];
   pendingCount(channel: string): number;
   getModelState(): ModelState | undefined;
@@ -783,6 +787,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       });
       return { items, turns };
     }, true),
+    searchTimeline: (input, maxBytes) => run(() => searchTimeline(tables, input, maxBytes), true),
+    readMessage: (input, maxBytes) => run(meta => readMessageWindow(tables, meta, input, maxBytes), true),
     readTimeline: range => run(meta => {
       if (!Number.isSafeInteger(range.limit) || range.limit < 1 || range.limit > 100
         || !Number.isSafeInteger(range.throughRevision) || range.throughRevision < 0 || range.throughRevision > meta.revision)

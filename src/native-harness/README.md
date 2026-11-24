@@ -701,3 +701,14 @@ The detailed design references remain in the repository's research directory:
 These references describe the intended system, not implemented behavior. The
 owner's later instruction places decision records in `.res/decisions/` rather
 than the top-level `decisions/` shown in the original project spec.
+
+### Try timeline retrieval
+
+Set `"timelineTools": true` in the managed session config, or use
+`bun run start --script <scenario.jsonl> --timeline-tools` in development
+chat. Tool policy still controls `search_timeline` and `read_message`.
+Search can span native channels in one session. Open a hit using its
+`message_id`, and repeat that ID with the returned cursor to continue
+a split message or fixed neighbor window. To run the cumulative offline
+stdio fixture, from the acp-lib root run
+`bun test test/native/rehearsal.test.ts -t "cumulative real stdio"`.

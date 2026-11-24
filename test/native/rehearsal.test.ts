@@ -257,3 +257,33 @@ test("settlement accounts for more than one reconcile page of inputs", async () 
   await run.close();
   expect(run.exits).toEqual([0]);
 }, 30_000);
+
+test("cumulative real stdio phase searches and reads an attributed timeline source", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "timeline-rehearsal-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const requests = join(directory, "requests.jsonl");
+  const run = await createRehearsal(new URL("./fixtures/rehearsal-cumulative.jsonl", import.meta.url).pathname, {
+    deadlineMs: 15_000, exactConsumption: true, timelineTools: true,
+    env: { HARNESS_TEST_REQUESTS: requests, HARNESS_TEST_ATTEMPTS: join(directory, "attempts.jsonl") },
+  });
+  const summary = await run.run(async offset => {
+    if (offset) await until(() => run.activity.filter(event => event.kind === "completed").length >= offset, "previous phase completed");
+  });
+  expect(summary.sends.every(send => send.outcome === "completed")).toBe(true);
+  const captures = readFileSync(requests, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(row => row.channel === "review");
+  expect(captures).toHaveLength(4);
+  const result = (index: number, call: string) => {
+    const row = captures[index].messages.find((message: { role: string; callId?: string }) => message.role === "tool" && message.callId === call);
+    return JSON.parse(row.content);
+  };
+  expect(result(1, "timeline-search").hits).toContainEqual(expect.objectContaining({
+    message_id: "item:launch-decision", channel: "decisions", sender: "Rin",
+  }));
+  expect(result(2, "timeline-read").messages).toContainEqual(expect.objectContaining({
+    message_id: "item:launch-correction", channel: "decisions", sender: "Rin", text: "Launch correction: ship Monday.",
+  }));
+  const later = JSON.stringify(captures[3].messages);
+  expect(later).toContain("Launch correction: ship Monday.");
+  expect(later).not.toContain("timeline-search");
+  expect(later).not.toContain("timeline-read");
+}, 30_000);

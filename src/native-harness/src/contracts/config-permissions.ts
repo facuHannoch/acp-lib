@@ -9,6 +9,7 @@ export interface ManagedConfig {
   system: string;
   model: ManagedModel;
   defaultPolicy: string;
+  timelineTools?: boolean;
   policies: Record<string, ToolPolicy>;
 }
 

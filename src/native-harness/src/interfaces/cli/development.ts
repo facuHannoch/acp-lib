@@ -42,6 +42,7 @@ export interface DevelopmentOptions {
   providerFactory?: (apiKey: string, model: string, onRequest?: (body: string) => void) => Model;
   /** Expose safe diagnostic tools for this process. */
   debugTools?: boolean;
+  timelineTools?: boolean;
   /** Process-local prompt override used by the development debug mode. */
   debugInstructions?: string;
   environment?: Record<string, string | undefined>;
@@ -75,6 +76,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
     model: { protocol: "openrouter", model: options.provider.model, apiKeyEnv: "OPENROUTER_API_KEY" }, defaultPolicy: "__legacy_allow",
     policies: { __legacy_allow: { fallback: "allow", tools: {} } } });
   if (managedConfig && options.instructions !== undefined) managedConfig = { ...managedConfig, system: options.instructions };
+  if (managedConfig && options.timelineTools) managedConfig = { ...managedConfig, timelineTools: true };
   const savedConfig = managedConfig;
   if (managedConfig && options.debugInstructions !== undefined && options.instructions === undefined)
     managedConfig = { ...managedConfig, system: options.debugInstructions };

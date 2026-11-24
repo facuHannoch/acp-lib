@@ -1,3 +1,5 @@
+import { isTimelineTool } from "./util/timeline-tool-names.ts";
+import { runTimelineTool, timelineArgumentsProblem, timelineDefinitions } from "./capabilities/tools/timeline/index.ts";
 import { messagePosition } from "./util/message-position.ts";
 import { executeNotice, notifyChannelDefinition } from "./capabilities/tools/builtin/notify-channel.ts";
 import type { PersistentSession, PersistentSessionOptions } from "./contracts/session.ts";
@@ -75,6 +77,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   // the revoked set mirrors storage; the executor belongs to the connection.
   const revoked = options.catalog ? store.readRevokedTools() : undefined;
   if (revoked && !revoked.ok) throw new Error(revoked.error.message);
+  if (options.catalog?.catalog.some(tool => isTimelineTool(tool.name))) throw new Error("Timeline tool names are reserved");
   const catalog = options.catalog ? createToolCatalog(options.catalog, revoked?.value ?? []) : undefined;
   const limits = { ...TOOL_LIMITS, ...options.toolLimits };
   let executor: FunctionExecutor | undefined;
@@ -102,7 +105,8 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
     const offer = (policies: readonly string[]): { tools: ToolDefinition[]; fixedToolCount?: number } => {
       const allowed = <T extends ToolDefinition>(tools: readonly T[]) => tools.filter(tool => toolDecision(config, policies, tool.name) !== "deny");
       const definition = ({ name, description, parameters }: ToolDefinition): ToolDefinition => ({ name, description, parameters });
-      const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel"), notifyChannelDefinition]);
+      const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel" && !isTimelineTool(tool.name)), notifyChannelDefinition,
+        ...((owner.value === undefined ? options.timelineTools : config.timelineTools) ? timelineDefinitions : [])]);
       if (!catalog) { offered = new Set(builtins.map(tool => tool.name)); return { tools: [...builtins] }; }
       const available = catalog.offered();
       const fixed = [...builtins, ...allowed(available.fixed).map(definition), ...allowed([readToolResultDefinition])];
@@ -126,6 +130,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       append,
       dispatchTool(call, execute) {
         const registration = catalog?.get(call.name), reader = !!catalog && call.name === READ_TOOL_RESULT;
+        const retrieval = isTimelineTool(call.name);
         const id = invocationId(turn.turnId, call.id);
         let policies: readonly string[];
         return dispatchWithPolicy({ channel: turn.channelId, turnId: turn.turnId, call,
@@ -133,15 +138,19 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
           decide: () => toolDecision(config, policies = policySnapshot(), call.name),
           // Catalog tools and the reader must have been offered by this request,
           // still be available, and carry arguments their definition accepts.
-          ...(registration || reader ? { refuse: () => {
+          ...(registration || reader || retrieval ? { refuse: () => {
             if (!offered.has(call.name)) return { code: "tool_unavailable", detail: "it was not offered for this request" };
+            if (retrieval) {
+              const detail = timelineArgumentsProblem(call.name, JSON.parse(call.arguments));
+              return detail ? { code: "invalid_arguments", detail } : undefined;
+            }
             if (!registration) return undefined;
             const why = catalog!.unavailable(call.name);
             if (why) return { code: "tool_unavailable", detail: why.replace("_", " ") };
             const problem = schemaProblem(registration.parameters, JSON.parse(call.arguments));
             return problem ? { code: "invalid_arguments", detail: problem } : undefined;
           } } : {}),
-          execute: registration ? (_call, signal) => {
+          execute: retrieval ? async (_call, signal) => runTimelineTool(store, call.name, JSON.parse(call.arguments), signal) : registration ? (_call, signal) => {
             // Dispatch evidence is committed. From here the effect is the host's.
             if (!executor) throw new CallbackLost("No connection serves this tool's handler");
             return runFunction({ executor, registration, limits, signal: signal ?? port.signal, defaultDeadlineMs: catalog!.defaultDeadlineMs,
@@ -156,7 +165,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
           recordSkip: (content, code) => {
             append({ role: "tool", callId: call.id, content, outcome: { status: "skipped", code } });
             // Built-in tools keep their event stream as it was: a skip is silent.
-            if (registration || reader) emit({ channel: turn.channelId, ...(recorded ? { revision: recorded.revision } : {}),
+            if (registration || reader || retrieval) emit({ channel: turn.channelId, ...(recorded ? { revision: recorded.revision } : {}),
               event: { type: "tool_call", turnId: String(turn.turnId), id: call.id, name: call.name, status: "skipped", output: content, invocationId: id } });
           },
           mark: () => {

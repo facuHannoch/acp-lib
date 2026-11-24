@@ -30,7 +30,7 @@ export type StorageErrorCode =
   /** Export refused: active or pending work exists and the session is not suspended. */
   | "busy"
   | "invalid_archive"
-  | "serialization_error" | "storage_failure";
+  | "serialization_error" | "storage_failure" | "transfer_limit";
 
 /** A failed mutation leaves no partial domain changes. Do not retry blindly. */
 export interface StorageError { code: StorageErrorCode; message: string }
@@ -284,7 +284,12 @@ export type InterruptOutcome =
   | { interrupted: false; turn: StoredTurn };
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
-export interface SessionStorage extends ModelCallStore, OperatorStorageReads, InferenceStorageReads, InspectionStorageReads {
+export interface TimelineRetrievalReads {
+  searchTimeline(input: import("./timeline-retrieval.ts").TimelineSearch, maxResponseBytes?: number): StorageResult<import("./timeline-retrieval.ts").TimelineSearchResult>;
+  readMessage(input: import("./timeline-retrieval.ts").TimelineWindow, maxResponseBytes?: number): StorageResult<import("./timeline-retrieval.ts").TimelineWindowResult>;
+}
+
+export interface SessionStorage extends ModelCallStore, TimelineRetrievalReads, OperatorStorageReads, InferenceStorageReads, InspectionStorageReads {
   readSession(): StorageResult<StoredSession>;
   readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
   readReadyChannels(): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;

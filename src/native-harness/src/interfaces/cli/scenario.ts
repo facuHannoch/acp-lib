@@ -6,8 +6,10 @@ import { echoDefinition, executeEcho } from "../../capabilities/tools/testing/ec
 import { createSession } from "../../index.ts";
 
 async function main() {
-  const [path, ...prompt] = process.argv.slice(2);
-  if (!path) throw new Error('Usage: bun run test:scenario <script.jsonl> [prompt]');
+  const args = process.argv.slice(2);
+  const timelineTools = args[0] === "--timeline-tools";
+  const [path, ...prompt] = timelineTools ? args.slice(1) : args;
+  if (!path) throw new Error('Usage: bun run test:scenario [--timeline-tools] <script.jsonl> [prompt]');
   const scenario = await loadScenario(path);
   const requests: ModelRequest[] = [];
   let position = 0;
@@ -17,7 +19,7 @@ async function main() {
       if (process.env.HARNESS_CAPTURE_SCRIPT_REQUESTS === "1") requests.push(structuredClone(request));
     }),
   });
-  const session = createSession({ systemPrompt: "You are a test assistant.", configureTurn: () => ({
+  const session = createSession({ timelineTools, systemPrompt: "You are a test assistant.", configureTurn: () => ({
     model, tools: [echoDefinition], executeTool: executeEcho,
   }) });
   let answer = "";

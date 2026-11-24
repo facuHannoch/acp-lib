@@ -22,6 +22,7 @@ export interface RehearsalOptions {
   channels?: readonly string[];
   env?: Record<string, string>;
   exactConsumption?: boolean;
+  timelineTools?: boolean;
 }
 
 export async function createRehearsal(path: string, options: RehearsalOptions) {
@@ -50,7 +51,7 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
   const host = new NativeHarnessHost({
     sessionId: "rehearsal", home, functions, approvalResponder: options.approvalResponder, text: "stream",
     config: { version: 1, system: "Offline rehearsal", model: { protocol: "scripted", script: path },
-      defaultPolicy: "rehearsal", policies: options.policies ?? { rehearsal: { fallback: "allow", tools: {} } } },
+      timelineTools: options.timelineTools, defaultPolicy: "rehearsal", policies: options.policies ?? { rehearsal: { fallback: "allow", tools: {} } } },
     requestTimeoutMs: 8000,
     async connect() {
       const child = Bun.spawn([process.execPath, main, "serve", "--stdio", "--home", home], {

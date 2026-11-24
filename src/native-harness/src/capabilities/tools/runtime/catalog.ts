@@ -1,3 +1,4 @@
+import { timelineToolNames } from "../../../util/timeline-tool-names.ts";
 import type { ToolDefinition } from "../../../contracts/loop.ts";
 import type { ToolAvailability, ToolCatalogInput, ToolRegistration } from "../../../contracts/tools.ts";
 
@@ -26,7 +27,7 @@ export function parseCatalog(raw: unknown, reserved: readonly string[]): ToolCat
   const input = raw as Record<string, unknown>;
   for (const key of Object.keys(input)) if (!["catalog", "enabled", "defaultDeadlineMs"].includes(key)) invalid(`tools: unsupported field ${key}`);
   if (!Array.isArray(input.catalog)) return invalid("tools.catalog must be an array");
-  const names = new Set<string>([...reserved, READ_TOOL_RESULT, "notify_channel"]);
+  const names = new Set<string>([...reserved, ...timelineToolNames, READ_TOOL_RESULT, "notify_channel"]);
   const catalog = input.catalog.map((value, index): ToolRegistration => {
     const at = `tools.catalog[${index}]`;
     if (!value || typeof value !== "object" || Array.isArray(value)) invalid(`${at} must be an object`);

@@ -1,3 +1,4 @@
+import { historicalRetrievalProjection, retrievalMessage, timelineTokens, timelineBytes } from "../../util/timeline-text.ts";
 import { byteLength, entryOverhead, type ContextRow } from "./inference.ts";
 import { checkScriptIdentity } from "./script-identity.ts";
 import type { SessionStorageAdapter, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
@@ -9,6 +10,8 @@ type ContextEntry = ContextRow & { entry: TimelineEntry };
 
 interface Data {
   bySeq: Map<number, ContextEntry>;
+  retrievalReplies: Map<string, number>;
+  retrievalIndex: Map<number, { bytes: number; words: Set<string> }>;
   byTurn: Map<number, ContextEntry[]>;
   inputs: Map<number, ContextEntry[]>;
   assistants: Map<number, ContextEntry[]>;
@@ -20,7 +23,7 @@ interface Data {
   channels: Map<string, ChannelRow>; participants: Set<string>;
   items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[]; conversation: Map<string, TimelineEntry[]>; replies: Map<number, TimelineEntry[]>;
 }
-const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
+const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
 const copy = <T>(value: T): T => structuredClone(value);
 const live = (turn: TurnRow) => turn.state.status === "running" || turn.state.status === "suspended";
 
@@ -42,6 +45,11 @@ function memoryTables(data: Data): Tables {
     seq, ...(entry.itemId === undefined ? {} : { textBytes: byteLength(data.items.get(entry.itemId)?.text ?? "") }),
     bytes: bytes + byteLength(data.modelState?.entryIds[String(seq)] ?? entry.messageId ?? ""), kind,
   });
+  const historicalHeader = (row: ContextEntry): ContextRow => {
+    const base = header(row), projected = historicalRetrievalProjection(row.entry.message);
+    return projected === row.entry.message ? base : { ...base,
+      bytes: base.bytes - byteLength(JSON.stringify(row.entry.message)) + byteLength(JSON.stringify(projected)) };
+  };
   return {
     contextTurnStart(channelId, turnId) {
       const turn = data.turns.get(turnId);
@@ -60,7 +68,7 @@ function memoryTables(data: Data): Tables {
     contextActive: (turnId, limit) => recent(data.byTurn.get(turnId) ?? [], limit).map(header),
     contextLocal(channelId, start, limit) {
       const rows = data.conversation.get(channelId) ?? [];
-      return recent(rows, limit, before(rows, start)).map(row => header(data.bySeq.get(row.seq)!));
+      return recent(rows, limit, before(rows, start)).map(row => historicalHeader(data.bySeq.get(row.seq)!));
     },
     contextRecent(cursor, limit) {
       return recent(data.entries, limit, before(data.entries, cursor)).map(row => header(data.bySeq.get(row.seq)!));
@@ -68,7 +76,7 @@ function memoryTables(data: Data): Tables {
     contextShared(channelId, limit) {
       return recent(data.entries, limit).filter(row => row.channelId !== channelId &&
         (row.kind === "participant_message" || (row.message.role === "assistant" && !!row.message.content)))
-        .map(row => header(data.bySeq.get(row.seq)!));
+        .map(row => historicalHeader(data.bySeq.get(row.seq)!));
     },
     contextPolicies(turnId, limit, budget) {
       const names = data.turnPolicies.get(turnId);
@@ -87,6 +95,26 @@ function memoryTables(data: Data): Tables {
       const { channelId, state } = turn;
       const bytes = entryOverhead + byteLength(channelId) + byteLength(JSON.stringify(state));
       return bytes <= budget ? { outcome: { channelId, turnId, state }, bytes } : undefined;
+    },
+    retrievalCandidates(terms, channel, limit) {
+      const rows: { seq: number; bytes: number }[] = [];
+      const entries = channel === undefined ? data.entries : data.conversation.get(channel) ?? [];
+      for (let i = entries.length - 1; i >= 0 && rows.length < limit; i--) {
+        const seq = entries[i]!.seq, indexed = data.retrievalIndex.get(seq);
+        if (indexed && terms.every(term => indexed.words.has(term))) rows.push({ seq, bytes: indexed.bytes });
+      }
+      return rows;
+    },
+    retrievalEntry(seq) {
+      const entry = data.bySeq.get(seq)?.entry;
+      if (!entry) return;
+      const messageId = data.modelState?.entryIds[String(seq)] ?? entry.messageId;
+      return copy(messageId === undefined ? entry : { ...entry, messageId });
+    },
+    retrievalReplyId: id => data.retrievalReplies.get(id),
+    contextHistoricalEntry(seq) {
+      const saved = this.contextEntry(seq);
+      return { ...saved, message: historicalRetrievalProjection(saved.message) };
     },
     contextEntry(seq) {
       const entry = data.bySeq.get(seq)!.entry;
@@ -194,12 +222,23 @@ function memoryTables(data: Data): Tables {
     },
     addEntry(entry) {
       const saved = copy(entry);
+      if (saved.messageId !== undefined) {
+        const id = saved.messageId;
+        data.retrievalReplies.set(id, saved.seq);
+        log(() => { data.retrievalReplies.delete(id); });
+      }
       const append = <T>(rows: T[], row: T) => { rows.push(row); log(() => { rows.pop(); }); };
       const indexed = <K, T>(index: Map<K, T[]>, key: K, row: T) => {
         let rows = index.get(key);
         if (!rows) { rows = []; index.set(key, rows); log(() => { index.delete(key); }); }
         append(rows, row);
       };
+      const searchable = retrievalMessage(saved);
+      if (searchable) {
+        data.retrievalIndex.set(saved.seq, { bytes: timelineBytes(searchable.text),
+          words: new Set(timelineTokens(searchable.text).map(word => word.folded)) });
+        log(() => { data.retrievalIndex.delete(saved.seq); });
+      }
       append(data.entries, saved);
       const kind = saved.message.role === "assistant" ? "assistant" : saved.itemId !== undefined ? "input" : "other";
       const bytes = entryOverhead + byteLength(JSON.stringify(saved.message)) +

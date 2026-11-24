@@ -86,6 +86,8 @@ export interface ChannelControls {
 }
 
 export interface PersistentSessionOptions {
+  /** Local opt-in when there is no managed configuration. */
+  timelineTools?: boolean;
   systemPrompt: string;
   /** Optional assertion of the storage owner's validated config. Omission uses
    * the owner snapshot; legacy allow applies only when that snapshot is absent. */

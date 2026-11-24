@@ -1,3 +1,4 @@
+import { isTimelineTool } from "../../util/timeline-tool-names.ts";
 import type { ContextLimits, InferenceContext, InferenceStorageReads, ContextBuildResult, ContextCapture, ContextTurnOutcome } from "../../contracts/context.ts";
 import { SESSION_INPUT_MAX_BYTES } from "../../contracts/input-limits.ts";
 import type { ToolDefinition } from "../../contracts/loop.ts";
@@ -32,15 +33,19 @@ export function createSessionContext(storage: InferenceStorageReads, sessionId: 
       const toolOffer = offerTools(policyNames);
       const active = [...required], local: TimelineEntry[] = [], shared: TimelineEntry[] = [];
       const groups: TimelineEntry[][] = [];
+      const retrievalCalls = new Set<string>();
       let exchange: TimelineEntry[] | undefined;
       for (const row of optionalTurn) {
-        if (row.message.role === "assistant") { exchange = [row]; groups.push(exchange); }
+        if (row.message.role === "assistant") {
+          for (const call of row.message.calls) if (isTimelineTool(call.name)) retrievalCalls.add(call.id);
+          exchange = [row]; groups.push(exchange);
+        }
         else if (row.message.role === "tool") exchange?.push(row);
         else groups.push([row]);
       }
       const outcomes: ContextTurnOutcome[] = [];
       const render = () => buildContext([...local, ...shared, ...active].sort(order), instructions, turn, outcomes)
-        .map(message => message.role === "tool" && Buffer.byteLength(message.content, "utf8") > 2048
+        .map(message => message.role === "tool" && !retrievalCalls.has(message.callId) && Buffer.byteLength(message.content, "utf8") > 2048
           ? { ...message, content: Buffer.from(message.content).subarray(0, 2048).toString("utf8") + "\n[Tool result shortened]" }
           : message);
       const size = () => bytes({ messages: render(), tools: toolOffer.tools });
