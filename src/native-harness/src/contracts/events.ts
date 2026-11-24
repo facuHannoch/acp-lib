@@ -30,7 +30,7 @@ export interface ChannelEvent {
   revision?: number;
   event: (LoopEvent & { turnId: string; messageId?: string })
     | import("./model-execution.ts").ModelTextEvent
-    | { type: "turn_started" | "turn_took"; turnId: string; items: string[]; messages?: { itemId: string; messageId: string; position: import("./operator-controls.ts").MessagePosition }[] }
+    | { type: "turn_started" | "turn_took"; turnId: string; items: string[]; messages?: { itemId: string; messageId: string; position: import("./operator-controls.ts").MessagePosition; parts?: import("./attachments.ts").AttachmentViewPart[] }[] }
     | { type: "items_receipt"; turnId: string; items: string[]; milestone: "delivered" | "seen" }
     | { type: "turn_suspended" | "turn_resumed"; turnId: string }
     | { type: "channel_state"; lifecycle: "open" | "suspending" | "suspended" | "retired"; displayName?: string; policy?: string }
@@ -38,7 +38,7 @@ export interface ChannelEvent {
     | (import("./reminders.ts").ReminderChannelEvent & { turnId?: never })
     | import("./operator-controls.ts").ApprovalClosedEvent
     | ({ type: "approval_requested" } & import("./config-permissions.ts").ApprovalRequest)
-    | { type: "turn_ended"; turnId: string; outcome: "completed" | "failed" | "interrupted"; error?: string; uncertainCalls?: string[] };
+    | { type: "turn_ended"; turnId: string; outcome: "completed" | "failed" | "interrupted"; error?: string; uncertainCalls?: string[]; attachmentFailure?: import("./attachments.ts").AttachmentFailure };
 }
 export type EventSink = (event: ChannelEvent) => void;
 

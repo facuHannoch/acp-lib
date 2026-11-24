@@ -287,3 +287,41 @@ test("cumulative real stdio phase searches and reads an attributed timeline sour
   expect(later).not.toContain("timeline-search");
   expect(later).not.toContain("timeline-read");
 }, 30_000);
+
+test("cumulative real stdio rehearsal includes a managed image provider phase", async () => {
+  const { imageValidationAvailable } = await import("../../src/native-harness/src/capabilities/attachments/image-validation.ts");
+  if (!imageValidationAvailable()) return;
+  const { createHash } = await import("node:crypto");
+  const directory = await mkdtemp(join(tmpdir(), "attachment-rehearsal-"));
+  const requests = join(directory, "requests.jsonl");
+  const projected: any[] = [];
+  const provider = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    projected.push(await request.json());
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "fixture" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+  } });
+  const run = await createRehearsal(new URL("./fixtures/rehearsal-cumulative-attachments.jsonl", import.meta.url).pathname, {
+    deadlineMs: 25000, exactConsumption: true, timelineTools: true, imageInput: true,
+    env: { HARNESS_TEST_REQUESTS: requests, HARNESS_TEST_ATTEMPTS: join(directory, "attempts.jsonl"), HARNESS_TEST_PROVIDER_ENDPOINT: `http://127.0.0.1:${provider.port}/` },
+  });
+  try {
+    await run.setup();
+    await run.schedule(async offset => { if (offset) await until(() => run.activity.filter(event => event.kind === "completed").length >= offset, "previous phase completed"); });
+    await until(() => run.activity.filter(event => event.kind === "completed").length >= 4, "earlier phases completed");
+    const client = run.client();
+    const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAEElEQVR4nGP4y8AARAwQCgAfrgP19hgqWQAAAABJRU5ErkJggg==", "base64");
+    const begun = await client.beginAttachment({ channel: "vision", filename: "fixture.png", mediaType: "image/png", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+    await client.writeAttachment({ channel: "vision", uploadId: begun.uploadId, offset: 0, data: bytes.toString("base64") });
+    await client.finalizeAttachment({ channel: "vision", uploadId: begun.uploadId });
+    expect((await client.push({ channel: "vision", item: { id: "image-phase", kind: "user_message", sender: "operator", content: [{ type: "text", text: "Look" }, { type: "attachment", id: begun.attachmentId }] } })).accepted).toBe(true);
+    await until(() => run.activity.some(event => event.channel === "vision" && event.kind === "completed"), "image phase completed");
+    expect(Buffer.from((await client.readAttachment({ channel: "vision", id: begun.attachmentId, offset: 0 })).data, "base64")).toEqual(bytes);
+    const summary = await run.finish();
+    expect(Object.values(summary.unused).every(count => count === 0)).toBe(true);
+    expect(projected).toHaveLength(1);
+    const message = projected[0].messages.find((item: any) => Array.isArray(item.content) && item.content.some((part: any) => part.type === "image_url"));
+    expect(message.content.some((part: any) => part.type === "image_url" && part.image_url.url === `data:image/png;base64,${bytes.toString("base64")}`)).toBe(true);
+    const captures = readFileSync(requests, "utf8");
+    expect(captures).toContain("launch-correction");
+    expect(captures).not.toContain(bytes.toString("base64"));
+  } finally { await run.close(); provider.stop(true); await rm(directory, { recursive: true, force: true }); }
+}, 35000);

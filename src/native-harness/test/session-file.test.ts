@@ -13,7 +13,10 @@ const failure = (fn: () => unknown, code: string) => { try { fn(); throw new Err
 test("CBOR profile reads independent vectors and rejects invalid envelopes and values", () => {
   expect(decodeSessionFile(frame("a3616101616282f5f6616362c3a9"), max)).toEqual({ a: 1, b: [true, null], c: "é" });
   expect(decodeSessionFile(frame("f93e00"), max)).toBe(1.5);
-  for (const hex of ["a2616101616102", "5f40ff", "c001", "f7", "fb7ff0000000000000", "a10100", "61ff", "0102", "9f01ff"]) failure(() => decodeSessionFile(frame(hex), max), "invalid_archive");
+  expect(decodeSessionFile(frame("430001ff"), max)).toEqual(Uint8Array.of(0, 1, 255));
+  const file = encodeSessionFile({ bytes: Uint8Array.of(0, 1, 255) }, max);
+  expect(decodeSessionFile(file, max)).toEqual({ bytes: Uint8Array.of(0, 1, 255) });
+  for (const hex of ["a2616101616102", "5f40ff", "4300", "c001", "f7", "fb7ff0000000000000", "a10100", "61ff", "0102", "9f01ff"]) failure(() => decodeSessionFile(frame(hex), max), "invalid_archive");
   const good = frame("a0");
   for (const bad of [Buffer.from("{}"), good.subarray(0, 13), Buffer.concat([good, Buffer.from([0])]), Buffer.from(good)]) {
     if (bad.length === good.length) bad[9] = 2;
@@ -24,6 +27,7 @@ test("CBOR profile reads independent vectors and rejects invalid envelopes and v
   failure(() => decodeSessionFile(good, 14), "transfer_limit");
   failure(() => encodeSessionFile({ n: Infinity }, max), "serialization_error");
   failure(() => encodeSessionFile({ n: 1 }, 14), "transfer_limit");
+  failure(() => encodeSessionFile({ bytes: new Uint8Array(100) }, 64), "transfer_limit");
 });
 
 for (const kind of ["memory", "sqlite"] as const) test(`${kind}: imported configuration is atomic, durable and optional for old sessions`, () => {

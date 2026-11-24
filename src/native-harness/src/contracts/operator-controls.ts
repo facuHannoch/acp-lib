@@ -12,6 +12,8 @@ export interface OpenResult {
   nextDueAt?: string | null;
   reminderRevision?: number;
   unattendedTurnGuard?: { maxConsecutiveTurns: number } | null;
+  imageInput?: true;
+  imageLimits?: { formats: string[]; fileBytes: number; turnBytes: number; maxImages: number; maxSide: number; maxPixels: number };
 }
 
 export interface ChannelObservation {
@@ -23,7 +25,8 @@ export interface ChannelObservation {
 
 /** Ordered storage position scoped to a session and channel, distinct from message identity. */
 export type MessagePosition = string;
-export type ConversationMessage = (StoredMessage | {
+type ParticipantMessage = { messageId: string; channel: string; turnId: string; parts: import("./attachments.ts").AttachmentViewPart[] };
+export type ConversationMessage = (ParticipantMessage | {
   messageId: string; channel: string; turnId: string; omitted: true;
 }) & { position: MessagePosition; actor: { kind: "participant"; id: string }; itemId: string } |
   ((StoredMessage | { messageId: string; channel: string; turnId: string; omitted: true }) &
@@ -77,6 +80,7 @@ export interface LoadResultOpenParams {
  * Store adapters use the numeric bounds internally. Wire cursors are decoded
  * and checked by the protocol before invoking this port. */
 export interface OperatorStorageReads {
+  readManagedAttachment?(id: string): import("./storage.ts").StorageResult<{ metadata: import("./attachments.ts").AttachmentMetadata; timelineVisible: boolean } | undefined>;
   readChannel(channel: string): import("./storage.ts").StorageResult<{
     channel: Omit<import("./storage.ts").StoredChannel, "participantIds">;
     pendingCount: number;
