@@ -577,7 +577,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           try { meta = inspect.getMeta(); }
           catch { throw new Fail("incompatible", "File is not a readable harness session"); }
           if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7 && meta.formatVersion !== 8 && meta.formatVersion !== 9) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
-          const attachmentBase = inspect.attachments?.baseFormat();
+          const attachmentBase = meta.formatVersion === 9 ? inspect.attachments?.baseFormat() : undefined;
           if (meta.formatVersion === 9 && attachmentBase !== 6 && attachmentBase !== 7 && attachmentBase !== 8)
             throw new Fail("incompatible", "Format 9 is missing its base format");
           if (meta.formatVersion === 9 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
