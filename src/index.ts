@@ -308,6 +308,7 @@ export type {
   CombinedMessage,
   PromptPart,
 } from "./steering/index.ts";
+export type { MessageStatus, MessageStatusEvent } from "./message-status.ts";
 
 export {
   ActivityAggregator,

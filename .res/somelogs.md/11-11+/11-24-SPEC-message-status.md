@@ -1,6 +1,6 @@
 # Message status
 
-Status: proposed, 2026-11-24; review 1 and the code pass applied the same day. acp-client only; reads the native harness's existing item milestones
+Status: implemented, 2026-11-24. acp-client only; reads the native harness's existing item milestones
 (`src/native-harness/src/contracts/agent.ts`, `ItemMilestone`; the `items_receipt` channel event). No harness change.
 
 ## What it is
@@ -46,7 +46,8 @@ from these; it adds no new evidence.
 
 From a pass over the code (2026-11-24):
 
-- **A small tracker,** `src/steering/message-status.ts`: a map from message id to status, `advance(id, status)`
+- **A small tracker,** `src/message-status.ts` (top level: the status spans the message's whole life, not just
+  steering; `steering/contracts.ts` imports its types for `PromptHandle` and `MessageEvent`): a map from message id to status, `advance(id, status)`
   moving forward only, filling skipped steps in order, and emitting `message_status` through the session's `emit`.
   Entries outlive the prompt's settlement, unlike `acceptedMessages` in `agent-session.ts` (deleted on resolve),
   because `handle.status` is read afterwards; dropped with the session.

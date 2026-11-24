@@ -442,7 +442,7 @@ describe("a rejected acceptance while the provider reconnects", () => {
     const error = await within(refused.then(() => null, (reason: unknown) => reason), 2_000, "the refused prompt");
     expect(String(error)).toContain("acceptance rejected");
     expect(abandon.mock.calls.map(([turnId]) => turnId)).toEqual([refused.id]);
-    expect(events.filter((event) => (event as any).turnId === refused.id).map((event) => event.kind))
+    expect(events.filter((event) => (event as any).turnId === refused.id && event.kind !== "message_status").map((event) => event.kind))
       .toEqual(["turn_started", "turn_failed"]);
     // The queued message has not started: its turn waits for the reconnect already in flight.
     expect(events.some((event) => event.kind === "turn_started" && (event as any).turnId === queued.id)).toBe(false);

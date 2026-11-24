@@ -214,6 +214,8 @@ export interface BackendTurnHost {
   readonly log: Logger;
   /** The message left the queue and was handed to the backend. */
   markSent(messageId: string): void;
+  /** The backend durably accepted the message (a native push's answer). */
+  received?(messageId: string): void;
   /** The conversation is stopped (or stopping): a waiting turn is abandoned, not run. */
   readonly stopped: boolean;
   emit(event: AgentSessionEvent): void;
@@ -280,6 +282,7 @@ export async function sendToBackend(host: BackendTurnHost, controller: Conversat
     const send = controller.send(release ? { ...run, beginInput: id => !host.stopped && host.turns.beginInput(id) } : run);
     await (release ? Promise.race([send, release.promise]) : send);
     host.turns.accepted(message.turnId);
+    host.received?.(message.turnId);
   } catch (error) {
     if ((!release || host.turns.withdrawable(message.turnId)) && host.turns.unwait(message.turnId)) message.reject(error);
   }

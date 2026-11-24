@@ -503,6 +503,29 @@ kept as evidence and is not deleted; recovery or a future fresh-session operatio
 supersedes it. A `session/load` failure that is recoverable and has a usable checkpoint
 still recovers, with the error recorded before the recovery action.
 
+### Message status
+
+Every prompt handle has a `status`, and each change is a `message_status { id, status, turnId? }`
+event on the conversation. One sequence for every backend:
+
+`queued` → `received` → `taken` → `delivered` → `seen`, or the end states `withdrawn` and `failed`.
+
+```ts
+const handle = conversation.prompt("Hello");
+conversation.subscribe(({ event }) => {
+  if (event.kind === "message_status" && event.id === handle.id) showTicks(event.status);
+});
+```
+
+- **Native conversations** use the harness's milestones: `received` when its inbox accepted the
+  message, `taken` when a turn took it, `delivered` and `seen` from its `items_receipt` evidence.
+- **ACP conversations** approximate: `received`, `taken` and `delivered` together when the prompt is
+  sent, `seen` at the provider's first output (it started answering, not proof it read the message).
+- A status only moves forward; skipped steps are still reported in order.
+- `failed` means it never reached `seen`; a seen message whose turn fails stays `seen`, and the
+  prompt's result says how the turn ended. `withdrawn` is only possible before a take.
+- Live only: statuses aren't restored after a restart. The other message events are unchanged.
+
 ### Provider notices: retries, warnings and failures
 
 Harnesses report retries, warnings and failures in an update's `_meta`, not as ACP errors.
