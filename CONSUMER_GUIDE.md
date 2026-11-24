@@ -1368,7 +1368,7 @@ view.
 | Local | `routines_unavailable` | The peer lacks routine or unattended guard support, or executable open has yet to confirm an effective guard. |
 | Local or harness startup | `invalid_config` | The unattended-turn limit is invalid or differs from the saved limit. |
 | Harness request | `storage_failure` | A retryable storage or proof-budget failure returned no receipt. A live routine mutation that still has no receipt after retry returns a pending view. Retrying the same input reuses the saved ID and change. |
-| Startup | `reminder_batch_retry_exhausted` | Three startup attempts returned a storage failure. The session stays stopped and the frozen batch remains unacknowledged for the next explicit start. |
+| Startup | `reminder_batch_retry_exhausted` | Three startup attempts returned a storage failure. The session stays stopped and the frozen batch remains unacknowledged. See the recovery steps below. |
 | Harness | `unattended_guard_required` | Routine activation was blocked because the session lacks an enabled guard. |
 | Harness | `invalid_policy` | The reminder names a policy the harness does not accept. |
 | Harness | `channel_missing`, `channel_retired` | The destination channel is missing or retired. |
@@ -1403,7 +1403,10 @@ normal inbox or turn history after reconnect.
 A 0032-compatible native harness advertises both `routines` and
 `unattendedTurnGuard`. The Agent enables authoring when an executable open
 also confirms a non-null guard. Check `conversationCapabilities.routines`
-after that open. The bundled one-off harness reports a zero routine cap.
+after that open. Routine authoring requires an executable open in this Agent
+process, including for offline writes after a restart. Guard evidence stays
+in memory and each connection obtains it from its own executable open.
+The bundled one-off harness reports a zero routine cap.
 
 Set `AgentConfig.harness.config.limits.unattendedTurns` to a positive safe
 integer to enable the guard on session creation or on the first executable
@@ -1461,7 +1464,7 @@ Pass either input to `conversation.reminders.create(input)`.
   The harness advertises a 600,000 ms minimum interval, 20 active routines
   per channel and 10 catch-up notices per routine per eligibility episode.
   The harness enforces its active cap.
-- Offline mutations require durable storage and prior negotiation.
+- Offline mutations require durable storage and guard confirmation in this process.
   At startup, cancellations, pauses and other non-activating changes go
   before due work. Creates, resumes and schedule replacements wait for
   the connection's executable open and retain their original acceptance time.
@@ -1473,7 +1476,18 @@ Pass either input to `conversation.reminders.create(input)`.
   confirms no effective guard, the harness can record
   `unattended_guard_required` when the queued activation is sent live.
 
-Routine events are live. Within one commit a disposition precedes the fire
+If startup exhausts its reminder batch retries, correct the storage cause
+and start again to replay the exact frozen batch. To stop retrying a specific
+reminder, stop the harness and call
+`conversation.reminders.discardExhausted(reminderId)`. It returns `true` if
+it removed that reminder's entries from the exhausted batch. Start the
+harness again to replay the remaining entries. Discard removes local intent
+only. Earlier entries may already have committed on the harness, so check
+the authoritative row after reopening.
+
+Routine events are live, and identical frames are all delivered. An
+`expired` disposition counts occurrences. The client refreshes the row to
+learn the remaining count, next run and terminal state. Within one commit a disposition precedes the fire
 it describes. A migration hold precedes the updated row, whose state is
 `blocked` with `blockedReason: "invalid_schedule"` and `timezoneMigration`.
 The row remains visible and contributes no wake while held. Use confirmed
