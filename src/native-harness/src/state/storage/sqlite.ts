@@ -569,7 +569,7 @@ export function createSqliteStorageAdapter(path: string, adapterOptions: { media
         releaseLease = acquireImportLease(path); recoverAttachmentImport(path, root);
         const meta = archiveMeta(archive, options?.sessionId);
         const publishDatabase = () => publish(path, meta, tables => { restoreArchive(tables, archive); tables.setConfig(config); });
-        if (archive.archiveVersion === 8) publishAttachmentImport(path, root, archive, publishDatabase); else publishDatabase();
+        if (archive.attachmentState) publishAttachmentImport(path, root, archive, publishDatabase); else publishDatabase();
         return { ok: true, value: storedSession(meta), revision: meta.revision };
       } catch (error) { return failure(error); }
       finally { releaseLease?.(); }
@@ -664,7 +664,7 @@ export function createSqliteStorageAdapter(path: string, adapterOptions: { media
         releaseLease = acquireImportLease(path); recoverAttachmentImport(path, root);
         const meta = archiveMeta(archive, options?.sessionId);
         const publishDatabase = () => publish(path, meta, tables => restoreArchive(tables, archive));
-        if (archive.archiveVersion === 8) publishAttachmentImport(path, root, archive, publishDatabase); else publishDatabase();
+        if (archive.attachmentState) publishAttachmentImport(path, root, archive, publishDatabase); else publishDatabase();
         return { ok: true, value: storedSession(meta), revision: meta.revision };
       } catch (error) { return failure(error); }
       finally { releaseLease?.(); }

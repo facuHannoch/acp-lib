@@ -1296,7 +1296,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         && !snapshot.channels.some(channel => channel.lifecycle === "suspending")
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
-      let archiveFormat = meta.formatVersion;
+      const webBase = meta.formatVersion === 10 ? tables.web.baseFormat() : undefined;
+      if (meta.formatVersion === 10 && ![6, 7, 8, 9].includes(webBase ?? 0)) fail("invalid_archive", "Invalid web base format");
+      let archiveFormat = webBase ?? meta.formatVersion;
       let attachmentState: SessionArchive["attachmentState"];
       if (archiveFormat === 9) {
         const attachments = tables.attachments;
@@ -1307,7 +1309,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         const records = attachments.retained();
         if (records.length) {
           if (!readFiles) throw new Fail("attachment_unavailable", "Managed attachment files are unavailable");
-          const placeholder = { format: "harness-session", archiveVersion: 8, exportedAt: now(), snapshot,
+          const placeholder = { format: "harness-session", archiveVersion: webBase === undefined ? 8 : 9, exportedAt: now(), snapshot,
+            ...(webBase === undefined ? {} : { webState: { baseFormat: 9 } }),
             ...(base >= 7 ? { reminderState: reminders.archive() } : {}), allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber },
             attachmentState: { baseFormat: base, files: records.map(record => ({ ...record, bytes: new Uint8Array() })) } };
           const max = 268435456;
@@ -1319,9 +1322,12 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
           if (!Number.isSafeInteger(required) || required > max) throw new Fail("transfer_limit", "Session file exceeds limit");
           try { attachmentState = { baseFormat: base, files: readFiles(records, max - required + records.reduce((n, record) => n + record.metadata.bytes, 0)) }; }
           catch (error) { const code = (error as { code?: string }).code; throw new Fail(code === "transfer_limit" ? "transfer_limit" : "attachment_unavailable", String(error)); }
-        } else snapshot.session.formatVersion = base;
+        } else if (webBase === undefined) snapshot.session.formatVersion = base;
       }
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: attachmentState ? 8 : archiveFormat >= 8 ? 7 : archiveFormat === 7 ? 6 : 5, exportedAt: now(), snapshot,
+      const priorFormat = attachmentState ? 9 : archiveFormat;
+      const webState: SessionArchive["webState"] = webBase === undefined ? undefined : { baseFormat: priorFormat as 6 | 7 | 8 | 9 };
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: webState ? 9 : attachmentState ? 8 : archiveFormat >= 8 ? 7 : archiveFormat === 7 ? 6 : 5, exportedAt: now(), snapshot,
+        ...(webState ? { webState } : {}),
         ...(attachmentState ? { attachmentState } : {}),
         ...(archiveFormat >= 7 ? { reminderState: reminders.archive() } : {}),
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };

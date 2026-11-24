@@ -1,3 +1,4 @@
+import { validWebDispatch, validCommittedWebUsage } from "../../util/web-usage.ts";
 import { migrateImportedRoutines } from "./engine.ts";
 import { validateReminderArchive } from "./reminder-archive.ts";
 import type { SessionArchive, SessionArchiveV1, StoredSession } from "../../contracts/storage.ts";
@@ -18,7 +19,7 @@ const CHANNEL_STATES = ["open", "suspended", "retired"];
 export function validateSessionPayload(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "archive,config") bad("Invalid session file payload");
   const payload = value as { archive: SessionArchive; config: unknown };
-  if (![2, 3, 4, 5, 6, 7, 8].includes((payload.archive as { archiveVersion?: number })?.archiveVersion ?? 0)) bad("Invalid session file archive version");
+  if (![2, 3, 4, 5, 6, 7, 8, 9].includes((payload.archive as { archiveVersion?: number })?.archiveVersion ?? 0)) bad("Invalid session file archive version");
   const archive = validateArchive(payload.archive);
   let config: ReturnType<typeof validateConfig>;
   try { config = validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { return bad(String(error)); }
@@ -34,9 +35,9 @@ export function validateSessionPayload(value: unknown) {
 export function validateArchive(value: unknown): SessionArchive {
   if (!value || typeof value !== "object") bad("Archive is not data");
   const raw = value as any;
-  if (raw.format !== "harness-session" || ![1, 2, 3, 4, 5, 6, 7, 8].includes(raw.archiveVersion)) bad("Unsupported archive format or version");
+  if (raw.format !== "harness-session" || ![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(raw.archiveVersion)) bad("Unsupported archive format or version");
   const files = new Map<string, { metadata: import("../../contracts/attachments.ts").AttachmentMetadata; readyAt: string; bytes: Uint8Array }>();
-  if (raw.archiveVersion === 8) {
+  if (raw.archiveVersion === 8 || (raw.archiveVersion === 9 && raw.attachmentState !== undefined)) {
     const state = raw.attachmentState;
     if (!state || ![6, 7, 8].includes(state.baseFormat) || !Array.isArray(state.files) || !state.files.length) bad("Invalid attachment archive state");
     let total = 0;
@@ -64,6 +65,10 @@ export function validateArchive(value: unknown): SessionArchive {
     const jsonPart = { ...raw, attachmentState: { ...state, files: state.files.map(({ bytes: _bytes, ...rest }: any) => rest) } };
     if (!isJson(jsonPart)) bad("Archive is not JSON data");
   } else if (!isJson(value) || raw.attachmentState !== undefined) bad("Archive is not JSON data");
+  if (raw.archiveVersion === 9) {
+    if (!raw.webState || Object.keys(raw.webState).join() !== "baseFormat" || ![6, 7, 8, 9].includes(raw.webState.baseFormat)
+      || (raw.webState.baseFormat === 9) !== !!raw.attachmentState) bad("Invalid web archive base");
+  } else if (raw.webState !== undefined || raw.snapshot?.webDispatches !== undefined) bad("Unexpected web evidence");
   const v1 = raw.archiveVersion === 1;
   const legacy = raw.archiveVersion < 3;
   if (!raw.snapshot || !raw.allocation || !raw.snapshot.session || !Array.isArray(raw.snapshot.channels)) bad("Archive is missing its snapshot or allocation state");
@@ -80,14 +85,14 @@ export function validateArchive(value: unknown): SessionArchive {
   const positions: Record<string, number> = {};
   if (old && Array.isArray(policyArchive.snapshot.timeline)) for (const entry of policyArchive.snapshot.timeline)
     if (entry.message?.role === "assistant") Object.defineProperty(positions, entry.channelId, { value: (Object.hasOwn(positions, entry.channelId) ? positions[entry.channelId]! : 0) + 1, writable: true, configurable: true, enumerable: true });
-  const previousFormat = [0, 2, 3, 4, 5, 6, 7, 8, 9][raw.archiveVersion];
+  const previousFormat = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10][raw.archiveVersion];
   if (raw.snapshot.session.formatVersion !== previousFormat) bad("Unsupported session format");
-  const archive: SessionArchive = { ...policyArchive, archiveVersion: raw.archiveVersion >= 8 ? 8 : raw.archiveVersion >= 7 ? 7 : raw.archiveVersion === 6 ? 6 : 5, snapshot: { ...policyArchive.snapshot,
-    session: { ...policyArchive.snapshot.session, formatVersion: raw.archiveVersion >= 8 ? 9 : raw.archiveVersion >= 7 ? 8 : raw.archiveVersion === 6 ? 7 : 6 },
+  const archive: SessionArchive = { ...policyArchive, archiveVersion: raw.archiveVersion >= 9 ? 9 : raw.archiveVersion >= 8 ? 8 : raw.archiveVersion >= 7 ? 7 : raw.archiveVersion === 6 ? 6 : 5, snapshot: { ...policyArchive.snapshot,
+    session: { ...policyArchive.snapshot.session, formatVersion: raw.archiveVersion >= 9 ? 10 : raw.archiveVersion >= 8 ? 9 : raw.archiveVersion >= 7 ? 8 : raw.archiveVersion === 6 ? 7 : 6 },
     ...(old ? { modelCalls: [], scriptPositions: positions } : {}) } };
   const snapshot = archive.snapshot, allocation = archive.allocation;
   const { session, revision } = snapshot;
-  if ((session.formatVersion !== 6 && session.formatVersion !== 7 && session.formatVersion !== 8 && session.formatVersion !== 9) || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
+  if ((session.formatVersion !== 6 && session.formatVersion !== 7 && session.formatVersion !== 8 && session.formatVersion !== 9 && session.formatVersion !== 10) || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
     bad("Unsupported session format");
   if (session.lifecycle !== "running" && session.lifecycle !== "suspended") bad("Archive was not exported from an idle or suspended session");
   if (!Number.isSafeInteger(revision) || revision < 0 || allocation.nextSeq !== revision + 1 || !int(allocation.nextTurnId) || !int(allocation.nextItemNumber))
@@ -157,6 +162,25 @@ export function validateArchive(value: unknown): SessionArchive {
     if (turn.state.status === "suspended" && outstanding.size) bad("Checkpoint has an unanswered tool call");
   }
 
+  const records = snapshot.webDispatches;
+  if (archive.archiveVersion === 9) {
+    if (!Array.isArray(records) || !records.length) bad("Missing web dispatch evidence");
+    const seen = new Set<string>();
+    for (const record of records!) {
+      if (!record || Object.keys(record).sort().join() !== "callId,evidence,turnId" || !int(record.turnId) || !str(record.callId) || !validWebDispatch(record.evidence)) bad("Invalid web dispatch evidence");
+      const identity = JSON.stringify([record.turnId, record.callId]);
+      if (seen.has(identity)) bad("Duplicate web dispatch evidence");
+      seen.add(identity);
+      const call = snapshot.timeline.flatMap(entry => entry.turnId === record.turnId && entry.message.role === "assistant" ? entry.message.calls : []).find(candidate => candidate.id === record.callId);
+      if (!call || call.name !== record.evidence.operation) bad("Web evidence does not match a call");
+    }
+    for (const entry of snapshot.timeline) if (entry.message.role === "tool" && entry.message.usage !== undefined) {
+      const callId = entry.message.callId;
+      const record = records!.find(candidate => candidate.turnId === entry.turnId && candidate.callId === callId);
+      if (!record?.evidence.paid || !validCommittedWebUsage(entry.message.usage)) bad("Invalid paired web usage");
+    }
+  } else if (snapshot.timeline.some(entry => entry.message.role === "tool" && entry.message.usage !== undefined)) bad("Unexpected paired web usage");
+
   const revoked = (snapshot as { revokedTools?: unknown }).revokedTools;
   if (revoked !== undefined && (!Array.isArray(revoked) || revoked.some(name => !str(name)) || new Set(revoked).size !== revoked.length
     || JSON.stringify([...revoked].sort()) !== JSON.stringify(revoked))) bad("Invalid revoked tools");
@@ -215,7 +239,7 @@ export function validateArchive(value: unknown): SessionArchive {
     } else if (!["participant_message", "channel_notice"].includes(item.kind)
       || item.externalSource !== undefined || item.inheritedPolicyNames !== undefined) bad("Invalid item kind or attribution");
     if (item.parts !== undefined) {
-      if (archive.archiveVersion !== 8 || item.kind !== "participant_message") bad("Unexpected attachment parts");
+      if (archive.archiveVersion < 8 || item.kind !== "participant_message") bad("Unexpected attachment parts");
       try { validateMixedParts(item.parts); } catch { bad("Invalid attachment parts"); }
       if (item.text !== item.parts.filter(part => part.type === "text").map(part => part.type === "text" ? part.text : "").join("\n")) bad("Attachment text projection differs");
       for (const part of item.parts) if (part.type === "attachment") {
@@ -248,8 +272,8 @@ export function validateArchive(value: unknown): SessionArchive {
     if (entry.kind === "external_notice" && !externalEntries.has(entry.seq)) bad("External timeline entry has no inbox item");
   for (const turn of snapshot.turns)
     if (JSON.stringify(turn.itemIds) !== JSON.stringify(turns.get(turn.turnId)!.itemIds)) bad(`Turn ${turn.turnId} does not match its items`);
-  if (archive.archiveVersion === 8 && (referencedFiles.size !== files.size || [...files.keys()].some(id => !referencedFiles.has(id)))) bad("Archive contains unreferenced attachment files");
-  const reminderFormat = archive.archiveVersion === 8 ? archive.attachmentState!.baseFormat : archive.archiveVersion >= 7 ? 8 : archive.archiveVersion === 6 ? 7 : 6;
+  if (archive.archiveVersion >= 8 && (referencedFiles.size !== files.size || [...files.keys()].some(id => !referencedFiles.has(id)))) bad("Archive contains unreferenced attachment files");
+  const reminderFormat = archive.archiveVersion === 9 ? (archive.attachmentState?.baseFormat ?? archive.webState!.baseFormat) : archive.archiveVersion === 8 ? archive.attachmentState!.baseFormat : archive.archiveVersion >= 7 ? 8 : archive.archiveVersion === 6 ? 7 : 6;
   if (reminderFormat >= 7) {
     validateReminderArchive(archive.reminderState, snapshot);
     const guard = archive.reminderState?.guard;
@@ -284,6 +308,7 @@ export function restoreArchive(tables: Tables, archive: SessionArchive): void {
     for (const participant of snapshot.participants) tables.addParticipant(participant.participantId);
     for (const { itemIds: _derived, ...turn } of snapshot.turns) tables.putTurn(turn);
     for (const entry of snapshot.timeline) tables.addEntry(entry);
+    if (archive.webState) for (const record of snapshot.webDispatches ?? []) tables.web.add(record, archive.webState.baseFormat);
     if (archive.attachmentState) {
       if (!tables.attachments) bad("Managed attachment storage is unavailable");
       tables.attachments!.restore(archive.attachmentState.baseFormat, archive.attachmentState.files);
@@ -302,5 +327,5 @@ export function restoreArchive(tables: Tables, archive: SessionArchive): void {
 }
 
 export function storedSession(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 9 ? 9 : meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
+  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 10 ? 10 : meta.formatVersion >= 9 ? 9 : meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }

@@ -232,8 +232,9 @@ export interface StorageSnapshot {
  * Version 5 adds external notices. */
 export interface SessionArchive {
   format: "harness-session";
-  archiveVersion: 5 | 6 | 7 | 8;
+  archiveVersion: 5 | 6 | 7 | 8 | 9;
   /** Complete retained managed bytes, only in logical archive 8. */
+  webState?: { baseFormat: 6 | 7 | 8 | 9 };
   attachmentState?: { baseFormat: 6 | 7 | 8; files: Array<{ metadata: import("./attachments.ts").AttachmentMetadata; readyAt: string; bytes: Uint8Array }> };
   reminderState?: import("./reminders.ts").ReminderArchiveState;
   exportedAt: string;
