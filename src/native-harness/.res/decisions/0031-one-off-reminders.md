@@ -57,7 +57,8 @@ Agent tools reserve `schedule_reminder({schedule,text,expiresAfter?})`,
 `list_reminders({after?,limit?})`, and `cancel_reminder({id})`. The schedule
 is strictly `{at}` or `{in}` with a positive integer plus m/h/d. Convert
 relative input once. Derive channel, creator and taken policy names.
-Creation returns `{id,nextRunAt}` and deduplicates by creating invocation
+List and cancel are limited to the calling channel. A foreign reminder ID
+returns not_found on cancel. Creation returns `{id,nextRunAt}` and deduplicates by creating invocation
 before resolving the relative time. Cancel returns `{id,alreadyQueued}`.
 Use checked offered-tool admission and the ordinary permission gate.
 
@@ -122,13 +123,50 @@ stop and its existing response.
 
 ## Compatibility and verification
 
-Use SQLite format 7 and logical archive 6, keeping the envelope unchanged.
-Migrate formats already supported to empty reminder state under recovery.
-Export records, receipts, wake value/revision and listing revision with
-the logical session; import and validate them atomically. Rebuild indexes
-from committed rows. Older binaries must reject the new executable format
-rather than silently ignoring due work. Verify memory/SQLite parity,
-timer and cancellation races, atomic crash boundaries, bounded reads,
-archive round trip, startup order, replay and revision conflicts, and
-real stdio cold-wake acceptance per the plan. R-H3 covers the host
-supervisor and its accepted missed-deadline crash window.
+Keep existing format-6 sessions at 6 until their first durable reminder-specific
+write, including a blocked receipt. That transaction creates the reminder
+schema and commits format 7 with the state. Rollback preserves the old format,
+layout and state. Ordinary open, empty lists, inspection and rejected malformed
+requests do not upgrade. An older binary can still open an untouched format 6
+file and must refuse executable format 7. Exports without reminder state stay
+archive 5. Archive 6 carries records, receipts, the wake value and revision and
+listing revision. Import versions 1–5 with empty reminder state and format 6;
+validate and publish archive 6 atomically at format 7. The envelope is unchanged.
+Indexes rebuild from committed rows. Read-only inspection of pre-reminder files
+returns empty reminder reads without installing schema.
+
+## Clock, bounded startup and races
+
+Compare stored UTC instants against the harness wall clock for every eligibility,
+expiry and stop decision. The wake revision remains monotonic even when the
+clock moves. Fire only at or after the stored instant. If a timer wakes early
+after a backward clock move, re-arm. Clamp each timer delay to 2147483647 ms and
+continue re-arming until due. On a forward jump process eligible elapsed rows by
+scheduled instant and creation sequence, applying expiry at the observed time
+so expired rows enqueue nothing. At equality a suspended occurrence is held.
+Recheck on resume and expire without queuing if its expiry has been reached.
+
+After applying both startup batches, process at most 100 eligible elapsed rows
+before responding. Return nextDueAt and its revision for the remaining eligible
+work, including the earliest still-overdue row. Drain the remainder in bounded
+batches after releasing the open fence, yielding between them. Apply the same
+batch rule after a clock jump.
+
+If cancel commits before firing, no notice is queued. If firing commits first,
+cancel reports alreadyQueued and preserves the inbox item. A crash before the
+fire transaction commits leaves no notice or advancement. A crash after commit
+leaves both and reopen never queues that occurrence again. Idle stop and work
+admission serialize: admission first can make stop busy; stop first closes
+admission. Due processing first can make stop busy, while a due deadline in the
+stop window refuses stop before firing. After a successful stop, later due work
+waits for the next eligible open. A missed wake event may leave the host's saved
+deadline stale; an executable open reconciles it, subject to expiry.
+
+Receipt storage and archive size grow with distinct mutation intents; exact
+replays add no rows. Listing retains its revision fence; the client may restart
+a stale page once and surface invalid_cursor on another conflict.
+
+Verify memory/SQLite parity, both clock jump directions and long timer chunks,
+timer and cancellation races, atomic crash boundaries, bounded reads, archive
+round trip, startup order, replay, listing invalidation and wake revision
+conflicts. Real stdio and the R-H3 supervisor cases follow the plan.
