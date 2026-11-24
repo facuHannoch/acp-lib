@@ -307,3 +307,38 @@ test("joint harness refuses forged schedule kind and one-off delivery edits with
     }
   } finally { await s.rig.clean(); }
 }, 15_000);
+
+test("joint cold wake applies offline cancel and pause before due routine work", async () => {
+  const s = await routineRig();
+  s.guard(4);
+  s.observeRpc();
+  try {
+    const agent = await s.rig.open();
+    const channel = await s.conversation(agent);
+    const events = s.rig.watch(channel);
+    const host = agent.nativeHarness!;
+    await host.start();
+    const due = s.clock.time + 2 * interval;
+    const create = (text: string) => channel.reminders.create({ text, schedule: { every: interval, startAt: due, count: 2 } });
+    const cancelled = await create("cancel");
+    const paused = await create("pause");
+    const fires = await create("wake");
+    await host.stop();
+    await channel.reminders.cancel(cancelled.id);
+    await channel.reminders.pause(paused.id);
+    expect((await agent.persistence.reminders!.wake()).reported?.nextDueAt).toBe(due);
+    await until(() => s.clock.delays.length === 1, "cold routine timer armed");
+    s.at(due);
+    s.clock.tickAt(due);
+    await until(() => host.state === "running" && events.some(event => event.kind === "reminder_fired"), "cold routine wake and delivery");
+    expect(host.launches).toBe(2);
+    expect(s.batches.at(-1)?.reminderChanges?.map(entry => [entry.reminderId, entry.op])).toEqual([[cancelled.id, "cancel"], [paused.id, "update"]]);
+    expect(s.opens.at(-1)?.reminders).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: cancelled.id, state: "cancelled", nextRunAt: null }),
+      expect.objectContaining({ id: paused.id, state: "paused", nextRunAt: null }),
+      expect.objectContaining({ id: fires.id, state: "active", remainingCount: 1, nextRunAt: iso(due + interval) }),
+    ]));
+    expect(events.filter(event => event.kind === "reminder_fired").map(event => event.noticeId)).toEqual([notice(fires.id, due)]);
+    expect((await s.client.reconcileChannel({ channel: channel.id, itemIds: [notice(cancelled.id, due), notice(paused.id, due)] })).items).toEqual([]);
+  } finally { await s.rig.clean(); }
+}, 15_000);
