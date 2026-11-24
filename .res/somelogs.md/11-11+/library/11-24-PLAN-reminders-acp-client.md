@@ -245,13 +245,13 @@ New questions, for haurness-l (contract work, not blocking the plan):
    scheduler release.
 
 For the user and spec owners (unchanged where not answered):
-11. **Defaults:** coalesce for missed runs, skip for overlap, 5 and 15 minutes, 20 per channel.
-12. **Wake ownership:** one row per Agent in acp-client's database; with several Agents sharing a database, only the SQLite
+10. **Defaults:** coalesce for missed runs, skip for overlap, 5 and 15 minutes, 20 per channel.
+11. **Wake ownership:** one row per Agent in acp-client's database; with several Agents sharing a database, only the SQLite
     owner arms the timer (proposed).
-13. **Backends without the repository:** `create` with the harness stopped fails with a typed error rather than recording an
+12. **Backends without the repository:** `create` with the harness stopped fails with a typed error rather than recording an
     intent a restart loses (proposed).
-14. **ACP conversations:** the capability is false and `create` throws a typed error; no interim emulation.
-15. **Idle-stop window:** measured startup time with a floor; per Agent or global.
-16. **Late-wake tolerance:** the 30 s figure is a proposal.
-17. **`stop()` and the wake:** an explicit `stop()` keeps the wake armed (proposed); confirm or give a disarm control.
-18. **Confidentiality:** reminder text and policy names are stored in the clear in acp-client's database (intents and cache).
+13. **ACP conversations:** the capability is false and `create` throws a typed error; no interim emulation.
+14. **Idle-stop window:** measured startup time with a floor; per Agent or global.
+15. **Late-wake tolerance:** the 30 s figure is a proposal.
+16. **`stop()` and the wake:** an explicit `stop()` keeps the wake armed (proposed); confirm or give a disarm control.
+17. **Confidentiality:** reminder text and policy names are stored in the clear in acp-client's database (intents and cache).
