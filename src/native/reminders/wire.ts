@@ -1,59 +1,32 @@
-import type { HarnessClient, ReminderChange as WireChange } from "../../native-harness/src/client.ts";
+import type {
+  ChannelEvent, HarnessClient, Reminder as HarnessReminder, ReminderChange as WireChange,
+  ReminderChangeResult, ReminderSessionEvent,
+} from "../../native-harness/src/client.ts";
 import type { Reminder, ReminderChange } from "../../persistence/reminders.ts";
 import { defaultReminderLimits, type ReminderLimits } from "./limits.ts";
 import { ReminderError } from "./schedule.ts";
 
-export interface WireReminder {
-  id: string;
-  channel: string;
-  createdBy: "agent" | "host";
-  creatorId?: string;
-  policyNames: string[];
-  schedule: { at: string };
-  text: string;
-  state: "active" | "paused" | "blocked" | "done" | "cancelled" | "expired";
-  nextRunAt: string | null;
-  acceptedAt: string;
-  expiresAfter: number | null;
-  expiresAt: string | null;
-  lastRunAt?: string;
-  lastOccurrenceId?: string;
-  noticeId?: string;
-  blockedReason?: string;
-}
+type HarnessReminderEvent = Extract<ChannelEvent["event"], { type: `reminder_${string}` }>;
+type WithKind<Event extends { type: string }> = Event extends unknown
+  ? Omit<Event, "type"> & { kind: Event["type"] }
+  : never;
 
-export type WireReminderEvent =
-  | { kind: "reminder_changed"; reminder: WireReminder }
-  | { kind: "reminder_fired"; reminderId: string; occurrenceId: string; scheduledAt: string; firedAt: string; noticeId: string }
-  | { kind: "reminder_cancelled"; reminderId: string; by: "host" | "agent" | "channel_retired" }
-  | { kind: "reminder_expired"; reminderId: string; occurrenceId: string; scheduledAt: string; expiredAt: string };
+export type WireReminderEvent = WithKind<HarnessReminderEvent>;
+// Keep future block reasons representable in the library's public event.
+export type ConsumerReminderEvent = Exclude<WireReminderEvent, { kind: "reminder_changed" }> | (
+  Omit<Extract<WireReminderEvent, { kind: "reminder_changed" }>, "reminder"> & {
+    reminder: Omit<HarnessReminder, "blockedReason"> & { blockedReason?: string };
+  }
+);
+export type KnownReminderBlockReason = Extract<ReminderChangeResult, { outcome: "blocked" }>["reason"];
+export type HarnessOpenResult = Awaited<ReturnType<HarnessClient["openSession"]>>;
+export type HarnessDescription = Awaited<ReturnType<HarnessClient["initialize"]>>["description"];
 
-export type WireReceipt = {
-  reminderId: string;
-  changeId: number;
-  outcome: "applied" | "blocked";
-  reason?: string;
-  reminder?: WireReminder;
-  alreadyQueued?: boolean;
-};
-
-export interface ReminderPage { reminders: WireReminder[]; next?: string }
-export interface ReminderOpenResult {
-  reminderChanges?: WireReceipt[];
-  reminders?: WireReminder[];
-  remindersNext?: string;
-  nextDueAt?: string | null;
-  reminderRevision?: number;
-}
-
-export function reminderRpc<T>(client: HarnessClient, method: string, params: object, signal?: AbortSignal): Promise<T> {
-  return client.request(method as never, params as never, signal) as Promise<T>;
-}
-
-export function negotiatedLimits(value: unknown): ReminderLimits {
-  const source = (value ?? {}) as Record<string, unknown>;
-  const read = (name: string, fallback: number) =>
-    typeof source[name] === "number" && Number.isSafeInteger(source[name]) && source[name] >= 0 ? source[name] : fallback;
+export function negotiatedLimits(value: Partial<NonNullable<HarnessDescription["reminderLimits"]>> | undefined): ReminderLimits {
+  const read = (name: keyof NonNullable<HarnessDescription["reminderLimits"]>, fallback: number) => {
+    const limit = value?.[name];
+    return typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0 ? limit : fallback;
+  };
   return {
     oneShotLeadMs: read("minLeadMs", defaultReminderLimits.oneShotLeadMs),
     repeatIntervalMs: read("minIntervalMs", defaultReminderLimits.repeatIntervalMs),
@@ -70,7 +43,7 @@ export function reminderRequest(change: ReminderChange, limits = defaultReminder
     change.op === "create" || (change.op === "update" && change.fields?.includes(field) === true);
   if (typeof id !== "string" || !id.trim() || !Number.isSafeInteger(change.changeId) || change.changeId < 1) throw new Error("Invalid reminder identity");
   const identity = { reminderId: id, changeId: change.changeId };
-  if (change.op === "cancel") return { ...identity, op: "cancel", payload: {} };
+  if (change.op === "cancel") return { ...identity, op: "cancel", payload: {} } satisfies WireChange;
   if (!("at" in schedule)) throw new ReminderError("routines_unavailable", "Routine reminders are unavailable");
   const anchor = scheduleAcceptedAt ?? change.acceptedAt;
   if (includes("schedule") && (!Number.isSafeInteger(anchor) || !Number.isSafeInteger(schedule.at)
@@ -93,21 +66,21 @@ export function reminderRequest(change: ReminderChange, limits = defaultReminder
     return { ...identity, op: "create", payload: {
       channel: conversationId, text, ...schedulePatch(), ...grace,
       ...(policyNames === undefined ? {} : { policyNames: [...policyNames] }),
-    } };
+    } } satisfies WireChange;
   }
   const patch = {
     ...(includes("text") ? { text } : {}),
     ...(includes("status") && (status === "active" || status === "paused") ? { state: status } : {}),
     ...grace,
   };
-  if (includes("schedule")) return { ...identity, op: "update", payload: { ...patch, ...schedulePatch() } };
+  if (includes("schedule")) return { ...identity, op: "update", payload: { ...patch, ...schedulePatch() } } satisfies WireChange;
   if (Object.keys(patch).length === 0) throw new Error("Empty reminder update");
-  return { ...identity, op: "update", payload: patch };
+  return { ...identity, op: "update", payload: patch } satisfies WireChange;
 }
 
 export type { WireChange };
 
-export function fromWireReminder(row: WireReminder, prior?: Reminder): Reminder {
+export function fromWireReminder(row: HarnessReminder, prior?: Reminder): Reminder {
   const { id, channel, text, state, policyNames, createdBy, creatorId, lastRunAt, lastOccurrenceId, noticeId, blockedReason } = row;
   return {
     id, conversationId: channel, text, policyNames, createdBy, creatorId, lastOccurrenceId, noticeId, blockedReason,
@@ -122,7 +95,7 @@ export function fromWireReminder(row: WireReminder, prior?: Reminder): Reminder 
 }
 
 export type ReminderNotification =
-  | { deadline: { nextDueAt: string | null; revision: number } }
+  | { deadline: Omit<ReminderSessionEvent, "type"> }
   | { channel: string; event: WireReminderEvent };
 
 export function reminderNotification(value: unknown): ReminderNotification | undefined {
@@ -145,7 +118,7 @@ export function reminderNotification(value: unknown): ReminderNotification | und
     reminder_expired: ["reminderId", "occurrenceId", "scheduledAt", "expiredAt"],
   };
   if (type === "reminder_changed") {
-    const row = (fields as { reminder?: WireReminder }).reminder;
+    const row = (fields as { reminder?: HarnessReminder }).reminder;
     if (!row || typeof row.id !== "string" || row.channel !== params.channel || typeof row.schedule?.at !== "string") return;
   } else if (fieldsByType[type]!.some(key => typeof (fields as Record<string, unknown>)[key] !== "string")) return;
   return { channel: params.channel, event: { ...fields, kind: type } as WireReminderEvent };

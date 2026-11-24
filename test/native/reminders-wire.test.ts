@@ -329,3 +329,29 @@ test("a malformed legacy reminder cannot erase a valid reminder wake", async () 
     expect((await repo.wake()).effectiveAt).toBe(expectedWake);
   } finally { await s.backend.close(); }
 });
+
+test("an unknown harness block reason survives the typed live request and reaches consumers", async () => {
+  const s = await setup();
+  try {
+    await s.initialize();
+    await s.open();
+    const reason = "future_harness_reason";
+    const blocked: string[] = [];
+    const request = s.peer.request.bind(s.peer);
+    s.peer.request = (method, params) => method === "reminder/change"
+      ? Promise.resolve({ reminderId: params.reminderId, changeId: params.changeId, outcome: "blocked", reason })
+      : request(method, params);
+    const service = new ReminderService({
+      persistence: s.backend, now: () => 1_000_000, running: () => true,
+      live: async change => (await s.sync.dispatch(s.peer.client, change))!,
+    });
+    const reminders = service.conversation(s.channel, true, event => {
+      if (event.kind === "reminder_intent_blocked" && event.reminder.reason) blocked.push(event.reminder.reason);
+    });
+    const result = await reminders.create(input);
+    expect(result).toMatchObject({ state: "blocked", reason });
+    expect(await reminders.get(result.id)).toMatchObject({ state: "blocked", reason });
+    expect(blocked).toEqual([reason]);
+    expect(s.warnings.some(entry => entry.event === "reminder_receipt_conflict")).toBe(false);
+  } finally { await s.backend.close(); }
+});
