@@ -1,11 +1,9 @@
 import type { NativeConnection, NativeHarnessHostConfig } from "./host-config.ts";
 export type { NativeConnection, NativeHarnessHostConfig, NativeApprovalRequest, NativeApprovalResponder } from "./host-config.ts";
 import { idleMilliseconds, ReminderIdleSupervisor, type IdleStopResult } from "./reminders/idle.ts";
-import { reminderNotification, reminderRpc } from "./reminders/wire.ts";
+import { reminderNotification, reminderRpc, type WireChange, type ReminderNotification, type WireReminderEvent } from "./reminders/wire.ts";
 import type { ReminderWakeSupervisor } from "./reminders/supervisor.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
-import type { WireChange } from "./reminders/wire.ts";
-import type { ReminderNotification, WireReminderEvent } from "./reminders/wire.ts";
 import { deferred, launchNativeConnection, type Deferred } from "./connection.ts";
 import { NativeUsageLedger } from "../metering/native/ledger.ts";
 import { summarizeModelUsage } from "./usage.ts";
@@ -92,6 +90,8 @@ export class NativeHarnessHost {
   reminderSync?: ReminderSync;
   reminderWake?: ReminderWakeSupervisor;
   #stoppingExplicitly = false;
+  // Keep receiving deadlines from the detached connection until explicit stop drains them.
+  #stoppingConnection: NativeConnection | null = null;
   #wakeFailure: HarnessUnavailableError | null = null;
   get reminderWakeState(): NativeHostState { return this.#wakeFailure ? "failed" : this.#stoppingExplicitly ? "running" : this.#state; }
   get reminderTimer() { return this.#config.reminderTimer; }
@@ -324,7 +324,7 @@ export class NativeHarnessHost {
     this.#stopped = this.#stoppingExplicitly = true;
     this.reminderWake?.refresh();
     await this.#idling?.catch(() => {});
-    const connection = this.#connection;
+    const connection = this.#stoppingConnection = this.#connection;
     this.#connection = null;
     await this.#starting?.catch(() => undefined);
     this.#setState("stopped");
@@ -332,16 +332,17 @@ export class NativeHarnessHost {
     this.#rejectWaiters(error);
     for (const port of [...this.#ports.values()]) port.failed(error);
     this.#approvals.stop();
-    const live = connection ?? this.#connection;
+    const live = this.#stoppingConnection = connection ?? this.#connection;
     this.#connection = null;
     try {
       if (live) {
         try { await live.client.stop(); }
-        finally { await live.kill(); }
+        finally { await this.reminderSync?.settled(); await live.kill(); }
       }
     } finally {
       this.#functions?.dispose();
       this.#functions = null;
+      this.#stoppingConnection = null;
       this.#stoppingExplicitly = false;
       this.reminderWake?.refresh();
     }
@@ -407,7 +408,7 @@ export class NativeHarnessHost {
       this.reminderSync?.notification(event, (channel, payload) => this.#ports.get(channel)?.reminderEvent?.(payload));
     const notifyReminder = (event: ReminderNotification) => {
       if (!reminderOpen) earlyReminders.push(event);
-      else if (this.#connection === connection) reminderEvent(event);
+      else if (this.#connection === connection || ("deadline" in event && this.#stoppingConnection === connection)) reminderEvent(event);
     };
     connection.onReminderNotification?.(notifyReminder);
     client.onReminderWake?.(event => notifyReminder({ deadline: event }));
