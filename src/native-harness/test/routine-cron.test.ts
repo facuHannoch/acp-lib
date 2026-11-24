@@ -1,3 +1,5 @@
+import { prepareRoutineSchedule } from "../src/capabilities/reminders/routine-schedule.ts";
+import { resolveRoutineZone } from "../src/capabilities/reminders/iana-zones.ts";
 import { proveRoutineCron } from "../src/capabilities/reminders/cron-proof.ts";
 import { routineExpiry } from "../src/capabilities/reminders/routine-expiry.ts";
 import { zonedCalendar } from "../src/capabilities/reminders/cron-zone.ts";
@@ -78,4 +80,33 @@ test("real calendar proof distinguishes invalid spacing from proof exhaustion", 
   let reads = 0;
   expect(proveRoutineCron("0 9 * * *", zone, () => ++reads < 30 ? 0 : 250).kind).toBe("proof_budget");
   expect(reads).toBe(30);
+});
+
+test("bundled IANA names normalize aliases and prove a calendar across the recurring tail", () => {
+  const zone = resolveRoutineZone("US/Eastern");
+  expect(zone?.timezone).toBe("America/New_York");
+  expect(zone?.timezoneVersion).toMatch(/^\d{4}[a-z]+$/);
+  expect(resolveRoutineZone("localtime")).toBeUndefined();
+  const proof = proveRoutineCron("30 1,2 * * *", zone!);
+  expect(proof.kind).toBe("valid");
+  if (proof.kind !== "valid") return;
+  const fold = Date.UTC(2026, 10, 1, 5, 30);
+  expect(proof.calendar.at(proof.calendar.rank(fold) - 1)).toBe(fold);
+  expect(proof.calendar.nextCalendarMatch(fold)).toBe(Date.UTC(2026, 10, 1, 7, 30));
+  const future = Date.UTC(2826, 10, 1, 5, 30);
+  expect(proof.calendar.at(proof.calendar.rank(future) - 1)).toBe(future);
+});
+
+test("bundled calendar admission preserves the fence and inclusive until", () => {
+  const anchor = "2026-03-08T00:00:00.000Z";
+  const until = "2026-03-09T06:30:00.000Z";
+  const first = Date.parse("2026-03-09T06:30:00.000Z");
+  const schedule = { cron: "30 2 * * *", timezone: "US/Eastern", until };
+  const result = prepareRoutineSchedule(schedule, anchor, Date.parse(anchor));
+  expect(result.kind).toBe("valid");
+  if (result.kind !== "valid") return;
+  expect(result.schedule).toMatchObject({ timezone: "America/New_York" });
+  expect(result.calendar.at(0)).toBe(first);
+  expect(result.calendar.at(1)).toBeUndefined();
+  expect(prepareRoutineSchedule(schedule, anchor, Date.parse(anchor), first).kind).toBe("invalid_schedule");
 });
