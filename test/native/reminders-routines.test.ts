@@ -451,6 +451,13 @@ test("discardExhausted removes only the chosen reminder from the frozen batch", 
     expect(await s.reminders.discardExhausted("broken")).toBe(false);
     s.peer.failId = "broken";
     s.peer.failures = 10;
+    let attempts = 0;
+    s.peer.beforeStartupBatch = async () => {
+      if (++attempts === 2) {
+        expect((await s.repo.wake()).startupRetry?.entries).toHaveLength(2);
+        expect(await s.reminders.discardExhausted("broken")).toBe(false);
+      }
+    };
     await expect(s.open()).rejects.toMatchObject({ code: "reminder_batch_retry_exhausted" });
     const original = (await s.repo.wake()).startupRetry?.entries;
     expect(original?.map(entry => entry.reminderId)).toEqual(["broken", "keep"]);
