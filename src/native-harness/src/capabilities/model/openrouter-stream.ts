@@ -1,5 +1,8 @@
 import type { ModelAttempt, ModelAttemptEvent } from "../../contracts/model-execution.ts";
 import type { Message } from "../../contracts/loop.ts";
+import { projectVisionParts, VisionInputError } from "../attachments/vision.ts";
+import { ATTACHMENT_LIMITS } from "../../contracts/attachments.ts";
+import { createHash } from "node:crypto";
 
 function wireMessage(message: Message): unknown {
   if (message.role === "assistant") return message.providerState ?? { role: "assistant", content: message.content,
@@ -8,16 +11,59 @@ function wireMessage(message: Message): unknown {
 }
 /** OpenRouter SSE translation stays at the provider boundary; tool fragments are
  * private until a valid terminal response is assembled by the adapter. */
-export function openRouterAttempt(apiKey: string, model: string, fetcher: typeof fetch = fetch, onRequest?: (body: string) => void): ModelAttempt {
+export function openRouterAttempt(apiKey: string, model: string, fetcher: typeof fetch = fetch, onRequest?: (body: string) => void,
+  vision?: Parameters<typeof projectVisionParts>[1]): ModelAttempt {
   return async function* (request, signal) {
-    const body = JSON.stringify({ model, stream: true, stream_options: { include_usage: true }, messages: request.messages.map(wireMessage),
+    const imageUrls: string[] = [];
+    let messages: unknown[];
+    try {
+      let imageBytes = 0;
+      const unavailable = new Set<string>();
+      const images = new Map<string, ReturnType<NonNullable<typeof vision>["metadata"]>>();
+      for (const message of request.messages) if (message.role === "user" && message.parts) {
+        if (!vision) throw new VisionInputError("unsupported_image", "No attachment resolver is configured");
+        for (const part of message.parts) if (part.type === "attachment") {
+          const metadata = vision.metadata(part.id);
+          if (!metadata) unavailable.add(part.id);
+          else if (metadata.mediaType.startsWith("image/")) { imageBytes += metadata.bytes; images.set(part.id, metadata); }
+        }
+      }
+      if (unavailable.size) throw new VisionInputError("attachment_unavailable", "Attachment metadata is unavailable", [...unavailable]);
+      if (imageBytes > ATTACHMENT_LIMITS.imageBytesPerTurn) throw new VisionInputError("transfer_limit", "Image request exceeds the turn budget");
+      if (images.size && !vision!.supported) throw new VisionInputError("unsupported_image", "The configured model does not support image input");
+      const bytes = new Map<string, Uint8Array>();
+      for (const [id, metadata] of images) try {
+        const value = vision!.read(metadata!);
+        if (value.length !== metadata!.bytes || createHash("sha256").update(value).digest("hex") !== metadata!.sha256) throw new Error("Integrity failure");
+        bytes.set(id, value);
+      } catch { unavailable.add(id); }
+      if (unavailable.size) throw new VisionInputError("attachment_unavailable", "Image bytes are unavailable", [...unavailable]);
+      messages = request.messages.map(message => {
+        if (message.role !== "user" || !message.parts) return wireMessage(message);
+        if (!vision) throw new VisionInputError("unsupported_image", "No attachment resolver is configured");
+        const content = projectVisionParts(message.parts, { ...vision, read: metadata => bytes.get(metadata.id)! });
+        for (const part of content) if (part.type === "image_url") imageUrls.push(part.image_url.url);
+        const separator = message.content.indexOf("\n\n");
+        const attribution = message.content.startsWith("Participant: ") && separator >= 0 ? message.content.slice(0, separator + 2) : "";
+        return { role: "user", content: attribution ? [{ type: "text", text: attribution }, ...content] : content };
+      });
+    } catch (error) {
+      if (error instanceof VisionInputError) { yield { type: "failure", kind: "invalid_request", code: error.code, attachmentIds: error.attachmentIds, message: error.message }; return; }
+      throw error;
+    }
+    const body = JSON.stringify({ model, stream: true, stream_options: { include_usage: true }, messages,
       ...(request.tools.length ? { tools: request.tools.map(tool => ({ type: "function", function: tool })) } : {}) });
-    onRequest?.(body);
+    const redact = (text: string) => {
+      let safe = apiKey ? text.replaceAll(apiKey, "[REDACTED]") : text;
+      for (const url of imageUrls) { safe = safe.replaceAll(url, "[REDACTED_IMAGE]"); const encoded = url.slice(url.indexOf(",") + 1); if (encoded) safe = safe.replaceAll(encoded, "[REDACTED_IMAGE]"); }
+      return safe;
+    };
+    onRequest?.(imageUrls.length ? redact(body) : body);
     let response: Response;
     try { response = await fetcher("https://openrouter.ai/api/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body, signal }); }
-    catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: String(error).replaceAll(apiKey, "[REDACTED]") }; return; }
+    catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: redact(String(error)) }; return; }
     if (!response.ok) {
-      const text = (await response.text()).replaceAll(apiKey, "[REDACTED]");
+      const text = redact(await response.text());
       yield { type: "failure", kind: response.status === 429 || response.status >= 500 ? "transient" : "invalid_request", message: `OpenRouter HTTP ${response.status}: ${text}` }; return;
     }
     const requestId = response.headers.get("x-request-id") ?? undefined;
@@ -66,7 +112,7 @@ export function openRouterAttempt(apiKey: string, model: string, fetcher: typeof
         ...(reasoning ? { reasoning } : {}), ...(reasoningDetails.length ? { reasoning_details: reasoningDetails } : {}),
         ...(calls.length ? { tool_calls: calls.map(call => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })) } : {}) } }, ...(providerId ? { providerRequestId: providerId } : {}) };
       yield event;
-    } catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: String(error).replaceAll(apiKey, "[REDACTED]") }; }
+    } catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: redact(String(error)) }; }
     finally { reader.releaseLock(); }
   };
 }

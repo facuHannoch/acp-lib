@@ -102,6 +102,7 @@ export async function runModelCall(options: RunModelCallOptions): Promise<{ resp
     const attemptOutcome = failure === "transient" ? "transient_failure" : failure === "provider" ? "provider_failure" : failure;
     take(options.store.finishAttempt(call.callId, attempt.attemptId, attemptOutcome));
     if (terminal?.type === "failure" && terminal.message === "script_exhausted" && options.scripted) return finish("failed", "script_exhausted");
+    if (terminal?.type === "failure" && terminal.code) return finish("failed", JSON.stringify({ code: terminal.code, attachmentIds: terminal.attachmentIds ?? [] }));
     if (failure !== "transient" || output || ordinal >= Math.min(1, settings.maxRetries)) return finish(failure === "incomplete" ? "incomplete" : "failed");
     if (deadline - Date.now() < settings.retryDelayMs) return finish("timeout");
     const delay = await new Promise<"ready" | "interrupted">(resolve => {
