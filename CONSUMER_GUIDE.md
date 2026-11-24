@@ -1190,7 +1190,14 @@ export async function openNative(
 }
 ```
 
-Use a supported OpenRouter model ID configured for your account. For an offline
+Use a supported OpenRouter model ID configured for your account. `harness.config.model` is typed from the harness SDK
+and passed through unchanged on every open. Besides `scripted` and `openrouter`, the SDK defines an inference-source arm,
+`{ protocol: "openai-compatible", providerId, model, baseUrl, apiKeyEnv? }` (decision 0034): an OpenAI-compatible Chat
+Completions endpoint chosen by the consumer. `baseUrl` is HTTPS or a literal loopback address over HTTP (`127.x` or `::1`,
+not `localhost`) with no credentials, query or fragment; the harness appends the Chat Completions path and follows no
+redirects; `apiKeyEnv` names a variable in the harness's environment, is optional for keyless endpoints and is read only
+when the session opens. The library accepts and forwards this arm today (compile-time and open-request tests); the harness
+runtime that executes it is still being implemented, so an open with this arm is not yet usable end to end. For an offline
 equivalent, pass `{ protocol: "scripted", script: "/path/to/scenario.jsonl" }`
 as the second argument. Function parameters are JSON Schema. Functions return
 JSON values and receive a context with invocation identity and an abort signal.
