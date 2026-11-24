@@ -63,9 +63,17 @@ implementation and conformance changes follow independent approval.
 
 5. The authenticated owning host acts on behalf of a specified channel on
    every operation. Upload, finalize and new attachment use require that owner
-   channel; download and rendering allow any channel authorized to read the
-   session's shared timeline. The current v1 session timeline is shared, not
-   private per channel. An unknown ID or a reference outside that session's
+   channel. Before a durable timeline-visible association exists, only the
+   owning channel may download or render the ready file, even if another
+   channel knows its ID. Acceptance alone creates a retained association but
+   a pending item is not yet timeline-visible. Once an associated item is
+   taken into the shared timeline, any channel authorized to read that timeline
+   may download or render it. Withdrawal of a pending item never grants shared
+   access; the owner retains access, and a separate visible association can
+   grant shared access. Taken associations remain visible for the session
+   lifetime. Apply this same predicate to metadata and bytes on every surface.
+   The current v1 session timeline is shared, not private per channel. An
+   unknown ID or a reference outside that session's
    permitted scope returns `not_found`; never authorize from an ID alone.
    Web chat and stdio use the same owner and admission operations. Access to
    the host connection is the existing trust boundary; this adds no user login.
@@ -110,19 +118,30 @@ implementation and conformance changes follow independent approval.
 ## Vision and archive
 
 9. At admission enforce at most 8 images, 20 MiB each, 40 MiB total per input,
-   dimensions at most 8192 per side and 20 million pixels per image. At each
-   inference select images only from user items newly taken in that iteration;
-   older images remain reference metadata in history, never silently re-injected.
-   Preserve ordered text and image positions in the neutral request. General
-   files and old images are represented as metadata references, not bytes.
+   dimensions at most 8192 per side and 20 million pixels per image. A turn's
+   active images are all image references in items taken by that turn. Keep
+   them selected, in their original message and part positions, for every
+   inference in that turn, including after tool results and after checkpoint,
+   reopen and resume. Reconstruct selection from durable taken-item/turn links;
+   never persist image bytes in a checkpoint. On turn completion, failure or
+   interruption, its images become ordinary historical metadata references in
+   later turns. Preserve ordered text and image positions in the neutral request.
+   General files and old images are represented as metadata references, not bytes.
    A provider adapter resolves selected images only at the final boundary,
    validates each again and enforces the 40 MiB aggregate bound across all
-   newly taken items. Unsupported configuration, missing/corrupt bytes or an
+   active references of the turn. Count each occurrence, including duplicates.
+   Unsupported configuration, missing/corrupt bytes or an
    exceeded inference budget fails the turn with a typed error identifying
    every unavailable reference; do not silently omit it or send a partial
-   provider request. Context selection must not take an item whose images would
-   exceed the aggregate budget when it can defer that item; a single oversized
-   item fails explicitly. Images use provider-native parts in order. Binary and
+   provider request. Intake takes the longest FIFO prefix that fits both the
+   existing intake limits and the remaining active-image budget; it must not
+   skip an earlier item. When the next pending item does not fit because of
+   images already active in this turn, leave it pending, allow the current turn
+   to finish despite that pending item, and schedule a new turn for it. This
+   budget-specific completion rule must be durable and work after resume; it
+   does not change normal finish behavior for other pending inputs. A single
+   item exceeding the budget is rejected before acceptance. Images use
+   provider-native parts in order. Binary and
    encoded image data are excluded from persisted model calls, captures,
    diagnostics, ordinary inspector frames and logs; only IDs and metadata
    may be recorded. Never persist the provider request with inline data.
@@ -133,9 +152,18 @@ implementation and conformance changes follow independent approval.
     6–8 with no attachment state retain their existing version and archive
     behavior. Older binaries must reject format 9. An attachment archive 8
     includes all retained referenced metadata, associations and exact bytes,
-    plus all existing routines state. It excludes stages and unreferenced
-    files. Attachment-free exports use the appropriate prior archive version;
-    import supports older archives without fabricating attachment state.
+    including references retained for withdrawn items, plus all routines state.
+    It excludes stages and finalized unreferenced files; these omitted files
+    and their IDs are unavailable in the restored session. If a format-9
+    session has no retained associations, including one with only unreferenced
+    ready files or after cleanup, export a detached snapshot projected to the
+    correct pre-attachment format and archive version determined by its
+    remaining durable state (format 8/archive 7 if routines state requires it;
+    otherwise the appropriate earlier supported pair). Preserve all routines
+    rows, receipts and revisions. Never label format 9 as an older format in
+    place or mutate the live database for export. Import the projected snapshot
+    as that prior format without fabricating attachment state. Older archives
+    remain supported.
 11. Keep the existing session-file envelope and 256 MiB encoded transfer cap.
     Represent bytes as bounded CBOR byte strings, not base64. Before encoding,
     preflight the full size including metadata and envelope; refuse missing,
@@ -160,6 +188,12 @@ provider request order and download after reopen. Exercise web general-file
 upload/download, unsupported image, missing files, races, export/import,
 limits, old archives and absence of bytes in diagnostic surfaces. Run both
 package typechecks and full suites and extend the cumulative stdio rehearsal.
+Exercise image → tool → second inference and checkpoint/reopen/resume with
+the same image in each provider request; cover FIFO budget deferral to a new
+turn. Test cross-channel access before acceptance, pending acceptance, after
+take and after withdrawal, plus wrong-session reads and rendering. Round-trip
+format-9 sessions with only unreferenced uploads and after cleanup, including
+routines state; omitted uploads must not be readable in the restored session.
 Before integration, verify against the exact routines candidate and reconcile
 its shared storage, archive and protocol changes without changing its assigned
 versions. Integration target is `aiagent/haurness-l` after independent review.
