@@ -57,6 +57,8 @@ Agent tools reserve `schedule_reminder({schedule,text,expiresAfter?})`,
 `list_reminders({after?,limit?})`, and `cancel_reminder({id})`. The schedule
 is strictly `{at}` or `{in}` with a positive integer plus m/h/d. Convert
 relative input once. Derive channel, creator and taken policy names.
+Agent list and cancel are scoped to the calling channel. List cursors bind
+that channel. An ID on another channel behaves like an unknown ID.
 Creation returns `{id,nextRunAt}` and deduplicates by creating invocation
 before resolving the relative time. Cancel returns `{id,alreadyQueued}`.
 Use checked offered-tool admission and the ordinary permission gate.
@@ -86,8 +88,11 @@ by those commits. IDs are `reminder:<id>:<canonical-at>` for the occurrence
 and `reminder-notice:<id>:<canonical-at>` for the external notice. Reuse
 that pair after restart. Attribute the notice to the reminder and retain
 origin policies. Unknown policy blocks; retirement cancels; suspension
-holds. Expiry queues no notice. Due reads use indexed batches of at most
-100; yield between batches after startup, re-arm when work remains.
+holds. Expiry queues no notice. Startup takes one indexed batch of at most
+100 due rows, counting expired and blocked rows toward the same cap.
+Open reports the earliest remaining eligible deadline even if already past
+due, with its committed revision. Process subsequent batches after the open
+fence releases, yielding between batches and re-arming when work remains.
 
 Publish after commit: channel `reminder_changed { reminder }`,
 `reminder_fired { reminderId, occurrenceId, scheduledAt, firedAt, noticeId }`,
@@ -107,7 +112,13 @@ Reconcile on recovery before returning executable open. Equal revision
 with a different instant is a conflict; ignore older revisions. Only a
 replacement session identity resets the fence. Paused, blocked and
 suspended work has no wake deadline. Standalone owns one live timer and
-has no automatic idle stop or cold wake.
+has no automatic idle stop or cold wake. Derive delays from the current wall
+clock. Clamp each timer wait to at most 60 seconds so long delays are chunked
+below the platform limit and forward clock jumps are noticed on the next wake.
+On every wake, recheck due eligibility against the current wall clock before
+committing. An early wake or backward jump re-arms without firing. Cancel or
+replace a previous timer on lifecycle or earliest-deadline changes. Test early
+wakes, long waits and forward/backward jumps with an injected clock and timer.
 
 `session/stop { ifIdle:true, unlessDueWithinMs? }` defaults the window
 to zero (nonnegative safe milliseconds). It returns
@@ -122,12 +133,21 @@ stop and its existing response.
 
 ## Compatibility and verification
 
-Use SQLite format 7 and logical archive 6, keeping the envelope unchanged.
-Migrate formats already supported to empty reminder state under recovery.
-Export records, receipts, wake value/revision and listing revision with
-the logical session; import and validate them atomically. Rebuild indexes
-from committed rows. Older binaries must reject the new executable format
-rather than silently ignoring due work. Verify memory/SQLite parity,
+Keep SQLite format 6 until the first commit of reminder-specific durable
+state, including a blocked change receipt. Open and read-only operations
+leave the reminder format unchanged. Create reminder storage and set format 7
+in the first-write transaction. Roll back both on failure, leaving no durable
+reminder state. Earlier supported formats follow their existing upgrades to
+format 6. Once activated, retain format 7 and receipts across reopen and
+terminal outcomes. Older binaries reject format 7.
+
+Keep the envelope unchanged. Use logical archive 5 for sessions without
+reminder state or receipts. Archive 6 carries reminder records, receipts,
+high water, and wake and list revisions. Validate before publication. Import
+archive 5 into a fresh destination without activating format 7. Import archive
+6 atomically into a fresh format-7 destination. Refuse occupied destinations
+and rebuild indexes from committed rows. Test first-write rollback, ordinary
+format-6 reopen, blocked-receipt activation and both archive round trips. Verify memory/SQLite parity,
 timer and cancellation races, atomic crash boundaries, bounded reads,
 archive round trip, startup order, replay and revision conflicts, and
 real stdio cold-wake acceptance per the plan. R-H3 covers the host
