@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnHarness } from "../../src/native-harness/test/helpers/stdio.ts";
-import { HarnessClientError, type HarnessClient } from "../../src/native-harness/src/client.ts";
+import { HarnessClientError, type HarnessClient, type ReminderSessionEvent } from "../../src/native-harness/src/client.ts";
 import { ReminderClock } from "./fixtures/reminder-clock.ts";
 import { hold, nativeRig, reply, until } from "./support.ts";
 
@@ -12,7 +12,7 @@ async function joint() {
   const clock = new ReminderClock();
   clock.time = Date.now();
   const peer = { time: clock.time as number | undefined, fault: undefined as string | undefined,
-    lostReply: false, dropWake: false, current: undefined as Child | undefined };
+    lostReply: false, dropWake: false, holdWakeUntilStop: false, current: undefined as Child | undefined };
   const opens: Open[] = [];
   const batches: Array<Parameters<HarnessClient["openSession"]>[0]> = [];
   const children: Child[] = [];
@@ -23,6 +23,21 @@ async function joint() {
     peer.current = child;
     const client = child.client;
     if (peer.dropWake) client.onReminderWake = () => () => {};
+    if (peer.holdWakeUntilStop) {
+      const subscribe = client.onReminderWake.bind(client);
+      const held: Array<() => void> = [];
+      let holding = true;
+      client.onReminderWake = listener => subscribe((event: ReminderSessionEvent) => {
+        if (holding && event.nextDueAt !== null) held.push(() => listener(event));
+        else listener(event);
+      });
+      const stop = client.stop.bind(client);
+      client.stop = () => {
+        holding = false;
+        for (const notify of held.splice(0)) notify();
+        return stop();
+      };
+    }
     const open = client.openSession.bind(client);
     client.openSession = async params => {
       batches.push(structuredClone(params));
@@ -184,24 +199,29 @@ test("joint missed deadline event and post-commit death recover from executable 
 test("joint cold wake survives stop and owner close and fires exactly once on the original channel", async () => {
   const s = await joint();
   try {
+    s.peer.holdWakeUntilStop = true;
     const first = await s.rig.open();
     const channel = await first.conversations.create({ title: "cold target" });
     await first.nativeHarness!.start();
     const item = await channel.reminders.create(pending("cold notice"));
     const due = atOf(item);
+    const repo = first.persistence.reminders!;
+    expect((await repo.wake()).reported?.nextDueAt).toBeNull();
     await first.nativeHarness!.stop();
-    await until(() => s.clock.delays.length === 1);
+    expect((await repo.wake()).reported?.nextDueAt).toBe(due);
+    s.peer.holdWakeUntilStop = false;
+    await until(() => s.clock.delays.length === 1, "first owner re-arms after explicit stop");
     expect((await first.persistence.reminders!.wake()).effectiveAt).toBe(due);
     await first.close();
     expect(s.clock.delays).toEqual([]);
     const next = await s.rig.open({ id: first.id });
     const { conversation: reopenedChannel } = await next.conversations.open(channel.id);
     const events = s.rig.watch(reopenedChannel);
-    await until(() => s.clock.delays.length === 1);
+    await until(() => s.clock.delays.length === 1, "second owner re-arms the persisted wake");
     s.peer.time = due;
     s.clock.tickAt(due);
-    await until(() => next.nativeHarness!.state === "running");
-    await until(() => events.some(event => event.kind === "reminder_fired"));
+    await until(() => next.nativeHarness!.state === "running", "cold wake starts the second owner’s harness");
+    await until(() => events.some(event => event.kind === "reminder_fired"), "second owner receives reminder_fired");
     expect(next.nativeHarness!.launches).toBe(1);
     expect(s.clock.delays).toEqual([]);
     expect(events.filter(event => event.kind === "reminder_fired")).toHaveLength(1);
@@ -221,25 +241,39 @@ test("joint a superseded cold timer and the real harness wall timer yield one fi
     const channel = await agent.conversations.create({ title: "timer race" });
     const events = s.rig.watch(channel);
     const host = agent.nativeHarness!;
-    // The historical acceptance anchor makes a near deadline legal without waiting two real minutes.
-    const due = Date.now() + 1_500;
-    const acceptedAt = due - 180_000;
-    await agent.persistence.reminders!.enqueue({ op: "create", acceptedAt, reminder: {
-      id: "timer-race", conversationId: channel.id, text: "run once", status: "active",
-      schedule: { at: due }, scheduleAcceptedAt: acceptedAt, expiryPolicy: { kind: "default" }, expiry: null,
-    } });
-    await until(() => s.clock.pending.size === 1);
+    // Capture a queued cold callback, then withdraw its provisional reminder before opening.
+    const provisional = await channel.reminders.create(pending("superseded cold wake"));
+    await until(() => s.clock.pending.size === 1, "provisional cold timer arms");
     const staleWake = [...s.clock.pending.values()][0]!.task;
+    await channel.reminders.cancel(provisional.id);
     await host.start();
     expect(s.clock.delays).toEqual([]);
-    const reported = (await agent.persistence.reminders!.wake()).reported;
-    expect(reported).toMatchObject({ revision: 1, nextDueAt: due });
-    const raced = new Promise<void>(resolve => setTimeout(() => {
-      s.clock.time = Date.now();
+
+    // Start the real wall timer on an already running harness. Record revision 1
+    // directly so a fast fire can advance to revision 2 before the next read.
+    const client = s.peer.current!.client;
+    const deadlines: Array<{ revision: number; nextDueAt: string | null }> = [];
+    const unsubscribe = client.onReminderWake(({ revision, nextDueAt }) => deadlines.push({ revision, nextDueAt }));
+    const due = Date.now() + 1_500;
+    const raced = Promise.withResolvers<void>();
+    const raceTimer = setTimeout(() => {
+      s.clock.time = due;
       staleWake();
-      resolve();
-    }, Math.max(0, due - Date.now())));
-    await Promise.all([raced, until(() => events.some(event => event.kind === "reminder_fired"), "real harness timer")]);
+      raced.resolve();
+    }, Math.max(0, due - Date.now()));
+    try {
+      expect(await client.changeReminder({ reminderId: "timer-race", changeId: 1, op: "create", payload: {
+        channel: channel.id, text: "run once", schedule: { at: iso(due) }, acceptedAt: iso(due - 180_000),
+      } })).toMatchObject({ outcome: "applied" });
+      await host.reminderSync!.settled();
+      expect(s.clock.delays).toEqual([]);
+      await Promise.all([raced.promise, until(() => deadlines.some(({ revision }) => revision === 2)
+        && events.some(event => event.kind === "reminder_fired"), "real harness fire and deadline advance")]);
+      expect(deadlines).toEqual([{ revision: 1, nextDueAt: iso(due) }, { revision: 2, nextDueAt: null }]);
+    } finally {
+      clearTimeout(raceTimer);
+      unsubscribe();
+    }
     expect(events.filter(event => event.kind === "reminder_fired")).toHaveLength(1);
     expect(host.launches).toBe(1);
     await host.reminderSync!.settled();
@@ -412,37 +446,128 @@ test("joint production launcher delivers one fire, deadline update, cache change
     const events = rig.watch(channel);
     const repo = agent.persistence.reminders!;
     const host = agent.nativeHarness!;
-    const id = "production-fire";
-    const due = Date.now() + 1_500;
-    const acceptedAt = due - 180_000;
-    await repo.enqueue({ op: "create", acceptedAt, reminder: {
-      id, conversationId: channel.id, text: "production reminder", status: "active",
-      schedule: { at: due }, scheduleAcceptedAt: acceptedAt, expiryPolicy: { kind: "default" }, expiry: null,
-    } });
     await host.start();
     expect(clock.delays).toEqual([]);
     expect(rig.launches.map(launch => launch.kind)).toEqual(["native-harness"]);
-    expect((await repo.wake()).reported).toMatchObject({ revision: 1, nextDueAt: due });
-    const initialCache = (await repo.list()).find(row => row.id === id)!;
-    expect(initialCache.confirmed?.status).toBe("active");
-    const seen = { fire: 0, deadline: 0 };
+
+    const seen = { fire: 0, deadlines: [] as Array<{ revision: number; nextDueAt: string | null }> };
     const sync = host.reminderSync!;
     const notify = sync.notification.bind(sync);
     sync.notification = (notification, emit) => {
-      if ("deadline" in notification) seen.deadline++;
+      if ("deadline" in notification) seen.deadlines.push(notification.deadline);
       else if (notification.event.kind === "reminder_fired") seen.fire++;
       notify(notification, emit);
     };
-    await until(() => events.some(event => event.kind === "reminder_fired") && seen.deadline > 0, "production reminder fire and deadline");
+    const id = "production-fire";
+    const due = Date.now() + 1_500;
+    const acceptedAt = due - 180_000;
+    const change = await repo.enqueue({ op: "create", acceptedAt, reminder: {
+      id, conversationId: channel.id, text: "production reminder", status: "active",
+      schedule: { at: due }, scheduleAcceptedAt: acceptedAt, expiryPolicy: { kind: "default" }, expiry: null,
+    } });
+    expect(await host.changeReminder({
+      reminderId: id, changeId: change!.changeId, op: "create",
+      payload: { channel: channel.id, text: "production reminder", schedule: { at: iso(due) }, acceptedAt: iso(acceptedAt) },
+    })).toMatchObject({ confirmed: { id } });
+    await until(() => events.some(event => event.kind === "reminder_fired")
+      && seen.deadlines.some(({ revision }) => revision === 2), "production reminder fire and deadline");
     const noticeId = notice(id, due);
     const result = await host.reconcileChannel({ channel: channel.id, itemIds: [noticeId] });
     await sync.settled();
-    expect(seen).toEqual({ fire: 1, deadline: 1 });
+    expect(seen).toEqual({ fire: 1, deadlines: [
+      { nextDueAt: iso(due), revision: 1 }, { nextDueAt: null, revision: 2 },
+    ] });
     expect(events.filter(event => event.kind === "reminder_fired")).toHaveLength(1);
     expect((await repo.wake()).reported).toMatchObject({ revision: 2, nextDueAt: null });
     const cache = (await repo.list()).find(row => row.id === id)!;
-    expect(cache.observation).toBe(initialCache.observation! + 1);
+    expect(events.filter(event => event.kind === "reminder_changed")).toHaveLength(1);
+    expect(cache.observation).toBe(2); // One observation for creation and one for the fire.
     expect(cache.confirmed).toMatchObject({ status: "completed", noticeId });
     expect(result.items.map(item => item.id)).toEqual([noticeId]);
   } finally { await rig.clean(); }
+}, 15_000);
+
+test("joint explicit stop adopts a starting connection, drains its deadline and drops its channel event", async () => {
+  const rig = await nativeRig();
+  const clock = new ReminderClock();
+  clock.time = Date.now();
+  rig.harness.reminderTimer = clock;
+  const connecting = Promise.withResolvers<void>();
+  const connect = Promise.withResolvers<void>();
+  const stoppedRpc = Promise.withResolvers<void>();
+  let writing = false;
+  const write = Promise.withResolvers<void>();
+  const id = "stopping-connection";
+  const due = clock.time + 180_000;
+  let channelId: string;
+  let launches = 0;
+  let killed = false;
+  rig.harness.connect = async () => {
+    const first = ++launches === 1;
+    if (first) {
+      connecting.resolve();
+      await connect.promise;
+    }
+    const child = spawnHarness({ home: rig.home, reminderTime: clock.time });
+    if (first) {
+      const stop = child.client.stop.bind(child.client);
+      child.client.stop = async () => {
+        expect(await child.client.changeReminder({ reminderId: id, changeId: 1, op: "create", payload: {
+          channel: channelId, text: "committed while stopping", acceptedAt: iso(clock.time), schedule: { at: iso(due) },
+        } })).toMatchObject({ outcome: "applied" });
+        const result = await stop();
+        stoppedRpc.resolve();
+        return result;
+      };
+    }
+    return {
+      client: child.client, closed: child.child.exited.then(() => undefined),
+      async kill() {
+        if (first) killed = true;
+        await child.close().catch(() => {});
+      },
+    };
+  };
+
+  try {
+    const agent = await rig.open();
+    const host = agent.nativeHarness!;
+    const channel = await agent.conversations.create({ title: "stop adopts connection" });
+    channelId = channel.id;
+    const events = rig.watch(channel);
+    const repo = agent.persistence.reminders!;
+    const update = repo.updateDeadline.bind(repo);
+    repo.updateDeadline = async (deadline, replace) => {
+      if (deadline.nextDueAt === due) {
+        writing = true;
+        await write.promise;
+      }
+      return update(deadline, replace);
+    };
+    const starting = host.start();
+    await connecting.promise;
+    const stopping = host.stop();
+    connect.resolve();
+    await starting;
+    await stoppedRpc.promise;
+    await until(() => writing, "deadline write was reached", 2_000);
+    // The stop response has arrived, but that notification is still blocked in persistence.
+    await Bun.sleep(0);
+    expect(killed).toBe(false);
+    expect((await repo.wake()).reported?.nextDueAt).toBeNull();
+    expect(events.filter(event => event.kind === "reminder_changed")).toEqual([]);
+    expect(await repo.list()).toEqual([]);
+    write.resolve();
+    await stopping;
+    expect(killed).toBe(true);
+    expect((await repo.wake()).reported).toMatchObject({ revision: 1, nextDueAt: due });
+    await host.start();
+    expect((await repo.list()).find(row => row.id === id)?.confirmed)
+      .toMatchObject({ text: "committed while stopping", status: "active" });
+    expect(events.filter(event => event.kind === "reminder_changed")).toEqual([]);
+  } finally {
+    connect.resolve();
+    write.resolve();
+    await rig.clean();
+  }
 }, 15_000);
