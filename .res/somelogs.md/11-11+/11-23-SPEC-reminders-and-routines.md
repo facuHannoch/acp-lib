@@ -1,7 +1,7 @@
 # Reminders and routines
 
-Status: proposed, 2026-11-23; review 1 applied 2026-11-24. Spans both parts: the harness half needs agreeing on the harness side
-(its own spec and decision under `../../../src/native-harness/.res/`), the acp-client half lands in the integration
+Status: proposed, 2026-11-23; reviews 1 and 2 applied 2026-11-24. Spans both parts: the harness half needs
+agreeing on the harness side (its own spec and decision under `../../../src/native-harness/.res/`), the acp-client half lands in the integration
 spec's plan. Takes over section 1 of `harness/todos/11-12-TODO-background-work-and-lazy-harness.md` (reminders and
 waking a stopped harness); watches (`harness/todos/11-11-TODO-watches.md`) stay there.
 
@@ -17,7 +17,7 @@ through the library.
 **The harness owns what a reminder is** and keeps it in its session storage, the single source of truth:
 
 - **A reminder belongs to a channel**, like inputs and tool calls: it exists to queue a turn there. It records its
-  id, the channel, the due time, the text, who created it (the agent in a turn, or the host) and the policy names
+  id, the channel, its schedule, the text, who created it (the agent in a turn, or the host) and the policy names
   that apply (the creating turn's, or the host's; the same provenance as external notices).
 - **The agent's tools act only on the calling turn's channel:** the harness fills in the channel; the model's
   arguments can't name another one, so a guest's turn can't schedule into the owner's channel. Reminders on other
@@ -39,8 +39,9 @@ through the library.
   survives an acp-client restart), and a timer for it. It is **the earliest of** the harness's last reported next due
   time and the due times of pending create and schedule-edit intents (pending cancels and pauses don't move it; the
   most they cause is one wake for nothing). When the open confirms the intents, the harness's reported value
-  replaces it. When it fires, acp-client starts the harness with the existing
-  lazy start; opening the session is enough to queue the due turns. No separate wake request.
+  replaces it. When it fires, acp-client starts the harness with the existing lazy start; opening the session is
+  enough to queue the due turns. No separate wake request. If the harness is already running, the start does nothing
+  and the harness's own timer fires the reminder.
 - **Pending writes while the harness is stopped**, as durable intents (below).
 - **A read cache** of the reminders confirmed at the last open, so a list works with the harness stopped. Never the
   source of truth.
@@ -56,7 +57,7 @@ through the library.
   if the next due time is within a short window (about twice the measured startup time), so a frequent routine
   doesn't restart the container every run. acp-client wakes it at the next due time. Without idle stop the harness
   runs until `agent.close()`, and waking only matters after an acp-client restart.
-- **Requests:** create, cancel and list reminders, per channel or session-wide. The agent's tools and acp-client's
+- **Requests:** create, get, list, update, pause, resume and cancel reminders, per channel or session-wide. The agent's tools and acp-client's
   calls are the same operations.
 
 ## Writes from the consumer
@@ -73,6 +74,10 @@ interface Reminder {
   nextRunAt: string | null;
   lastRunAt?: string;
   missed?: number;
+  missedRuns?: "coalesce" | "skip" | "each";   // routines; default coalesce
+  overlap?: "skip" | "queue";                  // routines; default skip
+  until?: string;                              // routines: an optional end
+  count?: number;
   createdBy: "agent" | "consumer";
   policyNames: string[];
   blockedReason?: "invalid_policy" | "channel_retired" | "invalid_schedule";
@@ -94,8 +99,9 @@ interface Reminder {
 
 - **Harness running:** a request; done when the harness confirms.
 - **Harness stopped:** recorded as a **durable intent** in acp-client's database, the pattern of durable channel
-  intents (`library/11-11-SPEC-native-harness-integration.md`, Durable channel intents; brief R1), with two more
-  intent kinds: "create reminder" (`{ id, channel, dueAt, text, policy }`) and "cancel reminder". The reminder's id
+  intents (`library/11-11-SPEC-native-harness-integration.md`, Durable channel intents; brief R1), with three more
+  intent kinds: **create** (`{ id, channel, schedule, text, policyNames, routine options }`), **update** (an edit, a
+  pause or a resume) and **cancel**. The reminder's id
   is chosen up front. acp-client puts its due time straight into the wake index, sends the intents in the next open
   batch, and clears each only when the harness confirms it by id. No container starts just to set a reminder, and a
   crash or a retry can't create a duplicate.
@@ -112,7 +118,7 @@ interface Reminder {
 A routine is a reminder whose schedule produces many due times (added 2026-11-23). Ownership, storage, the notice
 path, the wake contract and the intents don't change; it adds:
 
-- **A schedule instead of `dueAt`:** `{ at }` (one-off), `{ every, startAt? }` (an interval), or
+- **A schedule with more than one time:** besides `{ at }` (one-off), `{ every, startAt? }` (an interval), or
   `{ cron, timezone }` (calendar rules). Local times are computed in the routine's timezone, so "9:00 every day"
   stays 9:00 across daylight-saving changes.
 - **An id per occurrence:** the routine's id plus the scheduled time. It deduplicates a retried wake, or the
@@ -135,6 +141,8 @@ path, the wake contract and the intents don't change; it adds:
     limit on routines the agent creates itself (acp-client never sees those tool calls in advance: a confused
     model or a prompt injection could otherwise schedule unattended, paid turns), and it protects a standalone
     harness;
+  - **What they apply to:** the minimum intervals apply to repeating schedules only (for `cron`, between consecutive
+    runs); a one-off `{ at }` can be any future time;
   - **acp-client:** a stricter minimum of 15 minutes for routines its consumers create, checked locally so a request
     fails at once even with the harness stopped. acp-client's limits can be stricter than the harness's, never
     looser: the harness checks its own again. Creating beyond a limit fails with a typed error.
@@ -160,7 +168,6 @@ intents repository).
 
 - **Same channel only:** the agent can't set a reminder for another channel ("remind Bob tomorrow") in v1.
 - **A fast routine needs a changed default** (the 5 and 15 minute minimums).
-
 - **It only wakes while acp-client is running.** In a REPL or desktop app, closing the app means nothing fires until
   it's opened again; then overdue reminders run at open, late but not lost. Firing with nothing open needs acp-client
   running as a service, or an independent scheduler that starts it (later; keep the wake contract small enough for a
