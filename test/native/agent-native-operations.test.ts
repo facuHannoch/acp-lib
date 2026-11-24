@@ -13,9 +13,10 @@ for (const when of ["idle", "now"] as const) {
       const script = join(rig.directory, "script.jsonl");
       const agent = await rig.open();
       const channel = await agent.conversations.create();
+      const unopened = await agent.conversations.create();
       const events: unknown[] = [];
       agent.subscribeNativeRestart(event => events.push(event));
-      expect(await agent.previewNativeRestart()).toEqual({ conversationCount: 1, conversationIds: [channel.id] });
+      expect(await agent.previewNativeRestart()).toEqual({ conversationCount: 2, conversationIds: expect.arrayContaining([channel.id, unopened.id]) });
       const run = channel.prompt("start the old model").then(() => {}, () => {});
       await until(() => rig.effects().length > 0, "old tool starts");
       const host = agent.nativeHarness!;
@@ -29,6 +30,11 @@ for (const when of ["idle", "now"] as const) {
         defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} }, updated: { fallback: "allow", tools: {} } },
       }, functions: { tools: { replacement: { description: "Replacement tool", parameters: { type: "object" }, handler: () => "ready" } } } });
       if (when === "idle") {
+        const cancel = new AbortController();
+        const cancelled = agent.waitForNativeIdle({ signal: cancel.signal });
+        const reason = new Error("cancelled wait");
+        cancel.abort(reason);
+        await expect(cancelled).rejects.toBe(reason);
         await Bun.sleep(75);
         expect(idle).toBe(false);
         expect(host.launches).toBe(1);
@@ -37,8 +43,8 @@ for (const when of ["idle", "now"] as const) {
       const result = await restart;
       await run;
       await idleBarrier;
-      expect(result).toMatchObject({ kind: "restarted", conversationCount: 1,
-        conversations: [{ id: channel.id, outcome: "reconnected" }] });
+      expect(result).toMatchObject({ kind: "restarted", conversationCount: 2,
+        conversations: expect.arrayContaining([{ id: channel.id, outcome: "reconnected" }, { id: unopened.id, outcome: "deferred" }]) });
       expect(result.interruptedTurns).toHaveLength(when === "now" ? 1 : 0);
       if (when === "now") expect(result.interruptedTurns[0]?.channel).toBe(channel.id);
       expect(events).toEqual([result]);
