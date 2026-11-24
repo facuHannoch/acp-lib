@@ -1,6 +1,6 @@
 # Plan: reminders, acp-client half
 
-Status: planning only, 2026-11-24 (core-p), revision 3 (haurness-l's planning answers a to e folded in; they are planning decisions, not a frozen wire contract). No code, no briefs sent, no runtime briefs until haurness-l
+Status: planning only, 2026-11-24 (core-p), revision 4 (haurness-l's planning answers a to e, and their contract-grounding proposals for questions 6 to 9, folded in; planning decisions, not a frozen wire contract; exact caps, codes and shapes are Gate 1 contract work). No code, no briefs sent, no runtime briefs until haurness-l
 releases the wire decisions below. Grounded in `../11-23-SPEC-reminders-and-routines.md` (reviews 1 and 2), the code on
 `integration-r456-status` (`src/native/host.ts`, `records.ts`, `src/persistence/channels.ts`, SQLite schema 21) and,
 since revision 2, the harness's `0004-DESIGN-reminder-tools/SPEC.md` (a local untracked draft in the haurness-l
@@ -120,8 +120,9 @@ visible, with its reason, until corrected (a NEW intent id, never a reused one) 
 never-sent create or update and nets to nothing; an update merges onto a never-sent create), a local `discard` of a
 blocked intent, the cache rows, and the effective deadline recomputed as min(stored `nextDueAt`, eligible pending create or
 edit deadlines): pending cancels, pauses, intents for a suspended or retiring channel contribute nothing. A response or
-event with an older revision never replaces the stored one. A conversation delete removes its intents and cache rows in
-the same transaction. SQLite schema 22 with an upgrade test from 21; the memory implementation for backends without it
+event with an older revision never replaces the stored one. No unresolved intent is ever expired locally; a `maybe_sent` intent is resent on every open until an outcome is recorded (an
+explicit stale outcome, if the contract adds one, is kept visible like a blocked one). A conversation delete removes its
+intents and cache rows in the same transaction. SQLite schema 22 with an upgrade test from 21; the memory implementation for backends without it
 (no durable intents, no wake across restart; documented). Gate: repository tests (the coalescing table, freeze after
 `maybe_sent`, clear-only-confirmed, older-revision rejection, wake recompute, transactional delete), the upgrade test.
 
@@ -132,7 +133,9 @@ converted to an absolute `at` at acceptance, also for a running harness; for `ev
 locally to an absolute instant so a replay is stable), the 15-minute consumer minimum for repeating schedules, a known
 policy name when config is known, typed errors for limits and for a missing capability. Host writes name the channel (the
 conversation's) and are attributed to the host; only optional additional `policyNames` passed by an authorized consumer are
-forwarded (the harness resolves the channel's own policy at firing, so it is never copied into them). Harness-running path: a request, done on confirmation; harness-stopped path: intent plus wake index
+forwarded (the harness resolves the channel's own policy at firing, so it is never copied into them). The library applies any
+narrower consumer authorization BEFORE appending an intent (typed error, nothing recorded); an unknown additional policy name
+is a harness outcome, `blocked` `invalid_policy`, with no reminder mutation, kept visible. Harness-running path: a request, done on confirmation; harness-stopped path: intent plus wake index
 in one transaction, `state: "pending"`. Events (created, fired, changed, confirmed, blocked, cancelled) on the existing
 conversation event path, deduplicating fires by notice id. A client-supplied reminder id is validated. Lists with the
 harness stopped: cached plus pending intents marked pending; blocked intents stay listed. Gate: unit tests against a fake
@@ -233,16 +236,20 @@ additional policy names are forwarded); the absolute `startAt` for an `every` in
 stopped); the correction of a blocked intent (a new intent id; a durably recorded blocked outcome stops the resend); inspect-only
 (no flag; a stopped session is read from the cache and pending intents; no acp-client open is inspect-only).
 
-New questions, for haurness-l (contract work, not blocking the plan):
-6. **Sweep contract:** the page limit, the cursor lifetime, the fence signal for an invalidated sweep, and the churn recovery
-   rule (how many restarts before the host should stop and flag the cache); is the deadline read, if added, separate?
-7. **Retention of recorded intent outcomes:** how long the harness keeps them. A resend of an older intent after the retention
-   window is unsafe: acp-client must know the window (or a signal) so it can retire stale pending intents instead of replaying
-   them as new.
-8. **Additional policy names:** what the harness does with an unknown or unauthorized name at creation (a `blocked` reason?),
-   and what "authorized consumer" means on the wire (acp-client treats its own library consumer as authorized).
-9. **Remote inspect-only:** only if the user ever needs it; it would be negotiated explicitly and require no writes, firing or
-   scheduler release.
+Contract grounding proposed by haurness-l (2026-11-24; planning guidance, exact caps, codes and shapes are Gate 1):
+6. **Sweep:** capped pages; cursors bound to the session, the scope and the reminder-list revision; an explicit
+   cursor-invalidated response so acp-client restarts within its OWN budget (plan step 3). The cap and the code are Gate 1.
+7. **Retention:** the harness never silently expires its dedup and then accepts the same id as new. Draft default: retain
+   the durable intent identity, signature and outcome for the session lifetime. If pruning is needed later, a durable
+   rejection fence or an explicit stale outcome must exist before it is allowed, and the client handling is defined then.
+   For acp-client: an unresolved intent is NEVER retired locally as "too old"; it is resent until an outcome is recorded; a
+   future explicit stale outcome is handled like a blocked one (kept visible, with its reason, until corrected or discarded).
+8. **Authority:** host writes are scoped to the owning, authenticated and authorized harness host connection under the
+   existing host authority; acp-client applies any NARROWER consumer authorization BEFORE submitting (an unauthorized caller
+   is refused with a typed error and no intent is recorded). A valid-shape intent naming an unknown additional policy
+   records a `blocked` `invalid_policy` outcome with no reminder mutation; an unauthorized caller is refused before any intent
+   is recorded on the harness. Exact codes and shape: contract review.
+9. **Remote inspect-only:** deferred unless needed; negotiated explicitly (no writes, no firing, no scheduler release).
 
 For the user and spec owners (unchanged where not answered):
 10. **Defaults:** coalesce for missed runs, skip for overlap, 5 and 15 minutes, 20 per channel.
