@@ -13227,6 +13227,16 @@ exports[`characterization, once session creation refused for authentication: sta
           },
         ],
         "client": {
+          "_meta": {
+            "jetbrains": {
+              "air": {
+                "capabilities": [
+                  "sessionFailure",
+                ],
+                "version": 1,
+              },
+            },
+          },
           "fs": {
             "readTextFile": true,
             "writeTextFile": true,
