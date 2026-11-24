@@ -262,7 +262,7 @@ test("routine dispositions precede fires without making a routine terminal", asy
     s.sync.notification({ channel, event: { kind: "reminder_fired", reminderId: row.id, occurrenceId: "occ", noticeId: "notice",
       scheduledAt: disposition.lastScheduledAt, firedAt: disposition.lastScheduledAt } }, emit);
     await s.sync.settled();
-    expect(seen).toEqual(["routine_disposition", "reminder_fired"]);
+    expect(seen).toEqual(["routine_disposition", "routine_disposition", "reminder_fired"]);
     expect(await s.reminders.get(row.id)).toMatchObject({ remainingCount: 3, status: "active", nextRunAt: anchor + 600_000, noticeId: "notice" });
     s.sync.notification({ channel, event: { kind: "reminder_changed", reminder: { ...row, remainingCount: 1, nextRunAt: iso(anchor + 1_800_000) } } }, emit);
     await s.sync.settled();
@@ -270,7 +270,7 @@ test("routine dispositions precede fires without making a routine terminal", asy
   } finally { await s.persistence.close(); }
 });
 
-test("routine migration publishes the hold before its blocked row and suppresses exact live duplicates", async () => {
+test("routine migration publishes the hold before its blocked row and delivers identical live events", async () => {
   const s = await startup();
   try {
     await s.sync.initialize({ capabilities: negotiated });
@@ -288,16 +288,16 @@ test("routine migration publishes the hold before its blocked row and suppresses
     s.sync.notification({ channel, event }, emit);
     s.sync.notification({ channel, event: { kind: "reminder_changed", reminder: blocked } }, emit);
     await s.sync.settled();
-    expect(seen).toEqual(["routine_migration_blocked", "reminder_changed"]);
+    expect(seen).toEqual(["routine_migration_blocked", "routine_migration_blocked", "reminder_changed"]);
     expect(await s.reminders.get(row.id)).toMatchObject({ status: "blocked", blockedReason: "invalid_schedule",
       timezoneVersion: "2026a", timezoneMigration, remainingCount: 2, nextRunAt: null });
     expect((await s.repo.wake()).effectiveAt).toBeNull();
     s.peer.rows.set(row.id, blocked);
     await s.open(3);
-    expect(seen).toHaveLength(2);
+    expect(seen).toHaveLength(3);
     s.sync.notification({ channel, event }, emit);
     await s.sync.settled();
-    expect(seen).toHaveLength(2);
+    expect(seen).toHaveLength(4);
   } finally { await s.persistence.close(); }
 });
 

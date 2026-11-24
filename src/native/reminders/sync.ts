@@ -25,7 +25,6 @@ export class ReminderSync {
   private tail = Promise.resolve();
   private sends = Promise.resolve();
   private readonly fires = new Set<string>();
-  private readonly routineEvents = new Set<string>();
 
   constructor(
     private readonly persistence: PersistenceBackend,
@@ -137,7 +136,6 @@ export class ReminderSync {
     const saved = wake.reported?.sessionId;
     if (fresh || wake.replacementAttempted === configuredId || ((this.sessionId ?? saved) !== undefined && (this.sessionId ?? saved) !== sessionId)) {
       this.fires.clear();
-      this.routineEvents.clear();
       await this.repository.replaceSession(sessionId);
       await this.transaction(async repo => {
         for (const receipt of result.reminderChanges ?? []) await repo.markMaybeSent(receipt.reminderId, receipt.changeId);
@@ -274,11 +272,7 @@ export class ReminderSync {
       const conversation = await this.persistence.conversations.get(channel as AgentConversationId);
       if (!conversation || conversation.deletedAt) return;
       if (event.kind === "routine_disposition" || event.kind === "routine_migration_blocked") {
-        const key = JSON.stringify([channel, Object.entries(event).sort(([a], [b]) => a.localeCompare(b))]);
-        if (!this.routineEvents.has(key)) {
-          this.routineEvents.add(key);
-          emit(channel, event);
-        }
+        emit(channel, event);
         return;
       }
       if (event.kind === "reminder_changed" && event.reminder.channel === channel) await this.storeRows([event.reminder], new Set());
