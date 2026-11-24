@@ -285,3 +285,8 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   `limit`; our reader keeps filtering by channel and turn). The merge of `aiagent/haurness-l` is held until the reviewed SHA;
   Cod1a told the patch base (`aiagent/haurness-l`) and the combined verification state (`merge-haurness-l`, `f32c5a2`: the
   10k checkpoint test plus `bun test ./test`).
+- The bounded `session/model-calls` read (Cod1a: decision `e45c097`, code `31ffb79` on `aiagent/haurness-l` `7fa4075`; trial
+  `0df01b0` on `f32c5a2`) approved by Clad1a. Coordinator gate on `0df01b0` (`TMPDIR` in RAM): typecheck clean, root 1,678 and
+  harness 382 green, the 10,000-record checkpoint test passes (0 of 10 failing; it failed every time on `f32c5a2`), snapshots
+  unchanged. **Gate passed** ([gate](../.plan-execution/status/11-24-GATE-haurness-l-merge.md)). The new `pre-alpha` is the
+  release candidate merged with `aiagent/haurness-l` and the fix; the previous one is kept as `pre-alpha-prev`.
