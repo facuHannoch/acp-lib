@@ -5,7 +5,7 @@ For consumers of the published `@qlairoslabs/acp-client` 0.12.1, including
 for complete examples.
 
 **Status.** This note covers `alpha` through `fb20ed6` and the one-off
-reminders in `pre-alpha-r8` at `b53c9f2`. The package version
+reminders in `pre-alpha-r8` at `2fd28d4`. The package version
 remains 0.12.1 and 0.13 is unpublished. For a local trial, point a disposable
 consumer checkout at a local archive of the target code and use a copy of the
 database. For example, use a `file:/absolute/path/to/acp-client-archive`
@@ -15,12 +15,12 @@ archive's dependencies available before starting the consumer.
 ## Before you upgrade
 
 - **Back up the SQLite Agent databases before opening them with the new code.**
-  A 0.12.1 schema-16 database opens at schema 22 on the reminders build. The migration is one way.
-  Older code refuses a migrated database. To roll back, restore the old database
+  A 0.12.1 schema-16 database opens at schema 22 on the reminders build.
+  The migration is one way. Older code refuses a migrated database. To roll back, restore the old database
   backup with the matching library version.
 - The upgrade adds the schema-17 durable channel intents and nullable
   `controller_kind`, schema-18 worker assignment and delivery storage, schema-19
-  worker records, schema-20 assignment and delivery columns, and schema-21
+  worker records, schema-20 assignment and delivery columns, schema-21
   native metering proof on the operation index, and schema-22 reminder intents,
   cache and wake state. The upgrade also adds the worker
   `role` to conversation rows where it is absent.
@@ -35,7 +35,7 @@ The package entry at `510e2a7` retained all 828 exports from 0.12.1 and
 had 913 exports. At `fb20ed6` it has 915, including the new
 `MessageStatus` and `MessageStatusEvent` types. The package exports map and
 dependencies are unchanged through `fb20ed6`. The reminders candidate
-at `b53c9f2` has 924 exports, including nine new reminder names.
+at `2fd28d4` has 924 exports, including nine new reminder names.
 `AgentController` remains a deprecated value and type alias of
 `HarnessController`.
 

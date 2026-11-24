@@ -1380,8 +1380,10 @@ share a revision fence for the same session. Older revisions and conflicting
 values at the same revision are ignored, and conflicts are logged. Only a
 replacement session starts a new fence.
 
-`agent.nativeHarness.stop()` keeps the wake armed. `agent.close()` clears the
-timer and retains the stored wake for the next Agent open. Each cold timer
+During `agent.nativeHarness.stop()`, the host drains deadline updates from
+the stopping connection and rearms the cold wake from the stored index when
+stop finishes. `agent.close()` clears the timer and retains the stored wake
+for the next Agent open. Each cold timer
 wait is capped at 60 seconds and the wall clock is checked again before
 launching. Wakes only run while acp-client is running. Starting the process
 and reopening its session adds delay. If acp-client dies after the harness
