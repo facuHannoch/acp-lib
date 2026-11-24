@@ -1,5 +1,5 @@
 import { isRoutineSchedule } from "./routine-schedule.ts";
-import type { ReminderWireChange as WireChange, ReminderWireRow, RoutineChange, RoutineChannelEvent } from "./routine-wire.ts";
+import type { ReminderWireChange as WireChange, ReminderWireRow } from "./routine-wire.ts";
 import { normalizeReminderSchedule } from "./schedule.ts";
 import type {
   ChannelEvent, HarnessClient, ReminderChange as OneOffChange,
@@ -9,14 +9,13 @@ import type { Reminder, ReminderChange } from "../../persistence/reminders.ts";
 import { defaultReminderLimits, type ReminderLimits } from "./limits.ts";
 import { ReminderError } from "./schedule.ts";
 
-type HarnessReminderEvent = Extract<ChannelEvent["event"], { type: `reminder_${string}` }>;
+type HarnessReminderEvent = Extract<ChannelEvent["event"], { type: `reminder_${string}` | `routine_${string}` }>;
 type WithKind<Event extends { type: string }> = Event extends unknown
   ? Omit<Event, "type"> & { kind: Event["type"] }
   : never;
 
 export type WireReminderEvent = WithKind<Exclude<HarnessReminderEvent, { type: "reminder_changed" }>>
-  | { kind: "reminder_changed"; reminder: ReminderWireRow }
-  | WithKind<RoutineChannelEvent>;
+  | { kind: "reminder_changed"; reminder: ReminderWireRow };
 type PublicWireRow<Row> = Row extends unknown ? Omit<Row, "blockedReason"> & { blockedReason?: string } : never;
 // Keep future block reasons representable in the library's public event.
 export type ConsumerReminderEvent = Exclude<WireReminderEvent, { kind: "reminder_changed" }> | (
@@ -28,7 +27,7 @@ export type KnownReminderBlockReason = Extract<ReminderChangeResult, { outcome: 
 export type HarnessOpenResult = Awaited<ReturnType<HarnessClient["openSession"]>>;
 export type HarnessDescription = Awaited<ReturnType<HarnessClient["initialize"]>>["description"];
 
-type AdvertisedReminderLimits = Partial<NonNullable<HarnessDescription["reminderLimits"]>> & { maxRoutineCatchUp?: number };
+type AdvertisedReminderLimits = Partial<NonNullable<HarnessDescription["reminderLimits"]>>;
 
 export function negotiatedLimits(value: AdvertisedReminderLimits | undefined, routines = false): ReminderLimits {
   const read = (name: keyof AdvertisedReminderLimits, fallback: number) => {
@@ -123,16 +122,16 @@ export function routineReminderRequest(change: ReminderChange, limits = defaultR
   if (create) return { ...identity, op: "create", payload: {
     channel, text, ...schedulePatch(), ...options,
     ...(policyNames ? { policyNames: [...policyNames] } : {}),
-  } } satisfies RoutineChange;
+  } } satisfies WireChange;
   if (include("status") && status !== "active" && status !== "paused") throw new Error("Invalid routine state");
   const patch = {
     ...(include("text") ? { text } : {}),
     ...(include("status") && (status === "active" || status === "paused") ? { state: status } : {}),
     ...options,
   };
-  if (include("schedule")) return { ...identity, op: "update", payload: { ...patch, ...schedulePatch() } } satisfies RoutineChange;
+  if (include("schedule")) return { ...identity, op: "update", payload: { ...patch, ...schedulePatch() } } satisfies WireChange;
   if (!Object.keys(patch).length) throw new Error("Empty routine update");
-  return { ...identity, op: "update", payload: patch } satisfies RoutineChange;
+  return { ...identity, op: "update", payload: patch } satisfies WireChange;
 }
 
 export type { WireChange };
@@ -152,12 +151,12 @@ export function fromWireReminder(row: ReminderWireRow, prior?: Reminder): Remind
 }
 
 function decodeSchedule(row: ReminderWireRow): Pick<Reminder, "schedule" | "remainingCount" | "missedRuns" | "overlap" | "timezoneVersion" | "timezoneMigration"> {
-  if (!("missedRuns" in row)) return { schedule: { at: Date.parse(row.schedule.at) } };
   const { schedule, remainingCount, missedRuns, overlap, timezoneVersion, timezoneMigration } = row;
+  if (schedule.at !== undefined) return { schedule: { at: Date.parse(schedule.at) } };
   const bound = schedule.count !== undefined ? { count: schedule.count }
     : schedule.until !== undefined ? { until: Date.parse(schedule.until) } : {};
   return {
-    schedule: "every" in schedule ? { every: schedule.every, startAt: Date.parse(schedule.startAt), ...bound }
+    schedule: schedule.every !== undefined ? { every: schedule.every, startAt: Date.parse(schedule.startAt), ...bound }
       : { cron: schedule.cron, timezone: schedule.timezone, ...bound },
     remainingCount, missedRuns, overlap, timezoneVersion, timezoneMigration,
   };

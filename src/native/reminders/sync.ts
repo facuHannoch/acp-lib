@@ -1,6 +1,6 @@
 import { RoutineAdmission } from "./routine-guard.ts";
 import { isRoutineSchedule } from "./routine-schedule.ts";
-import { routineTransport, type ReminderWireRow, type ReminderWireResult, type ReminderWireList, type ReminderWireOpen } from "./routine-wire.ts";
+import { type ReminderWireRow, type ReminderWireResult, type ReminderWireList, type ReminderWireOpen } from "./routine-wire.ts";
 import type { AgentConversationId } from "../../agent-ids.ts";
 import type { Logger } from "../../logger.ts";
 import type { HarnessClient } from "../../native-harness/src/client.ts";
@@ -201,7 +201,7 @@ export class ReminderSync {
         let page = attempt === 0 ? first : undefined;
         let after: string | undefined;
         do {
-          page ??= await routineTransport(client).listReminders({ ...(channel ? { channel } : {}), ...(after ? { after } : {}) });
+          page ??= await client.listReminders({ ...(channel ? { channel } : {}), ...(after ? { after } : {}) });
           await this.storeRows(page.reminders, seen);
           after = page.next;
           page = undefined;
@@ -222,7 +222,7 @@ export class ReminderSync {
       if (!this.supported) return;
       if (!id) return this.sweep(client, channel);
       try {
-        const { reminder } = await routineTransport(client).getReminder({ id });
+        const { reminder } = await client.getReminder({ id });
         if (reminder.channel === channel) await this.storeRows([reminder], new Set());
       } catch (error) {
         if (codeOf(error) !== "not_found") throw error;
@@ -237,7 +237,7 @@ export class ReminderSync {
         const batch = await this.stage();
         if (!batch.length) break;
         for (const entry of batch) {
-          const send = () => routineTransport(client).changeReminder(entry);
+          const send = () => client.changeReminder(entry);
           let receipt: ReminderWireResult | undefined;
           for (let attempt = 1; attempt <= 3; attempt++) {
             try { receipt = await send(); break; }

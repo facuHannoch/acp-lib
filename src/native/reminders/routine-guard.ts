@@ -51,9 +51,8 @@ export class RoutineAdmission {
     if (!Number.isSafeInteger(value) || value <= 0) throw new ReminderError("invalid_config", "unattendedTurns must be a positive safe integer");
     if (!this.supported) throw new HarnessIncompatibleError("The native harness must support routines and unattendedTurnGuard to configure unattendedTurns");
     if (this.bound !== value) return config;
-    const { unattendedTurns: _bound, ...limits } = config!.limits!;
     const { limits: _previous, ...rest } = config!;
-    return Object.keys(limits).length ? { ...rest, limits } : rest;
+    return rest;
   }
 
   opened(opened: ReminderWireOpen): void {

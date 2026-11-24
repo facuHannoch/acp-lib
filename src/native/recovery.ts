@@ -1,7 +1,7 @@
 import { activatesRoutine, RoutineAdmission } from "./reminders/routine-guard.ts";
 import type { ReminderChange } from "../persistence/reminders.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
-import { routineTransport, type ReminderWireOpen, type RoutineConfig } from "./reminders/routine-wire.ts";
+import { type ReminderWireOpen, type RoutineConfig } from "./reminders/routine-wire.ts";
 import type { ResponseMessage } from "../types.ts";
 import { codeOf } from "./errors.ts";
 import { HarnessClientError, type HarnessClient, type ItemStatus, type PendingChannelChange, type StoredMessage, type TurnStatus } from "../native-harness/src/client.ts";
@@ -73,8 +73,8 @@ export async function openOrCreate(
       };
       try {
         return create
-          ? await routineTransport(client).createSession({ ...params, participants: [], channels: {} })
-          : await routineTransport(client).openSession(params);
+          ? await client.createSession({ ...params, participants: [], channels: {} })
+          : await client.openSession(params);
       } catch (error) {
         const code = codeOf(error);
         if (staged.length && code === "storage_failure") {
@@ -103,8 +103,8 @@ export async function openOrCreate(
         let result: ReminderWireOpen;
         try {
           result = create
-            ? await routineTransport(client).createSession({ ...unbatched, participants: [], channels: {} })
-            : await routineTransport(client).openSession(unbatched);
+            ? await client.createSession({ ...unbatched, participants: [], channels: {} })
+            : await client.openSession(unbatched);
         } catch (retryError) {
           await reminders!.restoreStaged(originals);
           throw retryError;
