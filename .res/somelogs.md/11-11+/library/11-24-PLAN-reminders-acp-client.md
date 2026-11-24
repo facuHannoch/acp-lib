@@ -292,3 +292,13 @@ response and ordering). Routines (variable cron interval and DST, the unattended
 R9. They will send the approved contract SHA for R8 and later a one-off real-stdio implementation SHA. R7 stays independent.
 Plan effect: R8 is split in two: R8a (steps 3-5 for one-offs, against the first contract) and R9 carries routines and the
 full real-stdio acceptance.
+
+## Round 8 (2026-11-24): R7 Part 2 review
+
+cod2b-t replaced cod2a as implementer (cod2a-r did not start Part 2). Part 2 at `6a2a4ea` passed core-p's clean-copy gate (typecheck
+clean; plain `bun test` 2,081/215, 0 fail, 35 snapshots; protected files not grown). clad2a's review (`reminders-r7-reviews`
+2671ad9): all rulings implemented, NOT approved: 5 surviving mutants (maybe_sent in wake, paused exclusion, suspended setter in the
+channel transaction, expiry drift on edit), a per-access ReminderService with a fresh memory repo, update/pause/resume accepted on a
+terminal reminder, explicit `every.startAt` and 0 ms expiry unvalidated, plus coverage gaps (events, accessor, real 21->22 upgrade,
+real SQLite delete). Follow-up assigned to cod2b-t. R8 carry-over: the validation wake (min(acceptedAt + 2 min, dueAt)) is a launch
+deadline, so an unresolved entry leaves a past wake; R8 must rate-limit it with the restart budget (3 in 60 s), no spin.
