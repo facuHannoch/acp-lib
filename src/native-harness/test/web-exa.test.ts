@@ -84,3 +84,31 @@ test("web configuration selects credentials only for selected backends", async (
   expect(resolveWebCredentials(exa.value, { EXA_API_KEY: "secret", FETCH_KEY: "another" })).toEqual({ ok: true, value: { searchKey: "secret", fetchKey: "another" } });
   expect(JSON.stringify(exa.value)).not.toContain("secret");
 });
+
+test("missing, duplicate, and mismatched per-URL statuses fail closed with usage", async () => {
+  const url = "https://example.com/a";
+  for (const statuses of [undefined, [], [{ id: url, status: "error" }], [{ id: url, status: "success" }, { id: url, status: "success" }], [{ id: "https://example.com/b", status: "success" }]]) {
+    const result = await runExa({ operation: "web_fetch", args: { url }, key: "key", transport: async () => ({ status: 200, body: { requestId: "paid", costDollars: { total: 0 }, statuses, results: [{ url, text: "text" }] } }) });
+    expect(result).toMatchObject({ ok: false, code: "page_unavailable", usage: { requestId: "paid", usd: 0 } });
+  }
+});
+
+test("Exa rate limits and invalid costs do not fabricate zero or leak errors", async () => {
+  for (const total of [-1, null, "0", Number.POSITIVE_INFINITY]) {
+    const result = await runExa({ operation: "web_search", args: { query: "x" }, key: "canary", transport: async () => ({ status: 429, body: { error: "canary", requestId: "id", costDollars: { total } } }) });
+    expect(result).toMatchObject({ ok: false, code: "rate_limited", usage: { requestId: "id" } });
+    expect(result.usage.usd).toBeUndefined(); expect(JSON.stringify(result)).not.toContain("canary");
+  }
+});
+
+test("unrepresentable fetch URL fails as a bounded typed result while retaining cost", async () => {
+  const url = `https://example.com/${"a".repeat(1990)}`;
+  const result = await runExa({ operation: "web_fetch", args: { url }, key: "key", transport: async () => ({ status: 200, body: { costDollars: { total: 0.01 }, statuses: [{ id: url, status: "success" }], results: [{ url, text: "example" }] } }) });
+  expect(result).toMatchObject({ ok: false, code: "result_too_large", usage: { usd: 0.01 } });
+});
+
+test("already aborted calls do not invoke the Exa transport", async () => {
+  const controller = new AbortController(); controller.abort(); let called = false;
+  const result = await runExa({ operation: "web_search", args: { query: "a" }, key: "key", signal: controller.signal, transport: async () => { called = true; return { status: 200, body: {} }; } });
+  expect(called).toBe(false); expect(result).toMatchObject({ ok: false, code: "tool_interrupted" });
+});
