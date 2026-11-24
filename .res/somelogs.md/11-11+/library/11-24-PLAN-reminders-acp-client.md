@@ -332,3 +332,28 @@ haurness-l's answers: a schedule edit omitting expiresAfter recomputes a previou
 explicit duration or null; the receipt row is frozen as of that receipt (get/list authoritative); a blocked create is corrected by a
 new reminderId; session identity is `OpenResult.sessionId` (a different id or a confirmed fresh create after confirmed absence is a
 replacement; a lower revision is never evidence of replacement).
+
+## Round 11 (2026-11-24): alpha 4dad65e; R8.5; routines contract 0032 (`973a522`) and haurness-l's pins
+
+Alpha is `4dad65e` (R7, R8, joint acceptance, docs). R8.5 (typed harness client, refactor only): `reminders-typed` `b2b4fbe`, core-p gate
+2,164/225, clad2a review in progress. R9 (routines): brief `briefs/11-24-BRIEF-R9-routines.md`, contract copy `contracts/0032-...md`,
+Part 1 conformance report (cod2a-r `e7f1f6e`). haurness-l's answers:
+1. Keep 0031 ordering and per-entry commit. A create/edit proof-budget error has no receipt or partial mutation for that entry; earlier
+   committed channel edits, guard enable and receipts survive; later entries are skipped and no due processing runs on that failed
+   startup. The client keeps the frozen batch unacknowledged and retries it exactly (bounded) with original ids, anchors and payloads;
+   if create already published the session, recover through an executable open of the same confirmed identity (no replacement, no
+   stripping). Do not rely on error.data identifying the entry.
+2. First-open split confirmed: non-activating edits (owed pause/cancel, text, grace...) go in startup; create/resume/schedule
+   replacement are held until initialize confirms `routines` + `unattendedTurnGuard` and the executable open confirms the effective
+   guard, then sent live with their original anchors. Held activations alone must not arm a wake/relaunch loop. Per-reminder intent order
+   is preserved (never send a later change ahead of a held earlier one on the same id; resolve the local conflict instead). The host
+   may request a one-time guard enable on open after negotiation.
+3-4. Exact migration disposition event/row spelling and live ordering are NOT pinned yet: Cod1a publishes a small wire pin for Clad
+   before we depend on it. Recommended: routine_disposition live/post-commit, no replay/list API or tuple id, disposition before the
+   associated reminder_fired in the same commit, migration hold visible in the authoritative row.
+5. `until` before the first eligible occurrence is `invalid_schedule` (inclusive); interval rows carry an explicit resolved `startAt`;
+   a replacement advances strictly beyond the persisted processed-through fence, and is rejected if no eligible first occurrence remains.
+6. Require `capabilities.unattendedTurnGuard` and `capabilities.routines` before sending routine config and fail explicitly on
+   incompatibility; `invalid_config` for an incompatible saved guard value (no structured data required); the open result confirms the
+   effective `maxConsecutiveTurns`.
+R9 can continue on the settled parts; joint real-stdio acceptance waits for the approved runtime SHA.
