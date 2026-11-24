@@ -1,6 +1,6 @@
 # Plan: reminders, acp-client half
 
-Status: planning only, 2026-11-24 (core-p), revision 2. No code, no briefs sent, no runtime briefs until haurness-l
+Status: planning only, 2026-11-24 (core-p), revision 3 (haurness-l's planning answers a to e folded in; they are planning decisions, not a frozen wire contract). No code, no briefs sent, no runtime briefs until haurness-l
 releases the wire decisions below. Grounded in `../11-23-SPEC-reminders-and-routines.md` (reviews 1 and 2), the code on
 `integration-r456-status` (`src/native/host.ts`, `records.ts`, `src/persistence/channels.ts`, SQLite schema 21) and,
 since revision 2, the harness's `0004-DESIGN-reminder-tools/SPEC.md` (a local untracked draft in the haurness-l
@@ -40,6 +40,26 @@ Settled enough to design against:
 - **Notices.** The notice id derives from reminder id and scheduled instant; a fired event means "the notice was queued";
   the eventual turn follows the normal channel events.
 
+Planning answers from haurness-l (2026-11-24; planning decisions, not a frozen wire contract):
+- **Whole-session list (reconcile):** a bounded list with opaque session- and scope-bound cursors, deterministic stable
+  ordering (proposed: reminder id), and a revision fence that detects an invalidated sweep so the host can restart it. The
+  wake value comes ONLY from the executable open and revisioned deadline updates: do not depend on list pages sharing the
+  open fence; if the contract adds a deadline read next to the list, it carries its own revision. Exact cursor and page
+  limits and the recovery under churn are contract work.
+- **Host writes** are attributed to the host. acp-client forwards ONLY optional additional `policyNames` supplied by an
+  authorized consumer; the harness resolves the destination channel's policy at firing, so the channel policy is NOT
+  copied into the additional names.
+- **`{ every }` without `startAt`:** acp-client sends an absolute `startAt`, resolved ONCE at acceptance, on both the live
+  and the stopped path, so retries are stable; the harness-local defaults are a contract detail.
+- **Correction of a blocked intent** is a NEW intent id; once the host has durably recorded the blocked outcome it stops
+  resending that intent and keeps it visible locally until corrected or discarded; the id is never reused; the harness's
+  retention of recorded outcomes (dedup) is pinned separately.
+- **Inspect-only:** `session/open` has no explicit inspect-only flag, and omitting intents is NOT a safe read-only signal.
+  For a stopped session acp-client serves cached reminders plus pending intents WITHOUT launching it; every acp-client
+  open is an executable open. If a remote inspect-only path is ever needed it is negotiated explicitly and requires no
+  writes, no firing and no scheduler release.
+- Event replay stays unassumed; idle-stop and capability negotiation stay gated; the routine defaults stay pending review.
+
 Still open (wire dependencies; haurness-l is deciding): exact fields, echoes, versions, codes and limits; the capability
 name and runtime negotiation; an explicit event-replay guarantee (revision 2 assumes none); a race-free idle-stop fence
 (the existing `session/idle` is only a read); routine defaults (catch-up, overlap, minimum interval, limits), still
@@ -59,7 +79,10 @@ unattended routines).
 6. Pending intents contribute to the wake only when eligible (not for a suspended or retiring channel, not paused).
 7. Open sequence wording fixed to `session/create|open` (the earlier "load view" is the legacy path).
 8. Acceptance now names the draft's joint scenarios (lost open response, missed deadline event, the accepted crash window).
-9. Host-created reminders need policy names and creator attribution decided by acp-client (see questions).
+9. Host writes: attributed to the host; only the consumer's optional additional policy names are forwarded (never the channel
+   policy); `startAt` for an `every` intent is resolved once at acceptance.
+10. Reconcile is a bounded, restartable sweep (opaque cursor, ordered by reminder id, a revision fence), never the source of
+    the wake value; no acp-client open is inspect-only, so a stopped session is read from the cache and pending intents.
 
 ## What exists to build on
 
@@ -92,7 +115,8 @@ deadline. Gate: report reviewed; the wire questions answered.
 
 **Step 1: durable store and wake index (no timers, no wire).** The repository above, transaction-scoped like `channels?`:
 append an intent (assign id and sequence), mark `maybe_sent` before a send, record an outcome (`applied`, `blocked` with
-reason, or conflict) and clear on confirmation by intent id, coalesce only never-sent intents (a cancel supersedes a
+reason, or conflict) durably: `applied` clears the intent; a recorded `blocked` outcome stops the resend but the intent stays
+visible, with its reason, until corrected (a NEW intent id, never a reused one) or discarded, coalesce only never-sent intents (a cancel supersedes a
 never-sent create or update and nets to nothing; an update merges onto a never-sent create), a local `discard` of a
 blocked intent, the cache rows, and the effective deadline recomputed as min(stored `nextDueAt`, eligible pending create or
 edit deadlines): pending cancels, pauses, intents for a suspended or retiring channel contribute nothing. A response or
@@ -107,8 +131,8 @@ pause, resume, cancel, `discardBlocked`); `agent.reminders.list()` (whole Agent,
 converted to an absolute `at` at acceptance, also for a running harness; for `every` without `startAt`, resolve `startAt`
 locally to an absolute instant so a replay is stable), the 15-minute consumer minimum for repeating schedules, a known
 policy name when config is known, typed errors for limits and for a missing capability. Host writes name the channel (the
-conversation's) and supply policy names (the conversation's policy plus any the consumer passes: decision from step 0) and
-a creator attribution. Harness-running path: a request, done on confirmation; harness-stopped path: intent plus wake index
+conversation's) and are attributed to the host; only optional additional `policyNames` passed by an authorized consumer are
+forwarded (the harness resolves the channel's own policy at firing, so it is never copied into them). Harness-running path: a request, done on confirmation; harness-stopped path: intent plus wake index
 in one transaction, `state: "pending"`. Events (created, fired, changed, confirmed, blocked, cancelled) on the existing
 conversation event path, deduplicating fires by notice id. A client-supplied reminder id is validated. Lists with the
 harness stopped: cached plus pending intents marked pending; blocked intents stay listed. Gate: unit tests against a fake
@@ -121,11 +145,17 @@ applied, then reminder intents, then eligible due reminders, then the open fence
 conversation retired in the same batch comes back `blocked` (reason from the harness); one for a channel suspended in the same
 batch is held, not fired; an offline cancel or pause beats an overdue occurrence. Each outcome is recorded by intent id:
 `applied` clears it; `blocked` keeps it visible; a conflict is surfaced as a defect; the reported `nextDueAt` replaces the
-wake index only with a newer revision. After the open completes, reconcile authoritatively: page the whole-session host list
-(bounded pages, opaque cursor, stable order) into the cache; no dependence on missed events. A crash between the harness
+wake index only with a newer revision. After the open completes, reconcile authoritatively with a bounded, restartable SWEEP: page the whole-session host list
+(bounded pages, opaque session- and scope-bound cursor, stable order by reminder id) into the cache, under the list's
+revision fence; if the fence reports the sweep invalidated (churn), restart it, bounded by a restart budget (then keep the
+cache as last-confirmed state, flagged unreconciled, and retry on the next trigger; it never blocks the open or a wake).
+The sweep never feeds the wake value: that comes only from the open and the revisioned deadline updates (a separate
+deadline read, if the contract adds one, has its own revision); no dependence on missed events. A crash between the harness
 applying and acp-client clearing: the resend by intent id returns the recorded outcome (test with a real stdio restart;
-this is the draft's "replay after a lost open response"). Gate: ordering tests with a scripted fake harness for each
-interleaving; real-stdio restart tests when the harness side exists.
+this is the draft's "replay after a lost open response"). Every acp-client open is executable: acp-client never opens a stopped session merely to read it (the cache plus pending
+intents answer `list` and `get`), because omitting intents is not a safe read-only signal. Gate: ordering tests with a
+scripted fake harness for each interleaving; sweep tests (an invalidated sweep restarts within its budget; pages, ordering
+and cursor reuse across scopes are rejected); real-stdio restart tests when the harness side exists.
 
 **Step 4: wake timer and the late-wake window.** A host-owned timer armed from the wake index; at expiry `ensureStarted()`
 (single-flight with any other start; the cancellable start and `harness_unresponsive` unchanged); opening is enough, no
@@ -197,16 +227,22 @@ Still wire dependencies for haurness-l:
 5. **Routine decisions:** catch-up (coalesce), overlap (skip), minimum interval (5 min harness, 15 min consumer, local),
    limits, daylight-saving gaps and folds, and how a prior occurrence stays identifiable through take, completion and restart.
 
-New questions from the reconciliation (haurness-l):
-6. **Reconcile read:** the whole-session host `list` page size and cursor, its ordering, and whether it carries the current
-   `nextDueAt` revision; is it consistent with the open's response (same fence)?
-7. **Host-created reminders:** which policy names does acp-client supply (the conversation's policy only, or with consumer
-   additions), and what is the creator attribution for a host write?
-8. **Routine start:** for `{ every }` without `startAt`, does the harness resolve "now" at commit, or must acp-client send an
-   absolute `startAt` (revision 2 sends one, resolved at acceptance, so a replay is stable)?
-9. **Blocked intents and correction:** is the correction path a NEW intent with a new id for the same target (revision 2
-   assumes yes), and may an applied-blocked outcome be recorded and the intent dropped from resends once acp-client has it?
-10. **Inspect-only opens:** how does the host mark one (acp-client's reads of a stopped session must send no intents)?
+Answered (planning level) by haurness-l, 2026-11-24: the reconcile list (bounded, opaque scope-bound cursor, stable order by
+reminder id, a revision fence; the wake never depends on it); host writes (attributed to the host; only consumer-supplied
+additional policy names are forwarded); the absolute `startAt` for an `every` intent (resolved once at acceptance, live and
+stopped); the correction of a blocked intent (a new intent id; a durably recorded blocked outcome stops the resend); inspect-only
+(no flag; a stopped session is read from the cache and pending intents; no acp-client open is inspect-only).
+
+New questions, for haurness-l (contract work, not blocking the plan):
+6. **Sweep contract:** the page limit, the cursor lifetime, the fence signal for an invalidated sweep, and the churn recovery
+   rule (how many restarts before the host should stop and flag the cache); is the deadline read, if added, separate?
+7. **Retention of recorded intent outcomes:** how long the harness keeps them. A resend of an older intent after the retention
+   window is unsafe: acp-client must know the window (or a signal) so it can retire stale pending intents instead of replaying
+   them as new.
+8. **Additional policy names:** what the harness does with an unknown or unauthorized name at creation (a `blocked` reason?),
+   and what "authorized consumer" means on the wire (acp-client treats its own library consumer as authorized).
+9. **Remote inspect-only:** only if the user ever needs it; it would be negotiated explicitly and require no writes, firing or
+   scheduler release.
 
 For the user and spec owners (unchanged where not answered):
 11. **Defaults:** coalesce for missed runs, skip for overlap, 5 and 15 minutes, 20 per channel.
