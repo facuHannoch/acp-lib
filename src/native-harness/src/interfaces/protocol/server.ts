@@ -17,7 +17,7 @@ import { ToolFault, createCallbackBridge, isToolMethod, toolMethods, toolRequest
 
 import { parseReminderBatch, parseReminderChange, parseReminderList, ReminderShapeError } from "../../runtime/reminder-validation.ts";
 import { REMINDER_LIMITS } from "../../util/reminder-schedule.ts";
-import type { ReminderChange, ReminderChangeResult, ReminderSessionEvent } from "../../contracts/reminders.ts";
+import type { OneOffReminderChange, OneOffReminderChangeResult, ReminderSessionEvent } from "../../contracts/reminders.ts";
 
 class Fault extends Error {
   constructor(readonly tag: string, message: string, readonly rpc = -32602) { super(message); }
@@ -94,7 +94,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   // Decision 0020: the batch this connection's open applied, kept so a repeated
   // load reports the same results without applying anything again.
   let startup: { batch: PendingChannelChange[]; results: ChannelChangeResult[] } | undefined;
-  let reminderStartup: { batch: ReminderChange[]; results: ReminderChangeResult[] } | undefined;
+  let reminderStartup: { batch: OneOffReminderChange[]; results: OneOffReminderChangeResult[] } | undefined;
   let activeConfig: ProtocolConfig | undefined;
   let subscription: Subscription = { text: "final", tools: "full" };
   const listeners = new Set<(notification: RpcNotification) => void>();
@@ -188,7 +188,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     }, 0);
   }
 
-  function reminderView(session: PersistentSession, results: ReminderChangeResult[] = []) {
+  function reminderView(session: PersistentSession, results: OneOffReminderChangeResult[] = []) {
     const reminders = session.reminders;
     if (!reminders) return {};
     const page = readValue(reminders.listReminders({})).value;
@@ -196,7 +196,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       ...(reminders.executable() ? readValue(reminders.reminderWake()).value : {}) };
   }
 
-  function prepareReminders(session: PersistentSession, batch: ReminderChange[]) {
+  function prepareReminders(session: PersistentSession, batch: OneOffReminderChange[]) {
     const reminders = session.reminders;
     if (batch.length && !reminders?.executable()) throw new Fault("incompatible", "Reminders cannot change in an inspection-only session");
     const results = batch.map(change => readValue(reminders!.change(change)).value);

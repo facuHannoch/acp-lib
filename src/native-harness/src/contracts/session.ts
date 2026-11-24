@@ -114,7 +114,7 @@ export interface PersistentSessionOptions {
  * exported first. Opening, starting and resuming are separate actions. */
 export interface PersistentSession {
   reminders?: Pick<SessionStorage, "readReminder" | "listReminders" | "reminderWake"> & {
-    change(change: import("./reminders.ts").ReminderChange): ReturnType<SessionStorage["changeReminder"]>;
+    change(change: import("./reminders.ts").OneOffReminderChange): ReturnType<SessionStorage["changeReminder"]>;
     processStartup(): void;
     releaseTimer(): void;
     executable(): boolean;
