@@ -200,19 +200,22 @@ turn. Test cross-channel access before acceptance, pending acceptance, after
 take and after withdrawal, plus wrong-session reads and rendering. Round-trip
 format-9 sessions with only unreferenced uploads and after cleanup, including
 routines state; omitted uploads must not be readable in the restored session.
-At runtime integration, record the actual final R-H4 candidate SHA and exact
-migration base agreed with Cod1a. Against that exact candidate, create and
-reopen a format-8 session with routines and guard state, activate attachment
-format 9, and verify every existing row, receipt, revision and guard survives
-migration and reopen. Import its archive 7 into a fresh destination, activate
-format 9, and round-trip archive 8 with retained attachments while preserving
+At runtime integration, record the exact approved final R-H4 runtime SHA and
+migration base agreed with Cod1a. Use fixtures created by that exact runtime:
+open its format-8 SQLite session with routines and durable guard state, activate
+attachments lazily to format 9, and verify every existing row, receipt,
+revision and guard survives migration and reopen. Import its archive 7 into a
+fresh destination, activate attachments lazily to format 9, and verify the same
+routines and durable guard state survives. Round-trip archive 8 with retained
+attachments while preserving
 the same state and bytes. Separately export a format-9 session with routines
 and guard state but no retained attachment associations as archive 7; import
-it fresh and verify all routines and guard state, no attachment fields or bytes,
+it fresh and verify all routines and guard state, no detached attachment metadata or bytes,
 and no access to omitted ready uploads. Cover both before and after cleanup.
 Also test attachment-free format-9 sessions without routines or guard state:
-their detached exports and fresh imports use the legacy archive selection of
-decision 0031, preserving reminder state where present, with no attachment
-fields or bytes. Verify supported older archives still import. Reconcile shared
+their detached exports and fresh imports exercise both archive 5 and 6 selection
+under decision 0031, preserving reminder state where present, with no attachment
+fields or bytes. Verify each export leaves the live source at format 9. Verify
+supported older archives still import. Reconcile shared
 storage, archive and protocol changes without changing the assigned versions.
 Integration target is `aiagent/haurness-l` after independent review.
