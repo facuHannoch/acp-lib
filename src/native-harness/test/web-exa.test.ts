@@ -198,3 +198,17 @@ test("web usage facts reject invalid archive shapes and preserve explicit zero",
   expect(validCommittedWebUsage({ requestId: "req", usd: 0 })).toBe(true);
   for (const value of [{ usd: -1 }, { usd: NaN }, { requestId: "bad\nid" }, { usd: null }, { secret: "x" }]) expect(validCommittedWebUsage(value)).toBe(false);
 });
+
+test("hosted production response pipeline rejects decoded and wire overflow", async () => {
+  const { createExaHttpsTransport } = await import("../src/capabilities/tools/web/exa-transport.ts");
+  const limit = 2 * 1024 * 1024;
+  for (const fixture of [{ bytes: Buffer.alloc(limit + 1, 0x61), encoding: "identity" }, { bytes: gzipSync(Buffer.alloc(limit + 1, 0x61)), encoding: "gzip" }]) {
+    const send = ((_options: any, callback: (response: any) => void) => new Writable({
+      write(_chunk, _encoding, done) { done(); }, final(done) {
+        callback(Object.assign(Readable.from([fixture.bytes]), { statusCode: 200, headers: { "content-encoding": fixture.encoding } })); done();
+      },
+    })) as unknown as typeof import("node:https").request;
+    const result = await runExa({ operation: "web_search", args: { query: "x" }, key: "key", transport: createExaHttpsTransport(send) });
+    expect(result).toMatchObject({ ok: false, code: "response_too_large", usage: {} });
+  }
+});
