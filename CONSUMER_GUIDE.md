@@ -1783,8 +1783,8 @@ If an install omits them, the configured MCP entries report
 `reason: "connect"` for HTTPS. These statuses describe the failed stage
 without exposing credential values. Install the optional dependencies to
 use MCP. Other native features still work without them.
-A failing MCP server must leave the harness running. The current harness
-has a known exception for HTTP 500 on discovery and tool calls.
+A failing MCP server leaves the harness running. A plain HTTP 500 on discovery marks that entry unavailable, and on a tool
+call the model sees one sanitized `mcp_uncertain` result with no replay. Other channels and servers keep working.
 
 ```ts
 import type { AgentHarnessConfig } from "@qlairoslabs/acp-client";

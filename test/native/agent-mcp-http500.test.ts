@@ -2,12 +2,11 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { nativeRig, reply } from "./support.ts";
 
-// The approved M3 harness terminates on these HTTP errors. Run with
-// ACP_TEST_MCP_HTTP500=1 to verify the supervisor stays alive after the fix.
-const regression = process.env.ACP_TEST_MCP_HTTP500 === "1" ? test : test.skip;
+// The first M3 harness terminated on these HTTP errors. With the fix (a2d5500) a failing MCP server must leave the harness running.
+const regression = test;
 
 for (const failure of ["tools/list", "tools/call"] as const) {
-  regression(`native MCP survives HTTP 500 on ${failure} (pending harness fix)`, async () => {
+  regression(`native MCP survives HTTP 500 on ${failure}`, async () => {
     const rig = await nativeRig();
     const cert = join(rig.directory, "cert.pem"), key = join(rig.directory, "key.pem");
     expect(Bun.spawnSync(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key,
