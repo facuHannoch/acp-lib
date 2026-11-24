@@ -181,3 +181,12 @@ describe("permission requests", () => {
     })).toThrow("invalid permission level");
   });
 });
+
+test("an unanswered ACP ask selects reject_once by default or sends a cancelled reply", async () => {
+  expect(await ask("reject-first", { permissions: { default: "ask", unanswered: "reject" } }))
+    .toEqual({ outcome: "selected", optionId: "reject" });
+  expect(await ask("reject-first", { permissions: { default: "ask", unanswered: "cancel" } }))
+    .toEqual({ outcome: "cancelled" });
+  expect(await ask("reject-first", { permissions: { default: "deny", unanswered: "cancel" } }))
+    .toEqual({ outcome: "selected", optionId: "reject" });
+});

@@ -291,3 +291,45 @@ test("an in-process callback exposes the same native handler policy context", as
   expect((await conversation.prompt("look up weather")).text).toBe("Done.");
   expect(contexts.map(context => context.policyNames)).toEqual([["open"]]);
 });
+
+test.each(["reject", "cancel"] as const)("an unanswered native approval with %s never calls the tool", async (unanswered) => {
+  const rig = await rigWith({ defaultPolicy: "ask", policies: { ask: { fallback: "deny", tools: { lookup: "ask" } } } });
+  rig.script([call("lookup", { q: "weather" }), reply("Carried on.")]);
+  let calls = 0;
+  const agent = await open(rig, { tools: { lookup: fn(() => { calls++; return "should not run"; }) } },
+    { permissions: { default: "ask", unanswered } });
+  const conversation = await agent.conversations.create();
+  const events = rig.watch(conversation);
+  const result = await conversation.prompt("Look up the weather.");
+  expect(calls).toBe(0);
+  expect(events.filter(event => event.kind === "permission_resolved")).toMatchObject([
+    { by: "default", outcome: unanswered === "cancel" ? "cancelled" : "denied" },
+  ]);
+  expect(result.status).toBe(unanswered === "cancel" ? "cancelled" : "completed");
+  expect(result.text).toBe(unanswered === "cancel" ? "" : "Carried on.");
+  expect(requests(rig)).toHaveLength(unanswered === "cancel" ? 1 : 2);
+}, 30_000);
+
+test("native system text is replaced on reopening the saved session", async () => {
+  const rig = await rigWith();
+  const first = await rig.open();
+  const conversation = await first.conversations.create();
+  expect((await conversation.prompt("first")).status).toBe("completed");
+  await first.close();
+
+  rig.harness.config = {
+    version: 1, system: "Replacement system instructions",
+    model: { protocol: "scripted", script: join(rig.directory, "script.jsonl") },
+    defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } },
+  };
+  const reopened = await rig.open();
+  const restored = await reopened.conversations.open(conversation.id);
+  expect((await restored.conversation.prompt("second")).status).toBe("completed");
+  const systemTexts = requests(rig).map(request => request.messages.filter(message => message.role === "system").map(message => message.content));
+  expect(systemTexts.map(texts => texts.length)).toEqual([1, 1]);
+  const initial = "Native integration test";
+  const before = systemTexts[0]![0]!;
+  expect(before.startsWith(initial + "\n")).toBe(true);
+  const harnessInstructions = before.slice(initial.length);
+  expect(systemTexts[1]![0]).toBe("Replacement system instructions" + harnessInstructions);
+}, 30_000);

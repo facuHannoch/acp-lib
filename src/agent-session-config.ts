@@ -42,6 +42,8 @@ export interface AgentSessionConfig extends ConversationPermissionConfig {
   execPrefix?: string[];
   /** @deprecated Use launcher and its exact spawnEnv. */
   env?: Record<string, string>;
+  /** Exact environment for built-in ACP terminals. */
+  terminalEnv?: Record<string, string>;
   cwd?: string;
   /** Additional absolute directories declared to the provider. */
   additionalDirectories?: string[];
