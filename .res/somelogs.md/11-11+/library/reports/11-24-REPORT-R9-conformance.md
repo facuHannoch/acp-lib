@@ -34,3 +34,29 @@ Reviewed alpha `4dad65e` against decision 0032 at `973a522` and the retained one
 Build the fixture peer from 0032 using the typed R8.5 contracts. Cover the capability matrix, first open vs later reconnect and fresh replacement, guard bind and differing-value refusal, and old peers running unchanged 0031 one-offs. Cover bound shape and valid boundaries, kind-preserving edits, default/explicit/null grace, one-off and routine row conversion, replay of frozen changes, old acknowledgements, routine events interleaved with row refresh, and failure paths from a still-unsettled startup batch. Prove a temporary proof failure creates no local terminal outcome and a retry uses exactly the original entry. Use scripted clock and deadline events for validation wakes, an exhausted channel with no deadline, a second eligible channel and restoration after actual participant intake. Test that a routine fire leaves an active routine active. Exercise type-level exhaustive switches and offline doc examples. Reuse the scripted peer scenarios for later real stdio against the approved runtime, including two actual occurrences and a guarded or overlapping recovery case.
 
 Gate Part 2 with typecheck and plain `bun test` on a clean archive, RAM-backed TMPDIR, new tests 20 times in isolation and 35 snapshots unchanged. Keep harness code and CLI outside the patch. Baseline line ceilings measured on `4dad65e`: `src/native/host.ts` **909/909**, `src/native/controller.ts` 591, `src/agent-session.ts` 4527, `src/agent.ts` 563, `src/controller.ts` 764, `src/client.ts` 1050, `src/agent/conversation-manager.ts` 1012 and `src/metering/engine.ts` 1034. Confirm the inherited R8.5 counts before editing. Keep new admission, recovery branching and capability bookkeeping in reminder modules. Extract first if host integration needs space. The existing conversation event path already consumes the shared event types, so no session growth is needed to add the variant.
+
+## Part 2 implementation notes
+
+The library stays on SQLite schema 22. Routine fields and retry metadata fit
+in existing JSON values. The test “schema 22 reads a pre-routine one-off
+journal JSON row unchanged” inserts a pre-R9 journal payload and verifies
+that it still encodes the original one-off request.
+
+Each executable open holds routine creates, resumes and schedule replacements
+plus later entries for those same IDs. The live dispatch keeps their order.
+Routine creates cannot start a stopped host by themselves. A due occurrence
+may commit between a held create and its live pause. Overdue old-calendar
+work can also commit on open before a held replacement. The guard result
+comes from the current connection's executable open.
+
+A storage failure freezes the submitted startup batch. After three attempts
+the host surfaces `reminder_batch_retry_exhausted` and retains that batch
+for retry. A durable marker records a create attempt before sending it so
+a subsequent open of the published identity resets the old deadline fence.
+Live storage failures retain the request's ID and change in the journal.
+
+The scripted peer follows the approved 0032 contract and startup pin. The
+bundled harness snapshot still exposes the 0031 reminder types. Replacing
+the temporary routine contract bridge requires the approved 0032 harness
+merge with widened reminder row, change, receipt, event, config, limits and
+open result types.

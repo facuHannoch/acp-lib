@@ -186,3 +186,30 @@ test("an exhausted reminder wake still fails outstanding conversation work", asy
     expect(clock.delays).toEqual([]);
   } finally { await fixture.clean(); }
 });
+
+test("a held routine alone never arms or launches a stopped SQLite owner", async () => {
+  const fixture = await nativeRig();
+  const clock = new ReminderClock();
+  fixture.harness.reminderTimer = clock;
+  try {
+    const agent = await fixture.open();
+    const host = agent.nativeHarness!;
+    const repository = agent.persistence.reminders!;
+    const sessionId = agent.id;
+    await repository.enqueue({ acceptedAt: 0, op: "create", reminder: {
+      id: "held", conversationId: "routine-channel", schedule: { cron: "*/10 * * * *", timezone: "Etc/UTC" },
+      text: "held routine", expiry: { kind: "harness_default" }, expiryPolicy: { kind: "default" },
+      status: "active", scheduleAcceptedAt: 0, missedRuns: "coalesce", overlap: "skip",
+    } });
+    await repository.updateDeadline({ sessionId, nextDueAt: 180_000, revision: 1 });
+    await until(() => clock.delays.length === 1);
+    await repository.updateDeadline({ sessionId, nextDueAt: null, revision: 2 });
+    await until(() => clock.delays.length === 0);
+    clock.tickAt(600_000);
+    await settle();
+    expect(clock.delays).toEqual([]);
+    expect(host.state).toBe("stopped");
+    expect(host.launches).toBe(0);
+    expect((await repository.list())[0]?.changes[0]?.state).toBe("pending");
+  } finally { await fixture.clean(); }
+});
