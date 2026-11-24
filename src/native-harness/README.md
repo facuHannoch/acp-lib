@@ -25,10 +25,14 @@ This directory is an independent TypeScript and Bun project (Bun >= 1.3.5), with
 its own package manifest, lockfile and TypeScript configuration. It does not
 depend on the parent acp-client package. Development dependencies are TypeScript
 and Bun types. Managed image input additionally requires the optional local
-`ffmpeg` and `ffprobe` executables on `PATH`; general-file attachments do not.
+`ffmpeg`, `ffprobe`, and Linux `prlimit` executables on `PATH`; general-file attachments do not.
 Image input is offered only when the model configuration explicitly opts in
-and both executables are available. Validation uses a bounded, cancellable
-local decode with only pipe input; missing tools and invalid images fail closed.
+and all three executables are available. Both image processes run under a 1 GiB
+address-space limit, a CPU limit, and a file-descriptor limit, with bounded
+output and a cancellable timeout. Input is passed via an anonymous Linux temporary inode on stdin, with no named
+copy left on disk; an O_TMPFILE-capable temporary filesystem is required.
+They accept only pipe input; missing tools,
+unsupported platforms, resource exhaustion, and invalid images fail closed.
 
 From this directory:
 

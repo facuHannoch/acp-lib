@@ -26,7 +26,7 @@ test("stdio managed general-file upload, ordered push and download survive reope
       let started: unknown;
       first.client.onChannelEvent(({ event }) => { if (event.type === "turn_started") started = event; });
       const receipt = await first.client.push({ channel: "a", item: { id: "msg", kind: "user_message", sender: "human", content: [{ type: "text", text: "before" }, { type: "attachment", id }, { type: "text", text: "after" }] } });
-      expect(receipt.item.parts).toMatchObject([{ type: "text", text: "before" }, { type: "attachment", id, metadata: { filename: "data.bin" } }, { type: "text", text: "after" }]);
+      expect(receipt.item!.parts).toMatchObject([{ type: "text", text: "before" }, { type: "attachment", id, metadata: { filename: "data.bin" } }, { type: "text", text: "after" }]);
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline) {
         const view = await first.client.reconcileChannel({ channel: "a", itemIds: ["msg"] });
@@ -34,8 +34,8 @@ test("stdio managed general-file upload, ordered push and download survive reope
         await Bun.sleep(10);
       }
       const tracked = await first.client.reconcileChannel({ channel: "a", itemIds: ["msg"] });
-      expect(tracked.items[0]?.parts).toEqual(receipt.item.parts);
-      expect(started).toMatchObject({ messages: [{ itemId: "msg", parts: receipt.item.parts }] });
+      expect(tracked.items[0]?.parts).toEqual(receipt.item!.parts);
+      expect(started).toMatchObject({ messages: [{ itemId: "msg", parts: receipt.item!.parts }] });
       expect(JSON.stringify(started)).not.toContain(data.subarray(0, 30).toString("base64"));
       const shared = await first.client.readAttachment({ channel: "b", id, offset: 0 });
       expect(Buffer.from(shared.data, "base64")).toEqual(data.subarray(0, 524288));

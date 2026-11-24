@@ -1,4 +1,5 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { spawn, spawnSync } from "node:child_process";
 import type { AttachmentMetadata } from "../../contracts/attachments.ts";
 import { ATTACHMENT_LIMITS } from "../../contracts/attachments.ts";
@@ -10,10 +11,16 @@ const formats: Record<string, { demuxer: string; codec: string }> = {
   "image/webp": { demuxer: "webp_pipe", codec: "webp" },
 };
 const toolEnvironment = () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C" });
+// Linux O_TMPFILE creates an unnamed inode; bytes never have a persistent path.
+const anonymousFileFlags = constants.O_RDWR | 0o20200000;
+const childLimits = ["--as=1073741824", "--cpu=20", "--nofile=32", "--"] as const;
 const toolOptions = { timeout: 3000, stdio: "ignore" as const, killSignal: "SIGKILL" as const, env: toolEnvironment() };
 /** Availability is per session: do not infer support from a model name. */
 export function imageValidationAvailable(): boolean {
-  return spawnSync("ffprobe", ["-version"], toolOptions).status === 0 && spawnSync("ffmpeg", ["-version"], toolOptions).status === 0;
+  if (process.platform !== "linux") return false;
+  try { const fd = openSync(tmpdir(), anonymousFileFlags, 0o600); closeSync(fd); } catch { return false; }
+  return spawnSync("prlimit", [...childLimits, "ffprobe", "-version"], toolOptions).status === 0
+    && spawnSync("prlimit", [...childLimits, "ffmpeg", "-version"], toolOptions).status === 0;
 }
 
 /** Always wait for close after killing a timed-out, cancelled or overproducing
@@ -22,7 +29,25 @@ export function runImageTool(command: string, args: readonly string[], input: Ui
   options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted) { reject(new UploadError("invalid_attachment", "Image validation cancelled")); return; }
-    const child = spawn(command, [...args], { stdio: ["pipe", "pipe", "pipe"], env: toolEnvironment() });
+    // Bun's child stdin pipes can be nonblocking: ffprobe treats EAGAIN as
+    // end of input. Give the child a seekable anonymous inode instead, with
+    // positional writes leaving its read offset at zero. There is no pathname
+    // to leak on crash and no input URL other than pipe:0.
+    let fd: number;
+    try {
+      fd = openSync(tmpdir(), anonymousFileFlags, 0o600);
+      try {
+        let offset = 0;
+        while (offset < input.length) {
+          const count = writeSync(fd, input, offset, input.length - offset, offset);
+          if (!count) throw new Error("short write");
+          offset += count;
+        }
+      } catch (error) { closeSync(fd); throw error; }
+    } catch { reject(new UploadError("invalid_attachment", "Image validator input is unavailable")); return; }
+    let child: ReturnType<typeof spawn>;
+    try { child = spawn("prlimit", [...childLimits, command, ...args], { stdio: [fd, "pipe", "pipe"], env: toolEnvironment() }); }
+    finally { closeSync(fd); }
     const output: Buffer[] = []; let size = 0, failure: string | undefined;
     const stop = (reason: string) => { failure ??= reason; child.kill("SIGKILL"); };
     const timeout = setTimeout(() => stop("Image validation timed out"), options.timeoutMs ?? 15000);
@@ -30,15 +55,13 @@ export function runImageTool(command: string, args: readonly string[], input: Ui
     options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) abort();
     child.on("error", () => { failure ??= "Image validator is unavailable"; });
-    child.stdout.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 1024 * 1024) stop("Image validator output exceeded limit"); else output.push(chunk); });
-    child.stderr.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 1024 * 1024) stop("Image validator output exceeded limit"); });
-    child.stdin.on("error", () => { /* A failed decoder may close its input early. */ });
+    child.stdout!.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 1024 * 1024) stop("Image validator output exceeded limit"); else output.push(chunk); });
+    child.stderr!.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 1024 * 1024) stop("Image validator output exceeded limit"); });
     child.on("close", code => {
       clearTimeout(timeout); options.signal?.removeEventListener("abort", abort);
       if (failure || code !== 0) reject(new UploadError("invalid_attachment", failure ?? "Image decoding failed"));
       else resolve(Buffer.concat(output).toString("utf8"));
     });
-    child.stdin.end(input);
   });
 }
 
