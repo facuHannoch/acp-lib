@@ -126,7 +126,9 @@ records. Current visibility is checked for every retrieval page.
 
 ## Compatibility and verification
 
-No existing operator IDs or archive data change. Tool names become reserved;
+No existing operator IDs or archive data change. Older strict configuration
+readers reject saved configurations containing the new `timelineTools` key.
+Tool names become reserved;
 explicit enablement and policy determine offers. No cross-channel privacy is
 introduced. Conformance covers both adapters with matching, ranking, caps and
 Unicode; point reads, frozen window paging, reopen, migration and archive;
