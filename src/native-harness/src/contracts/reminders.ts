@@ -125,8 +125,10 @@ export interface ReminderClock {
 
 /** Portable reminder state in logical archive 6. High water is derived from retained receipts. */
 export interface ReminderArchiveState {
-  rows: Array<{ sequence: number; reminder: OneOffReminder; original?: string; defaultedExpiry: boolean }>;
-  receipts: Array<{ fingerprint: string; result: OneOffReminderChangeResult }>;
+  dispositions?: Array<Extract<ReminderChannelEvent, { type: "routine_disposition" | "routine_migration_blocked" }>>;
+  guard?: { limit: number; counters: Array<{ channel: string; spent: number }> };
+  rows: Array<{ sequence: number; reminder: Reminder; processedThrough?: number; episodeCutoff?: number; coalescedPending?: number; original?: string; defaultedExpiry: boolean }>;
+  receipts: Array<{ fingerprint: string; result: ReminderChangeResult }>;
   listingRevision: number;
   wake: ReminderWake;
 }

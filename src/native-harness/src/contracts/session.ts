@@ -113,8 +113,8 @@ export interface PersistentSessionOptions {
 /** Creating the session executes nothing: it can be inspected, loaded and
  * exported first. Opening, starting and resuming are separate actions. */
 export interface PersistentSession {
-  reminders?: Pick<SessionStorage, "readReminder" | "listReminders" | "reminderWake"> & {
-    change(change: import("./reminders.ts").OneOffReminderChange): ReturnType<SessionStorage["changeReminder"]>;
+  reminders?: Pick<SessionStorage, "readReminder" | "listReminders" | "reminderWake" | "unattendedGuard"> & {
+    change(change: import("./reminders.ts").ReminderChange): ReturnType<SessionStorage["changeReminder"]>;
     processStartup(): void;
     releaseTimer(): void;
     executable(): boolean;

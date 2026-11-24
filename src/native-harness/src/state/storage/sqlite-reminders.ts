@@ -1,13 +1,16 @@
 import type { Database } from "bun:sqlite";
-import type { OneOffReminder, ReminderWake } from "../../contracts/reminders.ts";
+import type { Reminder, ReminderWake } from "../../contracts/reminders.ts";
 import type { ReminderReceipt } from "./reminder-change.ts";
 import type { ReminderRow, ReminderTables } from "./reminder-tables.ts";
 
 type Saved = { creation_seq: number; json: string; original: string | null; defaulted_expiry: number };
-const decode = (row: Saved): ReminderRow => ({
-  sequence: row.creation_seq, defaultedExpiry: row.defaulted_expiry === 1, reminder: JSON.parse(row.json) as OneOffReminder,
+const decode = (row: Saved): ReminderRow => {
+  const { _routineCursor, ...reminder } = JSON.parse(row.json) as Reminder & { _routineCursor?: Pick<ReminderRow, "processedThrough" | "episodeCutoff" | "coalescedPending"> };
+  return ({
+  sequence: row.creation_seq, defaultedExpiry: row.defaulted_expiry === 1, reminder, ..._routineCursor,
   ...(row.original === null ? {} : { original: row.original }),
-});
+  });
+};
 
 export function sqliteReminderTables(db: Database): ReminderTables {
   // Keep probes lazy. Creating or reading a format-6 session changes no reminder schema.
@@ -48,8 +51,40 @@ export function sqliteReminderTables(db: Database): ReminderTables {
         INSERT INTO reminder_metadata VALUES (1, 0, 0, NULL);
       `);
     },
+    recordDisposition(event) {
+      db.exec("CREATE TABLE IF NOT EXISTS routine_dispositions (json TEXT NOT NULL)");
+      execute("INSERT INTO routine_dispositions VALUES (?)", [JSON.stringify(event)], "run");
+    },
+    activeRoutines(channel) {
+      return !active() ? 0 : execute<{ count: number }>(`SELECT count(*) AS count FROM reminder_rows
+        WHERE channel = ? AND json_extract(json, '$.state') = 'active' AND json_extract(json, '$.missedRuns') IS NOT NULL`, [channel], "get").count;
+    },
+    guardLimit() {
+      if (!active() || !execute("SELECT 1 FROM sqlite_schema WHERE name = 'routine_guard'", [], "get")) return;
+      return execute<{ max_turns: number }>("SELECT max_turns FROM routine_guard", [], "get").max_turns;
+    },
+    bindGuard(limit) {
+      this.activate();
+      db.exec(`CREATE INDEX IF NOT EXISTS routine_notice_sources ON items(channel_id, external_source) WHERE kind = 'external_notice';
+        CREATE TABLE routine_guard (max_turns INTEGER NOT NULL);
+        CREATE TABLE routine_guard_channels (channel TEXT PRIMARY KEY, spent INTEGER NOT NULL) WITHOUT ROWID`);
+      execute("INSERT INTO routine_guard VALUES (?)", [limit], "run");
+    },
+    guardSpent(channel) {
+      return execute<{ spent: number } | null>("SELECT spent FROM routine_guard_channels WHERE channel = ?", [channel], "get")?.spent ?? 0;
+    },
+    setGuardSpent(channel, spent) {
+      execute(`INSERT INTO routine_guard_channels VALUES (?, ?)
+        ON CONFLICT(channel) DO UPDATE SET spent = excluded.spent`, [channel, spent], "run");
+    },
     archive() {
+      const limit = this.guardLimit();
+      const hasDispositions = active() && execute("SELECT 1 FROM sqlite_schema WHERE name = 'routine_dispositions'", [], "get");
       return {
+        ...(hasDispositions ? { dispositions: execute<Array<{ json: string }>>("SELECT json FROM routine_dispositions ORDER BY rowid", [], "all")
+          .map(row => JSON.parse(row.json)) } : {}),
+        ...(limit === undefined ? {} : { guard: { limit,
+          counters: execute<Array<{ channel: string; spent: number }>>("SELECT channel, spent FROM routine_guard_channels ORDER BY channel", [], "all") } }),
         rows: execute<Saved[]>("SELECT creation_seq, json, original, defaulted_expiry FROM reminder_rows ORDER BY creation_seq", [], "all").map(decode),
         receipts: execute<Array<{ json: string }>>("SELECT json FROM reminder_receipts ORDER BY reminder_id, change_id", [], "all")
           .map(row => JSON.parse(row.json) as ReminderReceipt),
@@ -58,6 +93,11 @@ export function sqliteReminderTables(db: Database): ReminderTables {
     },
     restore(saved) {
       this.activate();
+      for (const disposition of saved.dispositions ?? []) this.recordDisposition(disposition);
+      if (saved.guard) {
+        this.bindGuard(saved.guard.limit);
+        for (const { channel, spent } of saved.guard.counters) this.setGuardSpent(channel, spent);
+      }
       for (const row of saved.rows) this.put(row);
       for (const receipt of saved.receipts) this.saveReceipt(receipt);
       this.setWake(saved.wake);
@@ -73,7 +113,7 @@ export function sqliteReminderTables(db: Database): ReminderTables {
           (SELECT CASE WHEN lifecycle = 'open' THEN ? END FROM channels WHERE channel_id = ?))
         ON CONFLICT(reminder_id) DO UPDATE SET due_at = excluded.due_at, runnable_at = excluded.runnable_at, json = excluded.json, defaulted_expiry = excluded.defaulted_expiry`, [
         row.reminder.id, row.sequence, row.reminder.channel, row.reminder.nextRunAt,
-        row.original ?? null, JSON.stringify(row.reminder), row.defaultedExpiry ? 1 : 0, row.reminder.nextRunAt, row.reminder.channel,
+        row.original ?? null, JSON.stringify({ ...row.reminder, ...(row.processedThrough === undefined ? {} : { _routineCursor: { processedThrough: row.processedThrough, episodeCutoff: row.episodeCutoff, coalescedPending: row.coalescedPending } }) }), row.defaultedExpiry ? 1 : 0, row.reminder.nextRunAt, row.reminder.channel,
       ], "run");
       execute("UPDATE reminder_metadata SET listing_revision = listing_revision + 1", [], "run");
     },
@@ -114,11 +154,11 @@ export function sqliteReminderTables(db: Database): ReminderTables {
           AND creation_seq > ? ${channel === undefined ? "" : "AND channel = ?"} ORDER BY creation_seq LIMIT ?`,
       channel === undefined ? [after, limit] : [after, channel, limit], "all").map(decode);
     },
-    eligible(through, limit) {
+    eligible(through, limit, heldChannels = []) {
       if (!active()) return [];
       return execute<Saved[]>(`SELECT r.creation_seq, r.json, r.original, r.defaulted_expiry FROM reminder_rows r
-        WHERE r.runnable_at <= ?
-        ORDER BY r.runnable_at, r.creation_seq LIMIT ?`, [through ?? "9999-12-31T23:59:59.999Z", limit], "all").map(decode);
+        WHERE r.runnable_at <= ? AND (json_extract(json,'$.missedRuns') IS NULL OR channel NOT IN (SELECT value FROM json_each(?)))
+        ORDER BY r.runnable_at, r.creation_seq LIMIT ?`, [through ?? "9999-12-31T23:59:59.999Z", JSON.stringify(heldChannels), limit], "all").map(decode);
     },
     listingRevision() {
       return active() ? execute<{ listing_revision: number }>("SELECT listing_revision FROM reminder_metadata", [], "get").listing_revision : 0;

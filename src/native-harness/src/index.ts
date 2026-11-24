@@ -1,4 +1,4 @@
-import { executeReminderTool, isReminderTool, reminderAction, reminderDefinitions } from "./capabilities/tools/reminders/index.ts";
+import { guardedReminderDefinitions, executeReminderTool, isReminderTool, reminderAction, reminderDefinitions } from "./capabilities/tools/reminders/index.ts";
 import { createReminderRuntime } from "./runtime/reminders.ts";
 import { wallReminderClock } from "./runtime/reminder-timer.ts";
 import type { ReminderSessionEvent } from "./contracts/reminders.ts";
@@ -63,6 +63,9 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   const read = () => { const view = store.snapshot(); if (!view.ok) throw new Error(view.error.message); return view.value; };
   // Every published event follows a commit, so it is also the moment the
   // timeline projection may have changed.
+  const unattended = store.unattendedGuard();
+  if (!unattended.ok) throw new Error(unattended.error.message);
+  const sessionReminderDefinitions = unattended.value === undefined ? reminderDefinitions : guardedReminderDefinitions;
   const identity = store.readSession();
   if (!identity.ok) throw new Error(identity.error.message);
   const context = createSessionContext(store, identity.value.sessionId, options.systemPrompt, CONTEXT_LIMITS, options.captureContext);
@@ -109,7 +112,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
     const offer = (policies: readonly string[]): { tools: ToolDefinition[]; fixedToolCount?: number } => {
       const allowed = <T extends ToolDefinition>(tools: readonly T[]) => tools.filter(tool => toolDecision(config, policies, tool.name) !== "deny");
       const definition = ({ name, description, parameters }: ToolDefinition): ToolDefinition => ({ name, description, parameters });
-      const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel" && !isTimelineTool(tool.name) && !isReminderTool(tool.name)), notifyChannelDefinition, ...reminderDefinitions,
+      const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel" && !isTimelineTool(tool.name) && !isReminderTool(tool.name)), notifyChannelDefinition, ...sessionReminderDefinitions,
         ...((owner.value === undefined ? options.timelineTools : config.timelineTools) ? timelineDefinitions : [])]);
       if (!catalog) { offered = new Set(builtins.map(tool => tool.name)); return { tools: [...builtins] }; }
       const available = catalog.offered();
@@ -295,6 +298,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
     ...(tools ? { tools } : {}),
     reminders: {
       readReminder: id => store.readReminder(id), listReminders: params => store.listReminders(params),
+      unattendedGuard: () => store.unattendedGuard(),
       reminderWake: () => store.reminderWake(), change: change => reminderRuntime.change(change),
       executable: reminderExecutable, processStartup, releaseTimer: reminderRuntime.stop, subscribeWake: reminderWakeEvents.subscribe,
       conditionalStop(windowMs) {

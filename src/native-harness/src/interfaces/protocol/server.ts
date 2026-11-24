@@ -17,7 +17,7 @@ import { ToolFault, createCallbackBridge, isToolMethod, toolMethods, toolRequest
 
 import { parseReminderBatch, parseReminderChange, parseReminderList, ReminderShapeError } from "../../runtime/reminder-validation.ts";
 import { REMINDER_LIMITS } from "../../util/reminder-schedule.ts";
-import type { OneOffReminderChange, OneOffReminderChangeResult, ReminderSessionEvent } from "../../contracts/reminders.ts";
+import type { ReminderChange, ReminderChangeResult, ReminderSessionEvent } from "../../contracts/reminders.ts";
 
 class Fault extends Error {
   constructor(readonly tag: string, message: string, readonly rpc = -32602) { super(message); }
@@ -73,13 +73,13 @@ function count(value: unknown, fallback: number): number {
  * advertised only when its sessions are opened from durable storage. */
 export function describe(durable: boolean, archives = false, functions = false): Description {
   return {
-    reminderLimits: REMINDER_LIMITS,
+    reminderLimits: { ...REMINDER_LIMITS, maxActiveRoutinesPerChannel: 20, maxRoutineCatchUp: 10 },
     configOptions: [], commands: [], policies: [],
-    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, reminders: true, ...(functions ? { functions: true as const } : {}),
+    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, reminders: true, routines: true, unattendedTurnGuard: true, ...(functions ? { functions: true as const } : {}),
       methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/open"] : []), ...operatorMethods, "session/status", "reminder/change", "reminder/get", "reminder/list",
         "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/notify", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
         ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? toolMethods() : [])],
-      events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "approval_closed", "reminder_changed", "reminder_fired", "reminder_expired", "reminder_cancelled", "session/event"] },
+      events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "approval_closed", "reminder_changed", "reminder_fired", "reminder_expired", "reminder_cancelled", "routine_disposition", "routine_migration_blocked", "session/event"] },
   };
 }
 
@@ -94,7 +94,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   // Decision 0020: the batch this connection's open applied, kept so a repeated
   // load reports the same results without applying anything again.
   let startup: { batch: PendingChannelChange[]; results: ChannelChangeResult[] } | undefined;
-  let reminderStartup: { batch: OneOffReminderChange[]; results: OneOffReminderChangeResult[] } | undefined;
+  let reminderStartup: { batch: ReminderChange[]; results: ReminderChangeResult[] } | undefined;
   let activeConfig: ProtocolConfig | undefined;
   let subscription: Subscription = { text: "final", tools: "full" };
   const listeners = new Set<(notification: RpcNotification) => void>();
@@ -188,15 +188,17 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     }, 0);
   }
 
-  function reminderView(session: PersistentSession, results: OneOffReminderChangeResult[] = []) {
+  function reminderView(session: PersistentSession, results: ReminderChangeResult[] = []) {
     const reminders = session.reminders;
     if (!reminders) return {};
     const page = readValue(reminders.listReminders({})).value;
+    const guard = reminders.executable() ? readValue(reminders.unattendedGuard()).value : undefined;
     return { reminderChanges: results, reminders: page.reminders, ...(page.next ? { remindersNext: page.next } : {}),
-      ...(reminders.executable() ? readValue(reminders.reminderWake()).value : {}) };
+      ...(reminders.executable() ? readValue(reminders.reminderWake()).value : {}),
+      ...(reminders.executable() ? { unattendedTurnGuard: guard === undefined ? null : { maxConsecutiveTurns: guard } } : {}) };
   }
 
-  function prepareReminders(session: PersistentSession, batch: OneOffReminderChange[]) {
+  function prepareReminders(session: PersistentSession, batch: ReminderChange[]) {
     const reminders = session.reminders;
     if (batch.length && !reminders?.executable()) throw new Fault("incompatible", "Reminders cannot change in an inspection-only session");
     const results = batch.map(change => readValue(reminders!.change(change)).value);
@@ -321,7 +323,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
       else return bad("Import source must be a path or a transfer");
       const payload = decodeArchive(bytes, limits.maxBytes) as SessionFilePayload<SessionArchive>;
-      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6].includes(payload.archive?.archiveVersion))
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6, 7].includes(payload.archive?.archiveVersion))
         throw new Fault("invalid_archive", "Invalid session file payload");
       try { validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { throw new Fault("invalid_archive", String(error)); }
       const sessionId = p.sessionId ?? payload.archive?.snapshot?.session?.sessionId;

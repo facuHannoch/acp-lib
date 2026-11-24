@@ -1,3 +1,4 @@
+import { bindUnattendedGuard, checkUnattendedGuard } from "./engine.ts";
 import { emptyMemoryReminders, memoryReminderTables, type MemoryReminderState } from "./memory-reminders.ts";
 import { historicalCandidate, historicalRetrievalProjection, retrievalMessage, timelineTokens, timelineBytes } from "../../util/timeline-text.ts";
 import { byteLength, entryOverhead, type ContextRow } from "./inference.ts";
@@ -184,6 +185,11 @@ function memoryTables(data: Data): Tables {
         log(() => { namesForUndo.delete(name); });
       }
     },
+    hasOpenRoutineNotice: (channelId, source) => [...data.items.values()].some(item => {
+      if (item.channelId !== channelId || item.externalSource !== source || item.kind !== "external_notice") return false;
+      const status = item.turnId === undefined ? undefined : data.turns.get(item.turnId)?.state.status;
+      return item.milestone === "received" || status === "running" || status === "suspended";
+    }),
     pendingItems: (channelId, limit) => copy([...data.items.values()].filter(item => item.channelId === channelId && item.milestone === "received")
       .sort((a, b) => a.acceptedSeq - b.acceptedSeq).slice(0, limit ?? Infinity)),
     itemsOfTurn: turnId => copy([...data.items.values()].filter(item => item.turnId === turnId).sort((a, b) => a.entrySeq! - b.entrySeq!)),
@@ -320,9 +326,16 @@ export function createMemoryStorageAdapter(): SessionStorageAdapter {
           checkScriptIdentity(data.meta.compatibilityKey, options.requiredScriptDigest);
         }
         const tables = memoryTables(data);
-        if (referencesCompatible(tables, config)) recover(tables);
+        const reminderEvents: NonNullable<Parameters<typeof recover>[2]> = [];
+        tables.transaction(() => {
+          checkUnattendedGuard(tables, config?.limits?.unattendedTurns);
+          if (referencesCompatible(tables, config)) {
+            recover(tables, undefined, reminderEvents);
+            bindUnattendedGuard(tables, config?.limits?.unattendedTurns);
+          }
+        });
         owned = true;
-        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { owned = false; }, config), revision: data.meta.revision };
+        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { owned = false; }, config, false, reminderEvents), revision: data.meta.revision };
       } catch (error) { return failure(error); }
     },
     importArchive(raw, options) {

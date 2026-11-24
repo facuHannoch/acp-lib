@@ -108,7 +108,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const opened = adapter.open({ mode, identity: { sessionId, compatibilityKey }, config, requiredScriptDigest: script?.modelDigest });
     if (!opened.ok) {
       const code = opened.error.code;
-      throw new SessionOpenError(code === "not_found" || code === "already_exists" || code === "owner_conflict" || code === "incompatible" ? code : "storage_failure", opened.error.message);
+      throw new SessionOpenError(code === "not_found" || code === "already_exists" || code === "owner_conflict" || code === "incompatible" || code === "invalid_config" ? code : "storage_failure", opened.error.message);
     }
     const storage = options.fault || options.snapshotLog ? withFaults(opened.value, point => {
       if (point === "snapshot" && options.snapshotLog) appendFileSync(options.snapshotLog, "snapshot\n");

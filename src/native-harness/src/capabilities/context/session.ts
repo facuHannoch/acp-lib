@@ -1,3 +1,4 @@
+import { SESSION_INTAKE_LIMITS } from "../../util/intake.ts";
 import { isTimelineTool } from "../../util/timeline-tool-names.ts";
 import type { ContextLimits, InferenceContext, InferenceStorageReads, ContextBuildResult, ContextCapture, ContextTurnOutcome } from "../../contracts/context.ts";
 import { SESSION_INPUT_MAX_BYTES } from "../../contracts/input-limits.ts";
@@ -7,7 +8,7 @@ import { buildContext } from "./build.ts";
 import { composeSystemPrompt } from "./load-instructions.ts";
 
 export const CONTEXT_LIMITS: ContextLimits = {
-  maxInputBytes: SESSION_INPUT_MAX_BYTES, maxTakenTextBytes: SESSION_INPUT_MAX_BYTES, maxTakenItems: 16,
+  maxInputBytes: SESSION_INPUT_MAX_BYTES, ...SESSION_INTAKE_LIMITS,
   maxReadBytes: 256 * 1024, maxReadRecords: 64, maxSharedCandidates: 128,
   contextTokens: 16_384, outputReserveTokens: 2048, estimationMarginTokens: 1024,
 };
