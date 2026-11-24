@@ -139,3 +139,141 @@ test("joint no-guard open holds a routine create and the live harness records it
     expect(await channel.reminders.get(item.id)).toMatchObject({ state: "blocked", reason: "unattended_guard_required" });
   } finally { await s.rig.clean(); }
 }, 15_000);
+
+test("joint production launcher delivers each missed and coalesced disposition once", async () => {
+  const s = await routineRig();
+  s.guard(4);
+  try {
+    const agent = await s.rig.open();
+    const skipped = await s.conversation(agent);
+    const merged = await s.conversation(agent);
+    const skippedEvents = s.rig.watch(skipped);
+    const mergedEvents = s.rig.watch(merged);
+    const host = agent.nativeHarness!;
+    await host.start();
+    const timing = { every: interval, count: 4, startAt: s.clock.time + interval * 2 };
+    const skip = await skipped.reminders.create({ text: "skip", schedule: timing, missedRuns: "skip" });
+    const merge = await merged.reminders.create({ text: "merge", schedule: timing, missedRuns: "coalesce" });
+    const due = timing.startAt;
+    expect(skip.nextRunAt).toBe(due);
+    expect(merge.nextRunAt).toBe(due);
+    await host.stop();
+    s.at(due + interval + 120_000);
+    await host.start();
+    await until(() => skippedEvents.some(event => event.kind === "routine_disposition") &&
+      mergedEvents.some(event => event.kind === "reminder_fired"), "real routine notifications through production launcher");
+    await host.reminderSync!.settled();
+    const disposition = (id: string, reason: string, count: number, last: number) => ({
+      kind: "routine_disposition", reminderId: id, firstScheduledAt: iso(due),
+      lastScheduledAt: iso(last), reason, count,
+    });
+    expect(skippedEvents.filter(event => event.kind === "routine_disposition")).toEqual([disposition(skip.id, "missed", 2, due + interval)]);
+    expect(mergedEvents.filter(event => event.kind === "routine_disposition")).toEqual([disposition(merge.id, "coalesced", 2, due + interval)]);
+    expect(mergedEvents.filter(event => event.kind === "reminder_fired").map(event => event.noticeId)).toEqual([notice(merge.id, due + interval)]);
+    expect(skippedEvents.filter(event => event.kind === "reminder_fired")).toEqual([]);
+    const rows = await agent.persistence.reminders!.list();
+    for (const id of [skip.id, merge.id]) expect(rows.find(row => row.id === id)?.confirmed)
+      .toMatchObject({ remainingCount: 2, nextRunAt: due + interval * 2, status: "active" });
+  } finally { await s.rig.clean(); }
+}, 15_000);
+
+test("joint expired dispositions refresh both an active routine and its final terminal row", async () => {
+  const s = await routineRig();
+  s.guard(4);
+  s.observeRpc();
+  try {
+    const agent = await s.rig.open();
+    const channel = await s.conversation(agent);
+    const events = s.rig.watch(channel);
+    const host = agent.nativeHarness!;
+    await host.start();
+    const item = await channel.reminders.create({ text: "short grace", schedule: { every: interval, count: 3 }, expiresAfter: 300_000 });
+    const due = item.nextRunAt!;
+    const dispositions = () => events.filter(event => event.kind === "routine_disposition");
+    for (const [at, count, remaining] of [[due + interval + 300_000, 2, 1], [due + interval * 2 + 300_000, 1, 0]] as const) {
+      await host.stop();
+      s.at(at);
+      await host.start();
+      const index = count === 2 ? 0 : 1;
+      await until(() => dispositions().length > index, "expired routine disposition");
+      await host.reminderSync!.settled();
+      expect(dispositions()[index]).toMatchObject({ reminderId: item.id, reason: "expired", count });
+      expect(s.gets.filter(id => id === item.id)).toHaveLength(index + 1);
+      expect((await agent.persistence.reminders!.list())[0]?.confirmed).toMatchObject({
+        status: remaining ? "active" : "completed", remainingCount: remaining, nextRunAt: remaining ? due + interval * 2 : null,
+      });
+    }
+    expect(dispositions()).toHaveLength(2);
+    expect(events.filter(event => event.kind === "reminder_expired" || event.kind === "reminder_fired")).toEqual([]);
+  } finally { await s.rig.clean(); }
+}, 15_000);
+
+test("joint overlap skip recovers the first committed notice after a harness crash", async () => {
+  const s = await routineRig();
+  s.guard(4);
+  s.observeRpc();
+  try {
+    const agent = await s.rig.open();
+    const channel = await s.conversation(agent);
+    const events = s.rig.watch(channel);
+    const host = agent.nativeHarness!;
+    await host.start();
+    const item = await channel.reminders.create({ text: "overlap", overlap: "skip", schedule: { every: interval, count: 2 } });
+    const first = item.nextRunAt!;
+    await host.stop();
+    s.at(first);
+    s.rig.env.HARNESS_TEST_FAULT = "fireDueReminders:1";
+    await expect(host.start()).rejects.toMatchObject({ code: "transport_closed" });
+    delete s.rig.env.HARNESS_TEST_FAULT;
+    s.at(first + interval);
+    await host.start();
+    await until(() => events.some(event => event.kind === "routine_disposition"), "overlap disposition after recovery");
+    expect(events.filter(event => event.kind === "routine_disposition")).toEqual([{
+      kind: "routine_disposition", reason: "overlap", reminderId: item.id, count: 1,
+      firstScheduledAt: iso(first + interval), lastScheduledAt: iso(first + interval),
+    }]);
+    expect((await s.client.reconcileChannel({ channel: channel.id, itemIds: [notice(item.id, first), notice(item.id, first + interval)] })).items
+      .map(row => row.id)).toEqual([notice(item.id, first)]);
+    expect(await channel.reminders.get(item.id)).toMatchObject({ status: "completed", remainingCount: 0, nextRunAt: null });
+  } finally { await s.rig.clean(); }
+}, 15_000);
+
+test("joint production launcher delivers a timezone migration hold once and caches its blocked row", async () => {
+  const s = await routineRig();
+  s.guard(4);
+  try {
+    const agent = await s.rig.open();
+    const channel = await s.conversation(agent);
+    const events = s.rig.watch(channel);
+    const host = agent.nativeHarness!;
+    await host.start();
+    const item = await channel.reminders.create({ text: "migrate", schedule: { cron: "0 13 * * *", timezone: "Etc/UTC", count: 2 } });
+    expect(item.state).toBe("confirmed");
+    const targetVersion = item.timezoneVersion!;
+    await host.stop();
+    // Seed a row from older timezone data in the disposable harness database.
+    const paths = Array.from(new Bun.Glob("**/session.sqlite").scanSync({ cwd: s.rig.home, absolute: true }));
+    expect(paths).toHaveLength(1);
+    {
+      using db = new Database(paths[0]!);
+      db.query(`UPDATE reminder_rows SET json = json_set(json, '$.timezoneVersion', '0000a',
+        '$.schedule.timezone', 'Unavailable/Legacy') WHERE reminder_id = ?`).run(item.id);
+    }
+    await host.start();
+    await until(() => events.some(event => event.kind === "routine_migration_blocked"), "production migration event");
+    await host.reminderSync!.settled();
+    const holds = () => events.filter(event => event.kind === "routine_migration_blocked");
+    expect(holds()).toEqual([{
+      kind: "routine_migration_blocked", reminderId: item.id, fromVersion: "0000a", targetVersion, cause: "invalid_schedule",
+    }]);
+    expect((await agent.persistence.reminders!.list())[0]?.confirmed).toMatchObject({
+      status: "blocked", blockedReason: "invalid_schedule", timezoneVersion: "0000a",
+      timezoneMigration: { fromVersion: "0000a", targetVersion, cause: "invalid_schedule" },
+      remainingCount: 2, nextRunAt: null,
+    });
+    await host.stop();
+    await host.start();
+    await host.reminderSync!.settled();
+    expect(holds()).toHaveLength(1);
+  } finally { await s.rig.clean(); }
+}, 15_000);
