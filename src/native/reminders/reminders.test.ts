@@ -310,12 +310,12 @@ test("text edits, pause and resume do not drift default expiry", async () => {
 });
 
 test("explicit repeating anchors and expiry lengths enforce acceptance boundaries", () => {
-  for (const startAt of [99_999, 100_000, 219_999]) {
+  for (const startAt of [99_999, 100_000, 699_999]) {
     expect(() => normalizeReminderSchedule({ every: 600_000, startAt }, 100_000))
       .toThrow(expect.objectContaining({ code: "invalid_schedule" }));
   }
-  expect(normalizeReminderSchedule({ every: 600_000, startAt: 220_000 }, 100_000))
-    .toEqual({ every: 600_000, startAt: 220_000 });
+  expect(normalizeReminderSchedule({ every: 600_000, startAt: 700_000 }, 100_000))
+    .toEqual({ every: 600_000, startAt: 700_000 });
   for (const duration of [-1, 0]) {
     expect(() => reminderExpiryPolicy(duration)).toThrow(expect.objectContaining({ code: "invalid_input" }));
   }

@@ -1,5 +1,8 @@
+import { isRoutineSchedule } from "./routine-schedule.ts";
+import type { ReminderWireChange as WireChange, ReminderWireRow, RoutineChange } from "./routine-wire.ts";
+import { normalizeReminderSchedule } from "./schedule.ts";
 import type {
-  ChannelEvent, HarnessClient, Reminder as HarnessReminder, ReminderChange as WireChange,
+  ChannelEvent, HarnessClient, ReminderChange as OneOffChange,
   ReminderChangeResult, ReminderSessionEvent,
 } from "../../native-harness/src/client.ts";
 import type { Reminder, ReminderChange } from "../../persistence/reminders.ts";
@@ -11,11 +14,13 @@ type WithKind<Event extends { type: string }> = Event extends unknown
   ? Omit<Event, "type"> & { kind: Event["type"] }
   : never;
 
-export type WireReminderEvent = WithKind<HarnessReminderEvent>;
+export type WireReminderEvent = WithKind<Exclude<HarnessReminderEvent, { type: "reminder_changed" }>>
+  | { kind: "reminder_changed"; reminder: ReminderWireRow };
+type PublicWireRow<Row> = Row extends unknown ? Omit<Row, "blockedReason"> & { blockedReason?: string } : never;
 // Keep future block reasons representable in the library's public event.
 export type ConsumerReminderEvent = Exclude<WireReminderEvent, { kind: "reminder_changed" }> | (
   Omit<Extract<WireReminderEvent, { kind: "reminder_changed" }>, "reminder"> & {
-    reminder: Omit<HarnessReminder, "blockedReason"> & { blockedReason?: string };
+    reminder: PublicWireRow<ReminderWireRow>;
   }
 );
 export type KnownReminderBlockReason = Extract<ReminderChangeResult, { outcome: "blocked" }>["reason"];
@@ -37,13 +42,13 @@ export function negotiatedLimits(value: Partial<NonNullable<HarnessDescription["
   };
 }
 
-export function reminderRequest(change: ReminderChange, limits = defaultReminderLimits): WireChange {
+export function oneOffReminderRequest(change: ReminderChange, limits = defaultReminderLimits): OneOffChange {
   const { id, conversationId, text, schedule, expiryPolicy, status, policyNames, scheduleAcceptedAt } = change.reminder;
   const includes = (field: NonNullable<ReminderChange["fields"]>[number]) =>
     change.op === "create" || (change.op === "update" && change.fields?.includes(field) === true);
   if (typeof id !== "string" || !id.trim() || !Number.isSafeInteger(change.changeId) || change.changeId < 1) throw new Error("Invalid reminder identity");
   const identity = { reminderId: id, changeId: change.changeId };
-  if (change.op === "cancel") return { ...identity, op: "cancel", payload: {} } satisfies WireChange;
+  if (change.op === "cancel") return { ...identity, op: "cancel", payload: {} } satisfies OneOffChange;
   if (!("at" in schedule)) throw new ReminderError("routines_unavailable", "Routine reminders are unavailable");
   const anchor = scheduleAcceptedAt ?? change.acceptedAt;
   if (includes("schedule") && (!Number.isSafeInteger(anchor) || !Number.isSafeInteger(schedule.at)
@@ -66,31 +71,91 @@ export function reminderRequest(change: ReminderChange, limits = defaultReminder
     return { ...identity, op: "create", payload: {
       channel: conversationId, text, ...schedulePatch(), ...grace,
       ...(policyNames === undefined ? {} : { policyNames: [...policyNames] }),
-    } } satisfies WireChange;
+    } } satisfies OneOffChange;
   }
   const patch = {
     ...(includes("text") ? { text } : {}),
     ...(includes("status") && (status === "active" || status === "paused") ? { state: status } : {}),
     ...grace,
   };
-  if (includes("schedule")) return { ...identity, op: "update", payload: { ...patch, ...schedulePatch() } } satisfies WireChange;
+  if (includes("schedule")) return { ...identity, op: "update", payload: { ...patch, ...schedulePatch() } } satisfies OneOffChange;
   if (Object.keys(patch).length === 0) throw new Error("Empty reminder update");
-  return { ...identity, op: "update", payload: patch } satisfies WireChange;
+  return { ...identity, op: "update", payload: patch } satisfies OneOffChange;
+}
+
+export function reminderRequest(change: ReminderChange, limits = defaultReminderLimits): WireChange {
+  const { id: reminderId, conversationId: channel, text, schedule, scheduleAcceptedAt, status, policyNames,
+    expiryPolicy, missedRuns, overlap } = change.reminder;
+  if (!isRoutineSchedule(schedule) || change.op === "cancel") return oneOffReminderRequest(change, limits);
+  const identity = { reminderId, changeId: change.changeId };
+  if (!reminderId.trim() || !Number.isSafeInteger(change.changeId) || change.changeId < 1) throw new Error("Invalid reminder identity");
+  const fields = change.fields ?? [];
+  const create = change.op === "create";
+  const include = (field: typeof fields[number]) => create || fields.includes(field);
+  if (include("text") && !text.trim()) throw new Error("Invalid reminder text");
+  if (create && (!channel.trim() || (policyNames && (
+    new Set(policyNames).size !== policyNames.length || policyNames.some(name => typeof name !== "string" || !name.trim())
+  )))) throw new Error("Invalid reminder destination or policies");
+  const anchor = scheduleAcceptedAt ?? change.acceptedAt;
+  const schedulePatch = () => {
+    normalizeReminderSchedule(schedule, anchor, limits);
+    const bound = schedule.count !== undefined ? { count: schedule.count }
+      : schedule.until !== undefined ? { until: new Date(schedule.until).toISOString() } : {};
+    const wireSchedule = "every" in schedule
+      ? { every: schedule.every, startAt: new Date(schedule.startAt).toISOString(), ...bound }
+      : { cron: schedule.cron, timezone: schedule.timezone, ...bound };
+    return { schedule: wireSchedule, acceptedAt: new Date(anchor).toISOString() };
+  };
+  const expiresAfter = expiryPolicy.kind === "duration" ? expiryPolicy.milliseconds : expiryPolicy.kind === "unlimited" ? null : undefined;
+  if (include("expiry") && typeof expiresAfter === "number" &&
+    (!Number.isSafeInteger(expiresAfter) || expiresAfter < limits.minGraceMs || expiresAfter > limits.maxGraceMs)) {
+    throw new Error("Invalid reminder grace");
+  }
+  const options = {
+    ...(include("expiry") && expiresAfter !== undefined ? { expiresAfter } : {}),
+    ...(include("missedRuns") && missedRuns !== undefined ? { missedRuns } : {}),
+    ...(include("overlap") && overlap !== undefined ? { overlap } : {}),
+  };
+  if (create) return { ...identity, op: "create", payload: {
+    channel, text, ...schedulePatch(), ...options,
+    ...(policyNames ? { policyNames: [...policyNames] } : {}),
+  } } satisfies RoutineChange;
+  if (include("status") && status !== "active" && status !== "paused") throw new Error("Invalid routine state");
+  const patch = {
+    ...(include("text") ? { text } : {}),
+    ...(include("status") && (status === "active" || status === "paused") ? { state: status } : {}),
+    ...options,
+  };
+  if (include("schedule")) return { ...identity, op: "update", payload: { ...patch, ...schedulePatch() } } satisfies RoutineChange;
+  if (!Object.keys(patch).length) throw new Error("Empty routine update");
+  return { ...identity, op: "update", payload: patch } satisfies RoutineChange;
 }
 
 export type { WireChange };
 
-export function fromWireReminder(row: HarnessReminder, prior?: Reminder): Reminder {
+export function fromWireReminder(row: ReminderWireRow, prior?: Reminder): Reminder {
   const { id, channel, text, state, policyNames, createdBy, creatorId, lastRunAt, lastOccurrenceId, noticeId, blockedReason } = row;
   return {
     id, conversationId: channel, text, policyNames, createdBy, creatorId, lastOccurrenceId, noticeId, blockedReason,
     status: state === "done" ? "completed" : state,
-    schedule: { at: Date.parse(row.schedule.at) },
+    ...decodeSchedule(row),
     scheduleAcceptedAt: Date.parse(row.acceptedAt),
     expiryPolicy: prior?.expiryPolicy ?? { kind: "unknown" },
     expiry: row.expiresAt === null ? null : { kind: "absolute", at: Date.parse(row.expiresAt), graceMs: row.expiresAfter! },
     nextRunAt: row.nextRunAt == null ? null : Date.parse(row.nextRunAt),
     ...(lastRunAt === undefined ? {} : { lastRunAt: Date.parse(lastRunAt) }),
+  };
+}
+
+function decodeSchedule(row: ReminderWireRow): Pick<Reminder, "schedule" | "remainingCount" | "missedRuns" | "overlap" | "timezoneVersion" | "timezoneMigration"> {
+  if (!("missedRuns" in row)) return { schedule: { at: Date.parse(row.schedule.at) } };
+  const { schedule, remainingCount, missedRuns, overlap, timezoneVersion, timezoneMigration } = row;
+  const bound = schedule.count !== undefined ? { count: schedule.count }
+    : schedule.until !== undefined ? { until: Date.parse(schedule.until) } : {};
+  return {
+    schedule: "every" in schedule ? { every: schedule.every, startAt: Date.parse(schedule.startAt), ...bound }
+      : { cron: schedule.cron, timezone: schedule.timezone, ...bound },
+    remainingCount, missedRuns, overlap, timezoneVersion, timezoneMigration,
   };
 }
 
@@ -118,8 +183,8 @@ export function reminderNotification(value: unknown): ReminderNotification | und
     reminder_expired: ["reminderId", "occurrenceId", "scheduledAt", "expiredAt"],
   };
   if (type === "reminder_changed") {
-    const row = (fields as { reminder?: HarnessReminder }).reminder;
-    if (!row || typeof row.id !== "string" || row.channel !== params.channel || typeof row.schedule?.at !== "string") return;
+    const row = (fields as { reminder?: ReminderWireRow }).reminder;
+    if (!row || typeof row.id !== "string" || row.channel !== params.channel || !(row.schedule && ("at" in row.schedule ? typeof row.schedule.at === "string" : ("every" in row.schedule || "cron" in row.schedule)))) return;
   } else if (fieldsByType[type]!.some(key => typeof (fields as Record<string, unknown>)[key] !== "string")) return;
   return { channel: params.channel, event: { ...fields, kind: type } as WireReminderEvent };
 }

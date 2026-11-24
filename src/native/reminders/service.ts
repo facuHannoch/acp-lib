@@ -1,3 +1,4 @@
+import { isRoutineSchedule, type MissedRuns, type RoutineOverlap } from "./routine-schedule.ts";
 import { SqliteAgentPersistence } from "../../persistence/sqlite-backend.ts";
 import { ReminderWakeSupervisor } from "./supervisor.ts";
 import { ReminderSync } from "./sync.ts";
@@ -15,6 +16,8 @@ export interface ReminderEdit {
   readonly schedule?: ReminderScheduleInput;
   readonly expiresAfter?: number | null;
   readonly policyNames?: readonly string[];
+  readonly missedRuns?: MissedRuns;
+  readonly overlap?: RoutineOverlap;
 }
 
 export interface ReminderCreate extends ReminderEdit {
@@ -36,6 +39,7 @@ export interface ReminderServiceOptions {
   readonly persistence?: PersistenceBackend;
   readonly repository?: ReminderPersistence;
   readonly supported?: () => boolean | undefined;
+  readonly routineUnavailable?: () => string | undefined;
   readonly negotiatedLimits?: () => ReminderLimits | undefined;
   readonly refresh?: (channel?: string, id?: string) => Promise<void>;
   readonly running?: () => boolean;
@@ -97,10 +101,7 @@ export class ReminderService {
     const mutate = async (op: ReminderChange["op"], id: string, edit: ReminderEdit = {}, status?: Reminder["status"]) => {
       check();
       authorize(op);
-      if (edit.schedule && !("at" in edit.schedule) && !("in" in edit.schedule)) {
-        throw new ReminderError("routines_unavailable", "Routine reminders are unavailable");
-      }
-      if (op === "update" && (edit.policyNames !== undefined || (!status && edit.text === undefined && edit.schedule === undefined && edit.expiresAfter === undefined))) {
+      if (op === "update" && (edit.policyNames !== undefined || (!status && edit.text === undefined && edit.schedule === undefined && edit.expiresAfter === undefined && edit.missedRuns === undefined && edit.overlap === undefined))) {
         throw new ReminderError("invalid_input", "Expected a nonempty reminder patch with immutable policies");
       }
       const live = this.options.running?.() ? this.options.live : undefined;
@@ -120,6 +121,22 @@ export class ReminderService {
           throw new ReminderError("conflict", "Reminder already has a cancellation in progress");
         }
         if (op !== "create" && (!existing || (!confirmed && last?.op === "create" && last.state === "blocked"))) throw new ReminderError("not_found", "Reminder was not found");
+        const routine = edit.schedule ? isRoutineSchedule(edit.schedule) : isRoutineSchedule(existing?.schedule);
+        if (op !== "create" && edit.schedule && routine !== isRoutineSchedule(existing?.schedule)) {
+          throw new ReminderError("invalid_schedule", "Reminder schedule kind cannot change");
+        }
+        if (edit.schedule && existing && routine && ("every" in edit.schedule) !== ("every" in existing.schedule)) {
+          throw new ReminderError("invalid_schedule", "Routine schedule kind cannot change");
+        }
+        if (routine && (op === "create" || edit.schedule || status === "active")) {
+          const why = this.options.routineUnavailable ? this.options.routineUnavailable() : "Routine reminders are unavailable";
+          if (why !== undefined) throw new ReminderError("routines_unavailable", why);
+        }
+        if ((!routine && (edit.missedRuns !== undefined || edit.overlap !== undefined)) ||
+          (edit.missedRuns !== undefined && !["coalesce", "skip", "each"].includes(edit.missedRuns)) ||
+          (edit.overlap !== undefined && !["skip", "queue"].includes(edit.overlap))) {
+          throw new ReminderError("invalid_input", "Invalid routine missed-run or overlap policy");
+        }
         if (!live && !repo.durable) {
           throw new ReminderError("reminders_unavailable", "Reminders require a live service or durable persistence");
         }
@@ -136,8 +153,14 @@ export class ReminderService {
         if (!text.trim()) throw new ReminderError("invalid_input", "Reminder text is required");
         const policyNames = edit.policyNames ?? existing?.policyNames;
         const reminder: Reminder = {
+          ...(routine ? previous?.changes.findLast(change => change.state !== "applied")?.reminder ?? confirmed ?? {} : {}),
           id, conversationId, text, schedule, expiry, expiryPolicy, scheduleAcceptedAt,
           status: status ?? existing?.status ?? "active",
+          ...(routine ? {
+            missedRuns: edit.missedRuns ?? existing?.missedRuns ?? "coalesce",
+            overlap: edit.overlap ?? existing?.overlap ?? "skip",
+            ...(edit.schedule ? { remainingCount: "count" in schedule ? schedule.count : undefined } : {}),
+          } : {}),
           ...(policyNames === undefined ? {} : { policyNames }),
         };
         const fields: NonNullable<ReminderChange["fields"]>[number][] = [];
@@ -146,6 +169,8 @@ export class ReminderService {
         if (edit.expiresAfter !== undefined) fields.push("expiry");
         if (status !== undefined) fields.push("status");
         if (edit.policyNames !== undefined) fields.push("policyNames");
+        if (edit.missedRuns !== undefined) fields.push("missedRuns");
+        if (edit.overlap !== undefined) fields.push("overlap");
         const pending = await repo.enqueue({ reminder, acceptedAt, op, fields });
         const outgoing = pending && live ? await repo.markMaybeSent(id, pending.changeId) : pending;
         return { reminder, change: outgoing };

@@ -1,3 +1,5 @@
+import type { MissedRuns, RoutineOverlap } from "../native/reminders/routine-schedule.ts";
+import type { TimezoneMigration } from "../native/reminders/routine-wire.ts";
 import type { WireChange } from "../native/reminders/wire.ts";
 import type { ReminderExpiry, ReminderExpiryPolicy, ReminderSchedule } from "../native/reminders/schedule.ts";
 import { defaultReminderLimits } from "../native/reminders/limits.ts";
@@ -21,6 +23,11 @@ export interface Reminder {
   readonly lastOccurrenceId?: string;
   readonly noticeId?: string;
   readonly blockedReason?: string;
+  readonly remainingCount?: number;
+  readonly missedRuns?: MissedRuns;
+  readonly overlap?: RoutineOverlap;
+  readonly timezoneVersion?: string;
+  readonly timezoneMigration?: TimezoneMigration;
   readonly unreconciled?: boolean;
   readonly missing?: boolean;
 }
@@ -29,7 +36,7 @@ export interface ReminderChangeInput {
   readonly reminder: Reminder;
   readonly acceptedAt: number;
   readonly op: "create" | "update" | "cancel";
-  readonly fields?: readonly ("text" | "schedule" | "expiry" | "status" | "policyNames")[];
+  readonly fields?: readonly ("text" | "schedule" | "expiry" | "status" | "policyNames" | "missedRuns" | "overlap")[];
 }
 
 export interface ReminderChange extends ReminderChangeInput {

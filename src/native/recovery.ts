@@ -1,6 +1,6 @@
 import type { ReminderChange } from "../persistence/reminders.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
-import type { HarnessOpenResult } from "./reminders/wire.ts";
+import { routineTransport, type ReminderWireOpen } from "./reminders/routine-wire.ts";
 import type { ResponseMessage } from "../types.ts";
 import { codeOf } from "./errors.ts";
 import type { HarnessClient, ItemStatus, PendingChannelChange, StoredMessage, TurnStatus } from "../native-harness/src/client.ts";
@@ -60,11 +60,11 @@ export async function openOrCreate(
     signal.throwIfAborted();
     const params = { sessionId: config.sessionId, config: config.config, ...changes,
       ...(fresh ? { participants: [], channels: {} } : {}) };
-    const request = (): Promise<HarnessOpenResult> => {
+    const request = (): Promise<ReminderWireOpen> => {
       const payload = { ...params, ...(staged.length ? { reminderChanges: staged } : {}) };
-      return fresh ? client.createSession({ ...payload, participants: [], channels: {} }) : client.openSession(payload);
+      return fresh ? routineTransport(client).createSession({ ...payload, participants: [], channels: {} }) : routineTransport(client).openSession(payload);
     };
-    let result: HarnessOpenResult;
+    let result: ReminderWireOpen;
     try {
       try { result = await request(); }
       catch (error) {

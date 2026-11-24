@@ -1,13 +1,15 @@
+import { isRoutineSchedule } from "./routine-schedule.ts";
+import { routineTransport, type ReminderWireRow, type ReminderWireResult, type ReminderWireList, type ReminderWireOpen } from "./routine-wire.ts";
 import type { AgentConversationId } from "../../agent-ids.ts";
 import type { Logger } from "../../logger.ts";
-import type { HarnessClient, Reminder as HarnessReminder, ReminderChangeResult, ReminderList } from "../../native-harness/src/client.ts";
+import type { HarnessClient } from "../../native-harness/src/client.ts";
 import type { PersistenceBackend, PersistenceScope } from "../../persistence/backend.ts";
 import type { ReminderChange, ReminderPersistence } from "../../persistence/reminders.ts";
 import { codeOf } from "../errors.ts";
 import { defaultReminderLimits } from "./limits.ts";
 import {
   fromWireReminder, negotiatedLimits, reminderRequest,
-  type HarnessDescription, type HarnessOpenResult, type ReminderNotification, type WireChange, type WireReminderEvent,
+  type HarnessDescription, type ReminderNotification, type WireChange, type WireReminderEvent,
 } from "./wire.ts";
 
 const batchLimit = 100;
@@ -15,6 +17,7 @@ const sweepAttempts = 3;
 
 export class ReminderSync {
   supported?: boolean;
+  private routineSupported = false;
   limits = defaultReminderLimits;
   unreconciled = false;
   private sessionId?: string;
@@ -62,6 +65,7 @@ export class ReminderSync {
       for (const change of entries) {
         if (batch.length === batchLimit) break;
         try {
+          if (isRoutineSchedule(change.reminder.schedule) && !this.routineSupported) throw new Error("Routine reminders were not negotiated");
           const wire = change.frozenWire ?? reminderRequest(change, this.limits);
           const size = Buffer.byteLength(JSON.stringify(wire)) + 1;
           if (size > 900_000) throw new Error("Reminder entry exceeds startup frame budget");
@@ -94,7 +98,7 @@ export class ReminderSync {
     });
   }
 
-  async opened(client: HarnessClient, result: HarnessOpenResult, configuredId: string, fresh: boolean): Promise<void> {
+  async opened(client: HarnessClient, result: ReminderWireOpen, configuredId: string, fresh: boolean): Promise<void> {
     if (!this.supported) return;
     const sessionId = result.sessionId ?? configuredId;
     const saved = (await this.repository.wake()).reported?.sessionId;
@@ -123,7 +127,7 @@ export class ReminderSync {
     if (result === "mismatch") this.log.warn("reminders_due_revision_conflict", { revision, nextDueAt });
   }
 
-  private async recordReceipt(receipt: ReminderChangeResult) {
+  private async recordReceipt(receipt: ReminderWireResult) {
     const { reminderId, changeId } = receipt;
     if (receipt.outcome === "blocked") {
       const { reason } = receipt;
@@ -141,7 +145,7 @@ export class ReminderSync {
     return { confirmed: (await this.repository.list()).find(row => row.id === reminderId)?.confirmed ?? confirmed };
   }
 
-  private async storeRows(rows: HarnessReminder[], seen: Set<string>): Promise<void> {
+  private async storeRows(rows: ReminderWireRow[], seen: Set<string>): Promise<void> {
     await this.transaction(async (repo, scope) => {
       const known = await repo.list();
       for (const row of rows) {
@@ -154,14 +158,14 @@ export class ReminderSync {
     });
   }
 
-  private async sweep(client: HarnessClient, channel?: string, first?: ReminderList): Promise<void> {
+  private async sweep(client: HarnessClient, channel?: string, first?: ReminderWireList): Promise<void> {
     for (let attempt = 0; attempt < sweepAttempts; attempt++) {
       const seen = new Set<string>();
       try {
         let page = attempt === 0 ? first : undefined;
         let after: string | undefined;
         do {
-          page ??= await client.listReminders({ ...(channel ? { channel } : {}), ...(after ? { after } : {}) });
+          page ??= await routineTransport(client).listReminders({ ...(channel ? { channel } : {}), ...(after ? { after } : {}) });
           await this.storeRows(page.reminders, seen);
           after = page.next;
           page = undefined;
@@ -182,7 +186,7 @@ export class ReminderSync {
       if (!this.supported) return;
       if (!id) return this.sweep(client, channel);
       try {
-        const { reminder } = await client.getReminder({ id });
+        const { reminder } = await routineTransport(client).getReminder({ id });
         if (reminder.channel === channel) await this.storeRows([reminder], new Set());
       } catch (error) {
         if (codeOf(error) !== "not_found") throw error;
@@ -197,7 +201,7 @@ export class ReminderSync {
         const batch = await this.stage();
         if (!batch.length) break;
         for (const entry of batch) {
-          const receipt = await client.changeReminder(entry);
+          const receipt = await routineTransport(client).changeReminder(entry);
           if (receipt.reminderId !== entry.reminderId || receipt.changeId !== entry.changeId) throw new Error("Mismatched reminder receipt");
           const outcome = await this.ordered(() => this.recordReceipt(receipt));
           if (entry.reminderId === target?.reminderId && entry.changeId === target.changeId) own = outcome;
