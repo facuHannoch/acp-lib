@@ -120,7 +120,7 @@ export async function openOrCreate(
   catch (error) {
     // Confirmed absence means the prior create never published. A marker
     // still fences a replacement if open finds it, but cannot veto creation.
-    if (storageAttempts || codeOf(error) !== "not_found" || (frozen && !replacement)) throw error;
+    if (storageAttempts || codeOf(error) !== "not_found") throw error;
     replacement = true;
     await reminders?.setReplacementAttempted(config.sessionId);
     admission.resetBinding();

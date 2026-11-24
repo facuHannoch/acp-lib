@@ -272,3 +272,18 @@ test("a cold wake stops on incompatible harness and allows a later explicit star
     expect(attempts).toBe(2);
   } finally { await fixture.clean(); }
 });
+
+test("discardExhausted refuses while the native host is running", async () => {
+  const fixture = await nativeRig();
+  const peer = new ReminderPeer();
+  fixture.harness.connect = () => peer.connect();
+  try {
+    const agent = await fixture.open();
+    const host = agent.nativeHarness!;
+    await host.start();
+    const conversation = await agent.conversations.create();
+    await expect(conversation.reminders.discardExhausted("absent")).rejects.toMatchObject({ code: "conflict" });
+    await host.stop();
+    expect(await conversation.reminders.discardExhausted("absent")).toBe(false);
+  } finally { await fixture.clean(); }
+});

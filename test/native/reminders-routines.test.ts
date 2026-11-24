@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createAgentConversationId, createAgentSessionId } from "../../src/agent-ids.ts";
+import { HarnessClientError } from "../../src/native-harness/src/client.ts";
 import { ReminderService } from "../../src/native/reminders/service.ts";
 import { normalizeReminderSchedule } from "../../src/native/reminders/schedule.ts";
 import { fromWireReminder, routineReminderRequest as reminderRequest } from "../../src/native/reminders/wire.ts";
@@ -469,5 +470,40 @@ test("discardExhausted removes only the chosen reminder from the frozen batch", 
     expect(s.peer.rows.get("broken")?.text).toBe("broken");
     expect(s.peer.rows.get("keep")?.text).toBe("good change");
     expect((await s.repo.wake()).startupRetry).toBeUndefined();
+  } finally { await s.persistence.close(); }
+});
+
+test("a non-exhausted frozen batch survives session loss and is replayed unchanged on create", async () => {
+  const s = await startup();
+  try {
+    s.peer.rows.set("owed", s.saved("owed"));
+    await s.sync.initialize({ capabilities: negotiated });
+    await s.open(3);
+    await s.reminders.update("owed", { text: "frozen edit" });
+    s.peer.failId = "owed";
+    s.peer.failures = 1;
+    let attempts = 0;
+    s.peer.beforeStartupBatch = async () => {
+      if (++attempts === 2) throw new HarnessClientError("transport_closed", "interrupted before exhaustion");
+    };
+    await expect(s.open()).rejects.toMatchObject({ code: "transport_closed" });
+    const frozen = (await s.repo.wake()).startupRetry;
+    expect(frozen?.entries).toHaveLength(1);
+    expect(frozen?.exhausted).toBeUndefined();
+    expect((await s.repo.wake()).replacementAttempted).toBeUndefined();
+    expect(await s.reminders.discardExhausted("owed")).toBe(false);
+
+    s.peer.sessions.clear();
+    s.peer.rows.clear();
+    s.peer.beforeStartupBatch = async () => {
+      expect((await s.repo.wake()).replacementAttempted).toBe(s.peer.sessionId);
+    };
+    await s.open(3);
+    expect(s.peer.calls.slice(-2)).toMatchObject([
+      { method: "open", params: { reminderChanges: frozen!.entries } },
+      { method: "create", params: { reminderChanges: frozen!.entries } },
+    ]);
+    expect((await s.repo.wake()).startupRetry).toBeUndefined();
+    expect(await s.reminders.get("owed")).toMatchObject({ state: "blocked", reason: "not_found" });
   } finally { await s.persistence.close(); }
 });

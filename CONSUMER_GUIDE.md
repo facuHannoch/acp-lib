@@ -1477,13 +1477,19 @@ Pass either input to `conversation.reminders.create(input)`.
   `unattended_guard_required` when the queued activation is sent live.
 
 If startup exhausts its reminder batch retries, correct the storage cause
-and start again to replay the exact frozen batch. To stop retrying a specific
-reminder, stop the harness and call
-`conversation.reminders.discardExhausted(reminderId)`. It returns `true` if
-it removed that reminder's entries from the exhausted batch. Start the
-harness again to replay the remaining entries. Discard removes local intent
-only. Earlier entries may already have committed on the harness, so check
-the authoritative row after reopening.
+and start again to replay the exact frozen batch. The harness does not
+identify the failing entry. To recover by elimination, stop the harness,
+call `conversation.reminders.discardExhausted(reminderId)` for one
+reminder, then start the harness again. Repeat if the remaining batch still
+fails. The call returns `true` when it removes that reminder's frozen
+entries. Later pending entries for the same reminder stay queued. If they
+target a discarded create that never committed, they can come back blocked
+with `not_found`. Use `discardBlocked(reminderId)` to clear them.
+
+Discard removes local intent only. If the harness already committed a
+discarded create, the reminder can still fire and the next startup sweep
+will show it as a confirmed row. Check that row before creating a new
+reminder. A new ID creates a duplicate if the original is still alive.
 
 Routine events are live, and identical frames are all delivered. An
 `expired` disposition counts occurrences. The client refreshes the row to

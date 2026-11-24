@@ -536,3 +536,18 @@ test("schema 22 reads a pre-routine one-off journal JSON row unchanged", async (
     });
   } finally { database.close(); }
 });
+
+test("memory exhausted discard is conversation-scoped and preserves change ID high water", async () => {
+  const repo = createMemoryReminderPersistence();
+  const reminder = { id: "frozen", conversationId: "owner", text: "old", schedule: { at: 180_000 },
+    status: "active", expiry: null, expiryPolicy: { kind: "unlimited" }, scheduleAcceptedAt: 0 } as const;
+  const change = (await repo.enqueue({ reminder, op: "create", acceptedAt: 0 }))!;
+  const entry = reminderRequest(change);
+  await repo.markMaybeSent(reminder.id, change.changeId, entry);
+  await repo.setStartupRetry({ sessionId: "session", entries: [entry], exhausted: true });
+  expect(await repo.discardExhausted(reminder.id, "other")).toBe(false);
+  expect((await repo.wake()).startupRetry?.entries).toEqual([entry]);
+  expect(await repo.discardExhausted(reminder.id, "owner")).toBe(true);
+  expect((await repo.list())[0]).toMatchObject({ highWater: change.changeId, changes: [] });
+  expect(await repo.enqueue({ reminder, op: "update", acceptedAt: 1 })).toMatchObject({ changeId: change.changeId + 1 });
+});
