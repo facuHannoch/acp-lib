@@ -34,7 +34,7 @@ class Fault extends Error {
 export class SessionOpenError extends Error {
   constructor(readonly code: DurableErrorCode, message: string) { super(message); }
 }
-export interface SessionRequest { mode: "create" | "open"; sessionId: string; config?: ProtocolConfig;
+export interface SessionRequest { mode: "create" | "open"; sessionId: string; config?: ProtocolConfig; mcpRuntimeHeaders?: unknown;
   /** Decision 0021: a catalog whose shape is valid. The factory checks its names
    * against its built-in tools and passes it to the session. */
   tools?: ToolCatalogInput }
@@ -64,6 +64,7 @@ export interface ProtocolServerOptions {
   functions?: boolean;
   attachments?: boolean;
   mcpStdio?: boolean;
+  mcpHttps?: boolean;
 }
 
 const bad = (message: string): never => { throw new Fault("invalid_params", message); };
@@ -102,7 +103,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   const limits = { ...TRANSFER_LIMITS, ...options.limits } as TransferLimits;
   const transfers = options.importArchive && options.transferDirectory ? createTransfers(options.transferDirectory, limits) : undefined;
   const description = describe(!!options.durable, !!transfers, !!options.functions, !!options.attachments);
-  if (options.mcpStdio) description.capabilities.mcpServers = { stdio: true, http: false, sse: false };
+  if (options.mcpStdio) description.capabilities.mcpServers = { stdio: true, http: !!options.mcpHttps, sse: false };
   let initialized = false;
   let approvalConsumer = false;
   let opening = false;
@@ -259,7 +260,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { valid: true };
     }
     if (method === "session/create") {
-      keys(p, ["sessionId", "config", "participants", "channels", "channelChanges", "tools", "reminderChanges"]);
+      keys(p, ["sessionId", "config", "participants", "channels", "channelChanges", "tools", "reminderChanges", "mcpRuntimeHeaders"]);
       const reminderBatch = parseReminderBatch(p.reminderChanges);
       const tools = catalogOf(p.tools);
       const sessionId = text(p.sessionId);
@@ -278,7 +279,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       // effective configuration is known.
       const batch = p.channelChanges === undefined ? undefined : parseChannelChanges(p.channelChanges);
       if (batch && p.config?.policies) checkPolicies(batch, Object.keys(p.config.policies));
-      const opened = await attach({ mode: "create", sessionId, config: p.config, ...(tools ? { tools } : {}) });
+      const opened = await attach({ mode: "create", sessionId, config: p.config, mcpRuntimeHeaders: p.mcpRuntimeHeaders, ...(tools ? { tools } : {}) });
       let results: ChannelChangeResult[] | undefined;
       let reminderResult: ReturnType<typeof reminderView>;
       try {
@@ -296,7 +297,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { ...(opened.session.operatorReads ? ready(opened) : { sessionId }), ...reminderResult, ...(results ? { channelChanges: results } : {}) };
     }
     if (method === "session/open") {
-      keys(p, ["sessionId", "config", "channelChanges", "tools", "reminderChanges"]);
+      keys(p, ["sessionId", "config", "channelChanges", "tools", "reminderChanges", "mcpRuntimeHeaders"]);
       const reminderBatch = parseReminderBatch(p.reminderChanges);
       const tools = catalogOf(p.tools);
       const sessionId = text(p.sessionId);
@@ -305,13 +306,14 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       // the batch was applied by the open and is only reported again. A new
       // batch belongs to the live channel API.
       if (current) {
+        if (p.mcpRuntimeHeaders !== undefined) bad("Runtime material requires a new executable open");
         if (ready(current).sessionId !== sessionId) throw new Fault("already_exists", "One session per endpoint");
         if (batch && !sameBatch(startup?.batch ?? [], batch)) throw new Fault("invalid_state", "The session is already open; send newer channel changes through the channel methods");
         if (tools && !(startupTools && sameCatalog(startupTools, tools))) throw new Fault("invalid_state", "The session is already open with another tool catalog; use the tool methods");
         if (p.reminderChanges !== undefined && JSON.stringify(reminderBatch) !== JSON.stringify(reminderStartup?.batch ?? [])) throw new Fault("invalid_state", "The session is already open; send changes through reminder/change");
         return { ...ready(current), ...reminderView(current.session, reminderStartup?.results), ...(startup ? { channelChanges: startup.results } : {}) };
       }
-      const opened = await attach({ mode: "open", sessionId, config: p.config, ...(tools ? { tools } : {}) });
+      const opened = await attach({ mode: "open", sessionId, config: p.config, mcpRuntimeHeaders: p.mcpRuntimeHeaders, ...(tools ? { tools } : {}) });
       try {
         const finish = batch && await prepare(opened, batch);
         // From here to the end of the block nothing is awaited: the resumes, the

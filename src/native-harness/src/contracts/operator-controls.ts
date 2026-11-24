@@ -70,6 +70,8 @@ export interface OperatorMethods {
 }
 
 export interface LoadResultOpenParams {
+  /** Executable owning launcher material, never saved. */
+  mcpRuntimeHeaders?: import("./mcp.ts").McpRuntimeHeaders;
   sessionId: string;
   config?: ProtocolConfig;
   channelChanges?: PendingChannelChange[];

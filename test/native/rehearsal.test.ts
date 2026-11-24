@@ -418,3 +418,46 @@ test("cumulative real stdio rehearsal calls an MCP subprocess and observes its p
     expect(JSON.parse(result.content)).toMatchObject({ text: "MCP fixture evidence", truncated: false });
   } finally { await run.close(); await rm(direction, { recursive: true, force: true }); }
 }, 35000);
+
+test("cumulative real stdio rehearsal calls Streamable HTTPS through the native harness", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "mcp-https-rehearsal-"));
+  const requests = join(directory, "requests.jsonl"), key = join(directory, "key.pem"), cert = join(directory, "cert.pem");
+  const generated = Bun.spawnSync(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key,
+    "-out", cert, "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1"], { stdout: "ignore", stderr: "ignore" });
+  const credential = crypto.randomUUID();
+  let calls = 0, proxyCalls = 0;
+  const proxy = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+    proxyCalls++;
+    return new Response(null, { status: 502 });
+  } });
+  const endpoint = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: { key: Bun.file(key), cert: Bun.file(cert) }, async fetch(request) {
+    if (request.method !== "POST" || request.headers.get("authorization") !== credential) return new Response(null, { status: 403 });
+    const input = await request.json() as { id?: number; method: string };
+    if (input.id === undefined) return new Response(null, { status: 202 });
+    let result: unknown;
+    if (input.method === "initialize") result = { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } };
+    if (input.method === "tools/list") result = { tools: [{ name: "read", inputSchema: { type: "object" } }] };
+    if (input.method === "tools/call") { calls++; result = { content: [{ type: "text", text: `MCP evidence ${credential}` }] }; }
+    return Response.json({ jsonrpc: "2.0", id: input.id, result });
+  } });
+  cleanup.push(async () => { await endpoint.stop(true); await proxy.stop(true); await rm(directory, { recursive: true, force: true }); });
+  expect(generated.exitCode).toBe(0);
+  const run = await createRehearsal(new URL("./fixtures/rehearsal-cumulative-mcp.jsonl", import.meta.url).pathname, {
+    deadlineMs: 30_000, exactConsumption: true, timelineTools: true,
+    policies: { rehearsal: { fallback: "allow", mcp: "allow", tools: {} } },
+    mcpServers: { docs: { transport: "http", endpoint: new URL("/mcp", endpoint.url).href, headers: { authorization: { env: "MCP_FIXTURE_TOKEN" } } } },
+    env: { HTTPS_PROXY: proxy.url.href, https_proxy: proxy.url.href, NO_PROXY: "", no_proxy: "", NODE_EXTRA_CA_CERTS: cert, MCP_FIXTURE_TOKEN: credential, HARNESS_TEST_REQUESTS: requests, HARNESS_TEST_ATTEMPTS: join(directory, "attempts.jsonl") },
+  });
+  cleanup.push(run.close);
+  await run.setup();
+  await run.schedule(async offset => { if (offset) await until(() => run.activity.filter(event => event.kind === "completed").length >= offset, "previous phase completed"); });
+  const summary = await run.finish();
+  expect(Object.values(summary.unused).every(count => count === 0)).toBe(true);
+  expect(calls).toBe(1);
+  expect(proxyCalls).toBe(0);
+  const captured = readFileSync(requests, "utf8");
+  expect(captured.includes(credential)).toBe(false);
+  const model = captured.trim().split("\n").map(line => JSON.parse(line)).filter(row => row.channel === "mcp");
+  const result = model[1].messages.find((message: { role: string; callId?: string }) => message.role === "tool" && message.callId === "mcp-read");
+  expect(JSON.parse(result.content)).toMatchObject({ text: "MCP evidence [redacted]", truncated: false });
+}, 35000);

@@ -67,3 +67,36 @@ export function validateMcpServers(value: unknown): Record<string, McpServer> {
   }
   return result;
 }
+
+/** Executable request material only. Never include values in validation errors. */
+export function validateMcpRuntimeHeaders(value: unknown, servers: Record<string, McpServer> = {}) {
+  const resolved = Object.create(null) as Record<string, Record<string, string>>;
+  for (const [server, material] of Object.entries(object(value))) {
+    const entry = Object.hasOwn(servers, server) ? servers[server] : undefined;
+    if (entry?.transport !== "http") invalid();
+    const values = Object.create(null) as Record<string, string>;
+    for (const [raw, value] of Object.entries(object(material))) {
+      const header = raw.toLowerCase();
+      const declared = entry.headers?.[header];
+      if (!declared || !("runtime" in declared) || reserved.test(header) || Object.hasOwn(values, header) ||
+        typeof value !== "string" || unsafeHeader.test(value)) invalid();
+      values[header] = value;
+    }
+    resolved[server] = values;
+  }
+  return resolved;
+}
+
+export function resolveMcpHttpsHeaders(entry: Extract<McpServer, { transport: "http" }>,
+  environment: Record<string, string | undefined>, runtime?: Record<string, string>) {
+  const headers: Record<string, string> = Object.create(null);
+  const secrets: string[] = [];
+  for (const [name, declaration] of Object.entries(entry.headers ?? {})) {
+    if ("literal" in declaration) { headers[name] = declaration.literal; continue; }
+    const value = "env" in declaration ? environment[declaration.env] : runtime?.[name];
+    if (!value?.trim() || unsafeHeader.test(value)) return;
+    headers[name] = value.trim();
+    secrets.push(value, headers[name]);
+  }
+  return { headers, secrets };
+}

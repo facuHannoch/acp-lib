@@ -28,6 +28,8 @@ export interface ProtocolConfig {
   policies?: Record<string, import("./config-permissions.ts").ToolPolicy>;
 }
 export interface CreateParams {
+  /** Executable owning launcher material, never saved. */
+  mcpRuntimeHeaders?: import("./mcp.ts").McpRuntimeHeaders;
   sessionId: string;
   config?: ProtocolConfig;
   reminderChanges?: import("./reminders.ts").ReminderChange[];

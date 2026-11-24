@@ -5,18 +5,30 @@ import { mcpSecrets } from "./secrets.ts";
 import { projectMcpResult } from "./result.ts";
 import { McpStdioTransport, type McpStdioProcess } from "./stdio.ts";
 
-const supported = new Set(["2025-03-26", "2025-06-18", "2025-11-25"]);
 const encoder = new TextEncoder();
 
-export async function connectMcpStdio(name: string, child: McpStdioProcess, deadlineMs = 1_800_000, secrets: readonly string[] = []) {
-  let transport: McpStdioTransport<JSONRPCMessage> | undefined;
+type Transport = import("@modelcontextprotocol/sdk/shared/transport.js").Transport;
+export const supportedMcpVersions = new Set(["2025-03-26", "2025-06-18", "2025-11-25"]);
+
+export function connectMcpStdio(name: string, child: McpStdioProcess, deadlineMs?: number, secrets?: readonly string[]) {
+  return connectMcp(name, async () => {
+    const { JSONRPCMessageSchema } = await import("@modelcontextprotocol/sdk/types.js");
+    const transport = new McpStdioTransport<JSONRPCMessage>(child, supportedMcpVersions, value => JSONRPCMessageSchema.parse(value));
+    return { transport, drain: () => transport.drain() };
+  }, deadlineMs, secrets, () => child.close());
+}
+
+export async function connectMcp(name: string,
+  assemble: () => Promise<{ transport: Transport; drain(): Promise<void> }>,
+  deadlineMs = 1_800_000, secrets: readonly string[] = [], rollback?: () => Promise<void>) {
+  let transport: Transport | undefined;
   const startup = AbortSignal.timeout(10_000);
   try {
     const redact = mcpSecrets(secrets);
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-    const { ErrorCode, McpError, JSONRPCMessageSchema } = await import("@modelcontextprotocol/sdk/types.js");
-    const liveTransport = new McpStdioTransport<JSONRPCMessage>(child, supported, value => JSONRPCMessageSchema.parse(value));
-    transport = liveTransport;
+    const { ErrorCode, McpError } = await import("@modelcontextprotocol/sdk/types.js");
+    const live = await assemble();
+    transport = live.transport;
     const client = new Client({ name: "native-harness", version: "1" }, { capabilities: {} });
     let ready = true;
     const shutdown = new AbortController();
@@ -75,11 +87,11 @@ export async function connectMcpStdio(name: string, child: McpStdioProcess, dead
     }
     return { name, bindings, bytes, available: () => ready, async close() {
       shutdown.abort();
-      await liveTransport.drain();
+      await live.drain();
       await client.close();
     } };
   } catch {
-    await (transport?.close() ?? child.close());
-    throw new Error("MCP stdio initialization failed");
+    await (transport?.close() ?? rollback?.());
+    throw new Error("MCP initialization failed");
   }
 }

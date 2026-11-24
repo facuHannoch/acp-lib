@@ -1,3 +1,4 @@
+import { validateMcpRuntimeHeaders } from "./util/mcp-config.ts";
 import { openMcpRegistry } from "./capabilities/tools/mcp/registry.ts";
 import { createWebRegistry, directWebFetch } from "./capabilities/tools/web/registry.ts";
 import { exaHttpsTransport } from "./capabilities/tools/web/exa-transport.ts";
@@ -43,6 +44,8 @@ export interface ScriptedServerOptions {
    * time the point is passed. Points are storage method names (after their
    * commit) and `tool` (after a tool ran, before its result is recorded). */
   fault?: string;
+  /** Trusted fixture TLS configuration; never accepted from managed config. */
+  mcpFixtureCa?: string;
   /** File the `record` tool appends to. */
   effects?: string;
   /** Offline test-only request capture; one JSON record per inference. */
@@ -129,7 +132,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     }
     return memory;
   };
-  const server = createProtocolServer(async ({ mode, sessionId, config: inline, tools }) => {
+  const server = createProtocolServer(async ({ mode, sessionId, config: inline, tools, mcpRuntimeHeaders }) => {
     // Decision 0021: the catalog's names must not collide with the built-ins.
     const catalog = tools && parseCatalog(tools, [...BUILTINS, ...webDefinitions].map(tool => tool.name));
     const paths = options.home ? managedSessionPaths(sessionId, options.home) : undefined;
@@ -137,6 +140,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const stored = mode === "open" ? adapter.readSavedConfig() : undefined;
     if (stored && !stored.ok) throw new SessionOpenError(stored.error.code === "not_found" || stored.error.code === "owner_conflict" ? stored.error.code : "storage_failure", stored.error.message);
     const config = chooseManagedConfig({ mode, sidecar: paths?.config ?? noSidecar, inline, saved: stored?.ok ? stored.value : undefined });
+    const runtimeHeaders = mcpRuntimeHeaders === undefined ? undefined : validateMcpRuntimeHeaders(mcpRuntimeHeaders, config.mcpServers);
     const script = config.model.protocol === "scripted" ? await (options.scenarioLoader ?? loadScenario)(config.model.script) : undefined;
     const credential = config.model.protocol === "openrouter" ? resolveCredential(config.model, options.environment ?? process.env) : undefined;
     let imageInput = !!paths && !options.adapter && config.model.protocol !== "openai-compatible" && config.model.imageInput === true && (config.model.protocol === "scripted" || !options.providerFactory) && imageValidationAvailable();
@@ -167,12 +171,15 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     try {
       const execution = storage.executionCompatible();
       if (!execution.ok) throw new Error(execution.error.message);
-      if (!execution.value) imageInput = false;
+      if (!execution.value) {
+        if (runtimeHeaders !== undefined) throw new SessionOpenError("invalid_config", "Runtime MCP headers require executable access");
+        imageInput = false;
+      }
       if (execution.value && mode === "open") {
         if (compatible) compatibleKey = resolveCompatibleCredential(compatible, environment);
         webTools = makeWebTools();
       }
-      if (execution.value && config.mcpServers) mcp = await openMcpRegistry(config, environment);
+      if (execution.value && config.mcpServers) mcp = await openMcpRegistry(config, environment, runtimeHeaders, options.mcpFixtureCa);
       if (execution.value && paths && !options.adapter) attachments = createManagedAttachmentService(join(paths.directory, "media"), storage, validateManagedImage, Date.now, hit);
       const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
       const executeTool: ExecuteTool = async (call, signal) => {
@@ -250,7 +257,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       }
       throw error;
     }
-  }, { durable, functions: true, mcpStdio: true, attachments: !!options.home && !options.adapter, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
+  }, { durable, functions: true, mcpStdio: true, mcpHttps: true, attachments: !!options.home && !options.adapter, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
     importArchive(payload, sessionId) {
       let createdDirectory: string | undefined;
       try {
