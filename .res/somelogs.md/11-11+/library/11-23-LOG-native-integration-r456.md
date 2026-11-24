@@ -290,3 +290,7 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   harness 382 green, the 10,000-record checkpoint test passes (0 of 10 failing; it failed every time on `f32c5a2`), snapshots
   unchanged. **Gate passed** ([gate](../.plan-execution/status/11-24-GATE-haurness-l-merge.md)). The new `pre-alpha` is the
   release candidate merged with `aiagent/haurness-l` and the fix; the previous one is kept as `pre-alpha-prev`.
+- The user merged the earlier candidate (`d407820`: R5 2b, R5/R6 docs, R6 and the release docs, without `aiagent/haurness-l`)
+  into alpha; alpha since gained two documentation commits (the reminders and routines spec, reviews 1 and 2): alpha is
+  now `5c4cd41`. haurness-l verified the candidate `f9e8521` (source and tests identical to `0df01b0`) and asked for a
+  refresh on the current alpha: rebuilt as `0df01b0` merged with alpha `5c4cd41` plus the status docs.
