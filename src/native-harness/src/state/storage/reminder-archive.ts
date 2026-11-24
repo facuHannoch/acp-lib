@@ -1,9 +1,8 @@
 import { isRoutine } from "./routine-row.ts";
-import { SESSION_INPUT_MAX_BYTES } from "../../contracts/input-limits.ts";
 import type { Reminder, ReminderArchiveState } from "../../contracts/reminders.ts";
 import type { StorageSnapshot } from "../../contracts/storage.ts";
 import { normalizeReminderSchedule, reminderInstant } from "../../util/reminder-schedule.ts";
-import { Fail } from "./engine.ts";
+import { Fail, initialIntakeHasParticipant } from "./engine.ts";
 
 const bad = (): never => { throw new Fail("invalid_archive", "Invalid archived reminder state"); };
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
@@ -99,13 +98,7 @@ export function validateReminderArchive(state: ReminderArchiveState | undefined,
 
 
 function hasRunnableParticipant(snapshot: StorageSnapshot, channel: string): boolean {
-  let bytes = SESSION_INPUT_MAX_BYTES;
   const items = snapshot.items.filter(item => item.channelId === channel && item.milestone === "received")
-    .sort((left, right) => left.acceptedSeq - right.acceptedSeq).slice(0, 16);
-  for (const item of items) {
-    bytes -= Buffer.byteLength(item.text);
-    if (bytes < 0) return false;
-    if (item.kind === "participant_message") return true;
-  }
-  return false;
+    .sort((left, right) => left.acceptedSeq - right.acceptedSeq);
+  return initialIntakeHasParticipant(items);
 }

@@ -1,3 +1,6 @@
+import { cronCivilCalendar } from "./cron-calendar.ts";
+import { parseRoutineCron } from "./cron-fields.ts";
+import { zonedCalendar } from "./cron-zone.ts";
 import type { RoutineCalendar, RoutineSchedule } from "../../contracts/routines.ts";
 import { reminderInstant, REMINDER_LIMITS } from "../../util/reminder-schedule.ts";
 import { proveRoutineCron } from "./cron-proof.ts";
@@ -41,4 +44,27 @@ export function prepareRoutineSchedule(schedule: RoutineSchedule, acceptedAt: st
   return bounded
     ? { kind: "valid", calendar: bounded, schedule: { ...schedule, timezone: zone.timezone }, timezoneVersion: zone.timezoneVersion } as const
     : invalid;
+}
+
+/** An owner transaction can advance many rows or steps using one index per
+ * admitted cron. Existing schedules need evaluation, not a timed proof. */
+export function createRoutineEvaluator() {
+  const calendars = new Map<string, RoutineCalendar | undefined>();
+  return (schedule: RoutineSchedule, acceptedAt: string, timezoneVersion: string | undefined, processedThrough?: number) => {
+    const anchor = reminderInstant(acceptedAt);
+    if (anchor === undefined) return;
+    if ("every" in schedule) return intervalCalendar(schedule, anchor, processedThrough);
+    const key = JSON.stringify([timezoneVersion, schedule.timezone, schedule.cron]);
+    if (!calendars.has(key)) {
+      const zone = resolveRoutineZone(schedule.timezone);
+      const fields = zone?.timezoneVersion === timezoneVersion ? parseRoutineCron(schedule.cron) : undefined;
+      const civil = fields && cronCivilCalendar(fields);
+      calendars.set(key, zone && civil ? zonedCalendar(civil, zone.start, zone.end, zone.initialOffset, zone.transitions) : undefined);
+    }
+    const calendar = calendars.get(key);
+    if (!calendar) return;
+    const until = schedule.until === undefined ? undefined : reminderInstant(schedule.until);
+    if (schedule.until !== undefined && until === undefined) return;
+    return limitCalendar(calendar, calendar.rank(Math.max(anchor, processedThrough ?? anchor)), schedule.count, until);
+  };
 }

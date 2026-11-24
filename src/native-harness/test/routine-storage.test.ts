@@ -117,3 +117,26 @@ test("an existing receipt conflict does not activate routine format", () => {
     expect(take(store.readSession()).formatVersion).toBe(7);
   } finally { store.close(); }
 });
+
+test("a 100-step multi-routine catch-up never consults the admission clock", () => {
+  const adapter = createMemoryStorageAdapter();
+  const store = take(adapter.open({ mode: "create", identity, config }));
+  try {
+    take(store.createChannel({ channelId: "a" }));
+    for (let index = 0; index < 10; index++) {
+      expect(take(store.changeReminder({ op: "create", reminderId: `r${index}`, changeId: 1, payload: {
+        channel: "a", text: "catch up", acceptedAt: new Date(now).toISOString(),
+        schedule: { cron: "*/10 * * * *", timezone: "America/New_York" }, missedRuns: "each", overlap: "queue", expiresAfter: null,
+      } }, now)).outcome).toBe("applied");
+    }
+    const clock = spyOn(performance, "now").mockImplementation(() => { throw new Error("Admission clock used during firing"); });
+    const started = process.hrtime.bigint();
+    try {
+      const events = take(store.fireDueReminders(now + 24 * 3600_000));
+      const steps = events.filter(({ event }) => event.type === "reminder_fired" || event.type === "routine_disposition");
+      expect(steps).toHaveLength(100);
+      expect(clock).not.toHaveBeenCalled();
+      console.info(`100-step routine catch-up: ${(Number(process.hrtime.bigint() - started) / 1e6).toFixed(1)} ms`);
+    } finally { clock.mockRestore(); }
+  } finally { store.close(); }
+});

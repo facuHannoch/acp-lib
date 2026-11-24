@@ -1,8 +1,8 @@
 import { resolveRoutineZone } from "../../capabilities/reminders/iana-zones.ts";
-import { SESSION_INPUT_MAX_BYTES } from "../../contracts/input-limits.ts";
+import { SESSION_INTAKE_LIMITS } from "../../util/intake.ts";
 import { advanceRoutine } from "../../capabilities/reminders/routine-advance.ts";
 import { planRoutineEpisode } from "../../capabilities/reminders/routine-occurrence.ts";
-import { prepareRoutineSchedule } from "../../capabilities/reminders/routine-schedule.ts";
+import { createRoutineEvaluator } from "../../capabilities/reminders/routine-schedule.ts";
 import { isRoutine, prepareRoutineRow } from "./routine-row.ts";
 import { unattendedAdmission } from "../../capabilities/reminders/unattended.ts";
 import { normalizeReminderSchedule, resolveAgentReminder } from "../../util/reminder-schedule.ts";
@@ -210,18 +210,24 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
  * and its checkpoint survive, in every lifecycle); a clean session suspension
  * keeps all. A `suspending` channel never committed and returns to `open`. A
  * clean state with nothing to change is left unwritten. */
+export function initialIntakeHasParticipant(items: readonly StoredItem[]) {
+  let bytes = SESSION_INTAKE_LIMITS.maxTakenTextBytes;
+  for (const [index, item] of items.entries()) {
+    if (index >= SESSION_INTAKE_LIMITS.maxTakenItems) break;
+    bytes -= byteLength(item.text);
+    if (bytes < 0 && index > 0) break;
+    if (item.kind === "participant_message") return true;
+    if (bytes < 0) break;
+  }
+  return false;
+}
+
 function routineHeldChannels(tables: Tables, meta: Meta): string[] {
   const limit = meta.formatVersion >= 8 ? tables.reminders.guardLimit() : undefined;
   if (limit === undefined) return [];
   return tables.channels().filter(({ channelId, lifecycle }) => {
     if (lifecycle !== "open" || tables.reminders.guardSpent(channelId) < limit) return false;
-    let bytes = SESSION_INPUT_MAX_BYTES;
-    for (const item of tables.pendingItems(channelId, 16)) {
-      bytes -= byteLength(item.text);
-      if (bytes < 0) break;
-      if (item.kind === "participant_message") return false;
-    }
-    return true;
+    return !initialIntakeHasParticipant(tables.pendingItems(channelId, SESSION_INTAKE_LIMITS.maxTakenItems));
   }).map(channel => channel.channelId);
 }
 
@@ -739,6 +745,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const events: ReminderDeliveryEvent[] = [...recoveredReminderEvents];
       if (meta.lifecycle !== "running") return events;
       const firedAt = new Date(wallTime).toISOString();
+      const evaluate = createRoutineEvaluator();
       const held = routineHeldChannels(tables, meta);
       for (let attempts = 0; attempts < 100; attempts++) {
         const saved = reminders.eligible(firedAt, 1, held)[0];
@@ -754,14 +761,17 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
           }
           const limit = reminders.guardLimit();
           if (limit === undefined || !unattendedAdmission(limit, reminders.guardSpent(channel),
-            boundaryPending(channel).some(item => item.kind === "participant_message")).eligible) break;
+            boundaryPending(channel, SESSION_INTAKE_LIMITS).some(item => item.kind === "participant_message")).eligible) break;
           const grace = saved.defaultedExpiry ? undefined : reminder.expiresAfter;
           const schedule = reminder.remainingCount === undefined ? reminder.schedule
             : { ...reminder.schedule, count: reminder.remainingCount, until: undefined };
-          const prepared = prepareRoutineSchedule(schedule, reminder.acceptedAt, Math.max(wallTime, Date.parse(reminder.acceptedAt)), saved.processedThrough);
-          if (prepared.kind !== "valid") fail("storage_failure", "Saved routine calendar cannot be evaluated");
-          if (prepared.kind !== "valid") continue;
-          const calendar = prepared.calendar;
+          const calendar = evaluate(schedule, reminder.acceptedAt, reminder.timezoneVersion, saved.processedThrough);
+          if (!calendar) {
+            const blocked: Reminder = { ...reminder, state: "blocked", nextRunAt: null, blockedReason: "invalid_schedule" };
+            putReminder(meta, blocked);
+            events.push({ channel, event: { type: "reminder_changed", reminder: blocked } });
+            continue;
+          }
           const cutoff = saved.episodeCutoff ?? wallTime;
           const step = planRoutineEpisode(calendar, 0, cutoff, grace, reminder.missedRuns)[0];
           if (!step) break;
