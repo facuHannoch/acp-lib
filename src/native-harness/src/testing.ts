@@ -26,6 +26,8 @@ import { parseCatalog } from "./capabilities/tools/runtime/catalog.ts";
 import { HarnessClient, createInProcessTransport } from "./client.ts";
 import { chooseManagedConfig, managedSessionPaths } from "./runtime/config/paths.ts";
 import { resolveCredential } from "./runtime/config/managed.ts";
+import { createManagedAttachmentService } from "./capabilities/attachments/service.ts";
+import { UploadError } from "./capabilities/attachments/upload.ts";
 
 export interface ScriptedServerOptions {
   /** Directory of durable sessions, one SQLite file per session ID. */
@@ -114,6 +116,12 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       if (point === "snapshot" && options.snapshotLog) appendFileSync(options.snapshotLog, "snapshot\n");
       hit(point);
     }) : opened.value;
+    let attachments: ReturnType<typeof createManagedAttachmentService> | undefined;
+    try {
+      if (paths) attachments = createManagedAttachmentService(join(paths.directory, "media"), storage, () => {
+        throw new UploadError("invalid_attachment", "Image validation is unavailable");
+      });
+    } catch (error) { opened.value.close(); throw error; }
     const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
     const executeTool: ExecuteTool = async (call, signal) => {
       const result = await (call.name === "record" ? record(call, signal) : call.name === "hold" ? hold(call, signal) : executeEcho(call, signal));
@@ -158,11 +166,11 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       } });
       return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
     } });
-    return { session, config, close() { opened.value.close(); }, commitConfig() {
+    return { session, config, ...(attachments ? { attachments } : {}), close() { attachments?.close(); opened.value.close(); }, commitConfig() {
       const saved = storage.saveConfig(config);
       if (!saved.ok && saved.error.code !== "incompatible") throw new SessionOpenError("storage_failure", saved.error.message);
     }, exportArchive: () => storage.exportArchive() };
-  }, { durable, functions: true, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
+  }, { durable, functions: true, attachments: !!options.home, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
     importArchive(payload, sessionId) {
       let createdDirectory: string | undefined;
       try {

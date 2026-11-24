@@ -643,6 +643,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const row = attachments.get(id);
       return row ? { metadata: row.metadata, timelineVisible: attachments.isTimelineVisible(id) } : undefined;
     }, true),
+    managedAttachmentIds: () => run(() => tables.attachments?.readyIds() ?? [], true),
     startCall: (turnId, itemIds) => run(meta => {
       if (!/^[1-9]\d*$/.test(turnId) || !Number.isSafeInteger(Number(turnId))) fail("invalid_input", "Invalid turn ID");
       const turn = running(Number(turnId));

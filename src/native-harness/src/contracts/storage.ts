@@ -309,6 +309,8 @@ export interface SessionStorage extends ModelCallStore, ReminderStorage, Timelin
   registerReadyAttachment(metadata: import("./attachments.ts").AttachmentMetadata): StorageResult<void>;
   /** Owner-scoped metadata and timeline visibility; bytes are read separately. */
   readManagedAttachment(id: string): StorageResult<{ metadata: import("./attachments.ts").AttachmentMetadata; timelineVisible: boolean } | undefined>;
+  /** IDs with committed ready metadata, for owner-only crash recovery. */
+  managedAttachmentIds(): StorageResult<string[]>;
   readSession(): StorageResult<StoredSession>;
   readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
   readReadyChannels(intake?: IntakeLimit): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;

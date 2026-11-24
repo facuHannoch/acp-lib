@@ -42,7 +42,7 @@ export interface NotifyParams {
 }
 export interface PushParams {
   channel: string;
-  item: { id: string; kind: "user_message"; sender: string; content: { type: "text"; text: string }[]; policy?: string | null; delivery?: "queue"; wake?: true };
+  item: { id: string; kind: "user_message"; sender: string; content: import("./attachments.ts").InputPart[]; policy?: string | null; delivery?: "queue"; wake?: true };
 }
 export interface InitializeResult {
   protocolVersion: 1;
@@ -52,6 +52,7 @@ export interface InitializeResult {
 
 export interface Description {
   reminderLimits?: import("./reminders.ts").ReminderLimits;
+  attachmentLimits?: { fileBytes: number; chunkBytes: number; openUploads: number; uploadIdleMs: number };
   configOptions: unknown[]; commands: unknown[]; policies: string[];
   /** Advertise only implemented guarantees: `durable`/`true` are reported by a
    * server only once its acceptance commits to storage before acknowledging. */
@@ -61,7 +62,7 @@ export interface Description {
      * reject the field. */
     startupChannelChanges?: true;
     /** Decision 0021: tool catalogs, `functions/call` callbacks and invocation records. */
-    functions?: true; reminders?: true; routines?: true; unattendedTurnGuard?: true };
+    functions?: true; reminders?: true; routines?: true; unattendedTurnGuard?: true; managedAttachments?: true; orderedParts?: true };
 }
 
 // ---- Channel changes applied at open, decision 0020.
@@ -171,6 +172,12 @@ export interface TransferLimits { chunkBytes: 524288; maxBytes: 268435456; idleM
 export type ArchiveLocation = { type: "path"; path: string } | { type: "transfer" };
 
 export interface DurableMethods extends ModelExecutionMethods, ReminderMethods, Omit<OperatorMethods, "session/create"> {
+  "attachment/begin": { params: { channel: string; filename: string; mediaType: string; bytes: number; sha256: string }; result: { uploadId: string; attachmentId: string; offset: number } };
+  "attachment/status": { params: { channel: string; uploadId: string }; result: { offset: number } };
+  "attachment/write": { params: { channel: string; uploadId: string; offset: number; data: string }; result: { offset: number } };
+  "attachment/finalize": { params: { channel: string; uploadId: string }; result: import("./attachments.ts").AttachmentMetadata };
+  "attachment/abort": { params: { channel: string; uploadId: string }; result: Record<string, never> };
+  "attachment/read": { params: { channel: string; id: string; offset: number }; result: { metadata: import("./attachments.ts").AttachmentMetadata; data: string; nextOffset?: number } };
   /** Open an existing session with runtime configuration. Returns the load
    * view; a second load on the same endpoint returns a fresh view only.
    * `channelChanges` (decision 0020) is validated as a whole, then applied
@@ -269,7 +276,7 @@ export interface Methods {
 }
 export interface RpcRequest { jsonrpc: "2.0"; id: number; method: string; params: unknown }
 export type RpcResponse = { jsonrpc: "2.0"; id: number; result: unknown } |
-  { jsonrpc: "2.0"; id: number | null; error: { code: number; message: string; data: { code: string } } };
+  { jsonrpc: "2.0"; id: number | null; error: { code: number; message: string; data: { code: string; expectedOffset?: number } } };
 export interface RpcNotification { jsonrpc: "2.0"; method: "channel/event"; params: ChannelEvent }
 // ---- Requests from the harness to the host, decision 0021. IDs are numeric,
 // per connection, and separate from the IDs of host requests: direction tells
