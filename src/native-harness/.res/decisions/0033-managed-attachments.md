@@ -139,8 +139,14 @@ implementation and conformance changes follow independent approval.
    images already active in this turn, leave it pending, allow the current turn
    to finish despite that pending item, and schedule a new turn for it. This
    budget-specific completion rule must be durable and work after resume; it
-   does not change normal finish behavior for other pending inputs. A single
-   item exceeding the budget is rejected before acceptance. Images use
+   does not change normal finish behavior for other pending inputs. Once that
+   turn completes, its active budget is released and the scheduler starts a
+   fresh turn for the still-pending FIFO head, subject to existing lifecycle
+   controls. Failure or interruption also releases that budget and leaves
+   untaken items pending for the next eligible turn; taken items retain their
+   existing terminal and receipt semantics. A single item exceeding the budget
+   is rejected before acceptance with `transfer_limit`, without reserving a
+   place in the queue. Images use
    provider-native parts in order. Binary and
    encoded image data are excluded from persisted model calls, captures,
    diagnostics, ordinary inspector frames and logs; only IDs and metadata
@@ -158,8 +164,8 @@ implementation and conformance changes follow independent approval.
     session has no retained associations, including one with only unreferenced
     ready files or after cleanup, export a detached snapshot projected to the
     correct pre-attachment format and archive version determined by its
-    remaining durable state (format 8/archive 7 if routines state requires it;
-    otherwise the appropriate earlier supported pair). Preserve all routines
+    remaining durable state (format 8/archive 7 if routines or guard state
+    requires it; otherwise the selection defined by decision 0031). Preserve all routines
     rows, receipts and revisions. Never label format 9 as an older format in
     place or mutate the live database for export. Import the projected snapshot
     as that prior format without fabricating attachment state. Older archives
