@@ -2,12 +2,12 @@ import { ExaResponseLimit } from "./exa-transport.ts";
 import { BlockList, isIP } from "node:net";
 import { fetchPreview, searchPreview, type WebHit } from "./preview.ts";
 
-export type WebError = "rate_limited" | "provider_error" | "tool_timeout" | "page_unavailable" | "result_too_large" | "tool_interrupted" | "response_too_large";
+export type WebError = "invalid_arguments" | "rate_limited" | "provider_error" | "tool_timeout" | "page_unavailable" | "result_too_large" | "tool_interrupted" | "response_too_large";
 export interface WebUsage { requestId?: string; usd?: number }
 export type WebResponse = { ok: true; content: string; usage: WebUsage } | { ok: false; code: WebError; message: string; usage: WebUsage };
 /** Transport must reject redirects, enforce raw/decoded 2 MiB caps and abort. */
 export type ExaTransport = (request: { path: "/search" | "/contents"; key: string; body: object; signal: AbortSignal }) => Promise<{ status: number; body: unknown }>;
-const failed = (code: WebError, usage: WebUsage = {}): WebResponse => ({ ok: false, code, message: ({ rate_limited: "Web provider rate limit reached", provider_error: "Web provider request failed", tool_timeout: "Web request timed out", page_unavailable: "Page content is unavailable", result_too_large: "Page metadata exceeds the result limit", tool_interrupted: "Web request was interrupted", response_too_large: "Web provider response exceeds the limit" })[code], usage });
+const failed = (code: WebError, usage: WebUsage = {}): WebResponse => ({ ok: false, code, message: ({ invalid_arguments: "Invalid web tool arguments", rate_limited: "Web provider rate limit reached", provider_error: "Web provider request failed", tool_timeout: "Web request timed out", page_unavailable: "Page content is unavailable", result_too_large: "Page metadata exceeds the result limit", tool_interrupted: "Web request was interrupted", response_too_large: "Web provider response exceeds the limit" })[code], usage });
 const record = (v: unknown): Record<string, unknown> | undefined => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 const usageOf = (value: Record<string, unknown> | undefined): WebUsage => {
   const usage: WebUsage = {}, id = value?.requestId, cost = record(value?.costDollars)?.total;
@@ -30,7 +30,7 @@ export function normalizedWebUrl(value: unknown): string | undefined {
     const family = isIP(host);
     if (family && (blocked.check(host, family === 4 ? "ipv4" : "ipv6") || rawHost.toLowerCase() !== url.hostname.toLowerCase())) return;
     if (family === 6 && !/^[23]/i.test(host)) return;
-    return url.href;
+    return Buffer.byteLength(url.href) <= 2048 ? url.href : undefined;
   } catch { return; }
 }
 export function webArgumentsProblem(name: "web_search" | "web_fetch", value: unknown): string | undefined {
@@ -42,7 +42,7 @@ export function webArgumentsProblem(name: "web_search" | "web_fetch", value: unk
 export async function runExa(input: { operation: "web_search" | "web_fetch"; args: { query: string } | { url: string }; key: string; transport: ExaTransport; maxResults?: number; excerptBytes?: number; deadlineMs?: number; signal?: AbortSignal }): Promise<WebResponse> {
   if (input.signal?.aborted) return failed("tool_interrupted");
   const args = input.args, search = input.operation === "web_search";
-  if (webArgumentsProblem(input.operation, args)) return failed("provider_error");
+  if (webArgumentsProblem(input.operation, args)) return failed("invalid_arguments");
   const url = !search && "url" in args ? normalizedWebUrl(args.url)! : undefined;
   const body = search && "query" in args ? { query: args.query, type: "auto", numResults: input.maxResults ?? 5, contents: { highlights: { maxCharacters: 512 } } }
     : { urls: [url], text: { maxCharacters: 16000 }, maxAgeHours: 24, livecrawlTimeout: 10000, subpages: 0 };

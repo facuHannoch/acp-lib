@@ -134,3 +134,20 @@ test("production Exa transport sends fixed-origin headers and does not follow re
   expect(JSON.parse(requests[0]!.payload).query).toBe("x");
   expect(result).toMatchObject({ ok: false, code: "provider_error", usage: { requestId: "id", usd: 0 } });
 });
+
+ test("invalid arguments fail before provider transport", async () => {
+  let called = false;
+  const result = await runExa({ operation: "web_search", args: { query: " " }, key: "key", transport: async () => { called = true; return { status: 200, body: {} }; } });
+  expect(called).toBe(false); expect(result).toMatchObject({ ok: false, code: "invalid_arguments" });
+});
+
+test("usage projection distinguishes denial, unknown, zero and legacy", async () => {
+  const { webUsageView } = await import("../src/capabilities/tools/web/usage.ts");
+  const exa = { backend: "exa" as const, operation: "web_fetch" as const, paid: true as const };
+  expect(webUsageView({ knownWebCall: false, dispatched: true })).toBeUndefined();
+  expect(webUsageView({ knownWebCall: true, dispatched: true })).toBeUndefined();
+  expect(webUsageView({ knownWebCall: true, dispatched: false })).toEqual({ cost: { kind: "none" } });
+  expect(webUsageView({ knownWebCall: true, dispatched: true, evidence: exa })).toEqual({ backend: "exa", operation: "web_fetch", cost: { kind: "unknown" } });
+  expect(webUsageView({ knownWebCall: true, dispatched: true, evidence: exa, committedUsage: { requestId: "req", usd: 0 } })).toEqual({ backend: "exa", operation: "web_fetch", requestId: "req", cost: { kind: "provider_estimate", usd: 0 } });
+  expect(webUsageView({ knownWebCall: true, dispatched: true, evidence: { ...exa, backend: "http", paid: false } })).toEqual({ backend: "http", operation: "web_fetch", cost: { kind: "none" } });
+});
