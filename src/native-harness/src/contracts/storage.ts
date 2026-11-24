@@ -291,11 +291,11 @@ export interface TimelineRetrievalReads {
 }
 
 export interface ReminderStorage {
-  scheduleAgentReminder(turnId: number, invocationId: string, schedule: import("./reminders.ts").AgentReminderSchedule, text: string,
-    policyNames: readonly string[], expiresAfter: number | null | undefined, now: number): StorageResult<{ reminder: import("./reminders.ts").Reminder; created: boolean }>;
+  scheduleAgentReminder(turnId: number, invocationId: string, schedule: import("./reminders.ts").AgentReminderSchedule | import("./reminders.ts").RoutineSchedule, text: string,
+    policyNames: readonly string[], expiresAfter: number | null | undefined, now: number, delivery?: import("./reminders.ts").RoutineDeliveryOptions): StorageResult<{ reminder: import("./reminders.ts").Reminder; created: boolean }>;
   cancelAgentReminder(turnId: number, id: string): StorageResult<{ id: string; alreadyQueued: boolean; changed: boolean }>;
-  changeReminder(change: import("./reminders.ts").OneOffReminderChange, now: number): StorageResult<import("./reminders.ts").OneOffReminderChangeResult>;
-  readReminder(id: string): StorageResult<import("./reminders.ts").OneOffReminder | undefined>;
+  changeReminder(change: import("./reminders.ts").ReminderChange, now: number): StorageResult<import("./reminders.ts").ReminderChangeResult>;
+  readReminder(id: string): StorageResult<import("./reminders.ts").Reminder | undefined>;
   listReminders(input: import("./reminders.ts").ReminderListParams): StorageResult<import("./reminders.ts").ReminderList>;
   reminderWake(): StorageResult<import("./reminders.ts").ReminderWake>;
   fireDueReminders(now: number): StorageResult<Array<{ channel: string; event: import("./reminders.ts").ReminderChannelEvent }>>;
@@ -434,7 +434,7 @@ export interface SessionStorage extends ModelCallStore, ReminderStorage, Timelin
    * pending items all unchanged), if any turn being resumed has a
    * compatibilityKey different from the key passed to this open. Already running
    * returns no turns; `suspending` is `invalid_state`. */
-  resume(): StorageResult<{ session: StoredSession; turns: StoredTurn[]; unblockedReminders?: import("./reminders.ts").OneOffReminder[] }>;
+  resume(): StorageResult<{ session: StoredSession; turns: StoredTurn[]; unblockedReminders?: import("./reminders.ts").Reminder[] }>;
 
   /** Stop, in one transaction, by lifecycle:
    * - `running`: every running turn becomes interrupted.
@@ -495,7 +495,7 @@ export interface SessionStorage extends ModelCallStore, ReminderStorage, Timelin
    * the checkpoint stays under the session suspension, no turn runs, and the
    * session's own resume continues it. Pending items become eligible once both
    * lifecycles permit. */
-  resumeChannel(channelId: string): StorageResult<{ channel: StoredChannel; turn?: StoredTurn; unblockedReminders?: import("./reminders.ts").OneOffReminder[] }>;
+  resumeChannel(channelId: string): StorageResult<{ channel: StoredChannel; turn?: StoredTurn; unblockedReminders?: import("./reminders.ts").Reminder[] }>;
 
   /** Retire the channel: `retired` is final and the ID is reserved. Refused with
    * `channel_busy`, changing nothing, while the channel has a running or

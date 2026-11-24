@@ -1,3 +1,4 @@
+import { migrateImportedRoutines } from "./engine.ts";
 import { validateReminderArchive } from "./reminder-archive.ts";
 import type { SessionArchive, SessionArchiveV1, StoredSession } from "../../contracts/storage.ts";
 import { Fail, isJson, signatureOf, type Meta, type Tables } from "./engine.ts";
@@ -209,10 +210,10 @@ export function validateArchive(value: unknown): SessionArchive {
     validateReminderArchive(archive.reminderState, snapshot);
     const guard = archive.reminderState?.guard;
     if (archive.archiveVersion === 7) {
-      if (!guard || !Number.isSafeInteger(guard.limit) || guard.limit < 1 || !Array.isArray(guard.counters))
+      if (guard && (!Number.isSafeInteger(guard.limit) || guard.limit < 1 || !Array.isArray(guard.counters)))
         bad("Invalid archived unattended guard");
       const seen = new Set<string>();
-      for (const counter of guard!.counters) {
+      for (const counter of guard?.counters ?? []) {
         if (!counter || !snapshot.channels.some(channel => channel.channelId === counter.channel)
           || seen.has(counter.channel) || !Number.isSafeInteger(counter.spent) || counter.spent < 0 || counter.spent > guard!.limit)
           bad("Invalid archived unattended turn counter");
@@ -243,7 +244,10 @@ export function restoreArchive(tables: Tables, archive: SessionArchive): void {
     const entryIds = Object.fromEntries(snapshot.timeline.filter(entry => entry.messageId).map(entry => [String(entry.seq), entry.messageId!]));
     const max = snapshot.modelCalls.reduce((n, call) => Math.max(n, Number(call.callId) || 0), 0);
     tables.setModelState({ nextCall: max + 1, calls: snapshot.modelCalls, itemIds: {}, scriptPositions: snapshot.scriptPositions, entryIds });
-    if (archive.reminderState) tables.reminders.restore(archive.reminderState);
+    if (archive.reminderState) {
+      tables.reminders.restore(archive.reminderState);
+      migrateImportedRoutines(tables);
+    }
     if (snapshot.revokedTools !== undefined) tables.setRevokedTools(snapshot.revokedTools);
   });
 }

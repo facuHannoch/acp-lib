@@ -1,5 +1,4 @@
-import { proveRoutineCron } from "../src/capabilities/reminders/cron-proof.ts";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { HarnessClient, createInProcessTransport } from "../src/client.ts";
 import { createSession } from "../src/index.ts";
 import { createProtocolServer } from "../src/interfaces/protocol/server.ts";
@@ -15,11 +14,13 @@ for (const mode of ["create", "open"] as const) {
       if (!initial.ok) throw Error(initial.error.message);
       initial.value.close();
     }
+    const config = { version: 1 as const, system: "test", model: { protocol: "scripted" as const, script: "test" },
+      defaultPolicy: "allow", policies: { allow: { fallback: "allow" as const, tools: {} } }, limits: { unattendedTurns: 1 } };
     const now = Date.parse("2026-11-24T12:00:00Z");
     const attempts: string[] = [];
     let failed = false, processed = 0, started = 0;
     const server = createProtocolServer(async request => {
-      const opened = adapter.open({ mode: request.mode, identity });
+      const opened = adapter.open({ mode: request.mode, identity, config });
       if (!opened.ok) throw Error(opened.error.message);
       const session = createSession({ systemPrompt: "test", storage: opened.value,
         reminderClock: { now: () => now, setTimer: () => () => {} },
@@ -32,11 +33,8 @@ for (const mode of ["create", "open"] as const) {
         if (entry.reminderId === "budget" && !failed) {
           failed = true;
           let reads = 0;
-          const proof = proveRoutineCron("0 9 * * *", {
-            start: Date.UTC(2000, 0, 1), end: Date.UTC(2400, 0, 1), initialOffset: 0, transitions: [],
-          }, () => ++reads < 30 ? 0 : 250);
-          if (proof.kind !== "proof_budget") throw Error("Expected real proof exhaustion");
-          return { ok: false, error: { code: "storage_failure", message: "Calendar proof budget exhausted" } };
+          const clock = spyOn(performance, "now").mockImplementation(() => ++reads < 30 ? 0 : 250);
+          try { return change(entry); } finally { clock.mockRestore(); }
         }
         return change(entry);
       };
@@ -50,7 +48,7 @@ for (const mode of ["create", "open"] as const) {
       const reminderChanges: ReminderChange[] = ["first", "budget", "last"].map(reminderId => ({
         op: "create", reminderId, changeId: 1,
         payload: { channel: "alice", text: reminderId, acceptedAt: new Date(now).toISOString(),
-          schedule: { at: new Date(now + 600_000).toISOString() } },
+          schedule: reminderId === "budget" ? { cron: "0 13 * * *", timezone: "Etc/UTC" } : { at: new Date(now + 600_000).toISOString() } },
       }));
       const params = { sessionId: identity.sessionId, reminderChanges,
         channelChanges: [{ channel: "alice", changeId: "channel", displayName: "Alice" }] };
@@ -61,11 +59,14 @@ for (const mode of ["create", "open"] as const) {
       expect(processed).toBe(0);
       expect(started).toBe(0);
 
-      const peek = adapter.open({ mode: "open", identity });
+      const peek = adapter.open({ mode: "open", identity, config });
       if (!peek.ok) throw Error(peek.error.message);
       try {
         const saved = peek.value.readReminder("first");
         expect(saved.ok && saved.value?.id).toBe("first");
+        expect(peek.value.unattendedGuard()).toMatchObject({ ok: true, value: 1 });
+        const failedEntry = peek.value.readReminder("budget");
+        expect(failedEntry.ok && failedEntry.value).toBeUndefined();
         const later = peek.value.readReminder("last");
         expect(later.ok && later.value).toBeUndefined();
       } finally { peek.value.close(); }

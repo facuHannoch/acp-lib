@@ -1,5 +1,6 @@
+import type { ReminderSchedule, RoutineDeliveryOptions } from "../contracts/reminders.ts";
 import { reminderInstant } from "../util/reminder-schedule.ts";
-import type { OneOffReminderChange, ReminderListParams } from "../contracts/reminders.ts";
+import type { ReminderChange, ReminderListParams } from "../contracts/reminders.ts";
 import { SESSION_INPUT_MAX_BYTES } from "../contracts/input-limits.ts";
 
 export class ReminderShapeError extends Error {}
@@ -30,10 +31,29 @@ function instant(value: unknown, field: string) {
   return ms === undefined ? raw : new Date(ms).toISOString();
 }
 
-function schedule(value: unknown) {
+function schedule(value: unknown): ReminderSchedule {
   const input = record(value);
-  keys(input, ["at"]);
-  return { at: instant(input.at, "schedule.at") };
+  if ("at" in input) {
+    keys(input, ["at"]);
+    return { at: instant(input.at, "schedule.at") };
+  }
+  if (input.count !== undefined && input.until !== undefined) return bad("schedule end");
+  const end = input.count !== undefined ? { count: positive(input.count, "schedule.count") }
+    : input.until !== undefined ? { until: instant(input.until, "schedule.until") } : {};
+  if ("every" in input) {
+    keys(input, ["every", "startAt", "count", "until"]);
+    return { ...end, every: positive(input.every, "schedule.every"),
+      ...(input.startAt === undefined ? {} : { startAt: instant(input.startAt, "schedule.startAt") }) };
+  }
+  keys(input, ["cron", "timezone", "count", "until"]);
+  return { ...end, cron: text(input.cron, "schedule.cron"), timezone: text(input.timezone, "schedule.timezone") };
+}
+
+function delivery(payload: Record<string, unknown>): RoutineDeliveryOptions {
+  const { missedRuns, overlap } = payload;
+  if (missedRuns !== undefined && missedRuns !== "coalesce" && missedRuns !== "skip" && missedRuns !== "each") return bad("missedRuns");
+  if (overlap !== undefined && overlap !== "skip" && overlap !== "queue") return bad("overlap");
+  return { ...(missedRuns === undefined ? {} : { missedRuns }), ...(overlap === undefined ? {} : { overlap }) };
 }
 
 function grace(value: unknown) {
@@ -49,28 +69,29 @@ function policyNames(value: unknown): string[] {
 }
 
 /** Validate both batch shape and individual live requests before any mutation. */
-export function parseReminderChange(value: unknown): OneOffReminderChange {
+export function parseReminderChange(value: unknown): ReminderChange {
   const input = record(value);
   keys(input, ["reminderId", "changeId", "op", "payload"]);
   const id = { reminderId: text(input.reminderId, "reminderId"), changeId: positive(input.changeId, "changeId") };
   const payload = record(input.payload);
   switch (input.op) {
     case "create": {
-      keys(payload, ["channel", "schedule", "text", "acceptedAt", "policyNames", "expiresAfter"]);
+      keys(payload, ["channel", "schedule", "text", "acceptedAt", "policyNames", "expiresAfter", "missedRuns", "overlap"]);
       const expiresAfter = grace(payload.expiresAfter);
       return { ...id, op: "create", payload: {
-        channel: text(payload.channel, "channel"), schedule: schedule(payload.schedule),
+        ...delivery(payload), channel: text(payload.channel, "channel"), schedule: schedule(payload.schedule),
         text: text(payload.text, "text"), acceptedAt: instant(payload.acceptedAt, "acceptedAt"),
         policyNames: policyNames(payload.policyNames), ...(expiresAfter === undefined ? {} : { expiresAfter }),
       } };
     }
     case "update": {
-      keys(payload, ["schedule", "acceptedAt", "text", "state", "expiresAfter"]);
+      keys(payload, ["schedule", "acceptedAt", "text", "state", "expiresAfter", "missedRuns", "overlap"]);
       if (!Object.keys(payload).length || (payload.schedule === undefined) !== (payload.acceptedAt === undefined)) return bad("edit");
       const state = payload.state;
       if (state !== undefined && state !== "active" && state !== "paused") return bad("state");
       const expiresAfter = grace(payload.expiresAfter);
-      const edit: { text?: string; state?: "active" | "paused"; expiresAfter?: number | null } = {
+      const edit: Omit<Extract<ReminderChange, { op: "update" }>["payload"], "schedule" | "acceptedAt"> = {
+        ...delivery(payload),
         ...(payload.text === undefined ? {} : { text: text(payload.text, "text") }),
         ...(state === undefined ? {} : { state }),
         ...(expiresAfter === undefined ? {} : { expiresAfter }),
@@ -85,7 +106,7 @@ export function parseReminderChange(value: unknown): OneOffReminderChange {
   }
 }
 
-export function parseReminderBatch(value: unknown): OneOffReminderChange[] {
+export function parseReminderBatch(value: unknown): ReminderChange[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 100) return bad("batch");
   return value.map(parseReminderChange);

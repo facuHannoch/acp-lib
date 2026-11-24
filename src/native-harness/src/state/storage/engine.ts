@@ -1,7 +1,13 @@
+import { resolveRoutineZone } from "../../capabilities/reminders/iana-zones.ts";
+import { SESSION_INPUT_MAX_BYTES } from "../../contracts/input-limits.ts";
+import { advanceRoutine } from "../../capabilities/reminders/routine-advance.ts";
+import { planRoutineEpisode } from "../../capabilities/reminders/routine-occurrence.ts";
+import { prepareRoutineSchedule } from "../../capabilities/reminders/routine-schedule.ts";
+import { isRoutine, prepareRoutineRow } from "./routine-row.ts";
 import { unattendedAdmission } from "../../capabilities/reminders/unattended.ts";
 import { normalizeReminderSchedule, resolveAgentReminder } from "../../util/reminder-schedule.ts";
 import { applyReminderChange } from "./reminder-change.ts";
-import type { OneOffReminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
+import type { OneOffReminder, Reminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
 import type { ReminderTables } from "./reminder-tables.ts";
 import { searchTimeline, readMessageWindow } from "./retrieval.ts";
 import type { InspectionEntry } from "../../contracts/inspection.ts";
@@ -71,6 +77,7 @@ export interface Tables extends ContextRows {
   /** Insert, or update milestone/turn link of an existing item. */
   putItem(item: StoredItem): void;
   /** Milestone `received` (never `withdrawn`), in acceptedSeq order. */
+  hasOpenRoutineNotice(channelId: string, source: string): boolean;
   pendingItems(channelId: string, limit?: number): StoredItem[];
   /** In take (entrySeq) order. */
   itemsOfTurn(turnId: number): StoredItem[];
@@ -203,10 +210,25 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
  * and its checkpoint survive, in every lifecycle); a clean session suspension
  * keeps all. A `suspending` channel never committed and returns to `open`. A
  * clean state with nothing to change is left unwritten. */
+function routineHeldChannels(tables: Tables, meta: Meta): string[] {
+  const limit = meta.formatVersion >= 8 ? tables.reminders.guardLimit() : undefined;
+  if (limit === undefined) return [];
+  return tables.channels().filter(({ channelId, lifecycle }) => {
+    if (lifecycle !== "open" || tables.reminders.guardSpent(channelId) < limit) return false;
+    let bytes = SESSION_INPUT_MAX_BYTES;
+    for (const item of tables.pendingItems(channelId, 16)) {
+      bytes -= byteLength(item.text);
+      if (bytes < 0) break;
+      if (item.kind === "participant_message") return false;
+    }
+    return true;
+  }).map(channel => channel.channelId);
+}
+
 function refreshReminderWake(tables: Tables, meta: Meta) {
   if (meta.formatVersion < 7) return;
   const wake = tables.reminders.wake();
-  const nextDueAt = meta.lifecycle === "running" ? tables.reminders.eligible(null, 1)[0]?.reminder.nextRunAt ?? null : null;
+  const nextDueAt = meta.lifecycle === "running" ? tables.reminders.eligible(null, 1, routineHeldChannels(tables, meta))[0]?.reminder.nextRunAt ?? null : null;
   if (nextDueAt !== wake.nextDueAt) tables.reminders.setWake({ nextDueAt, reminderRevision: wake.reminderRevision + 1 });
 }
 
@@ -224,7 +246,52 @@ export function bindUnattendedGuard(tables: Tables, requested: number | undefine
   tables.setMeta({ ...meta, formatVersion: 8, revision: meta.revision + 1 });
 }
 
-export function recover(tables: Tables, upgrade?: () => void): void {
+type ReminderDeliveryEvent = { channel: string; event: ReminderChannelEvent };
+
+function migrateRoutineZones(tables: Tables, meta: Meta, events: ReminderDeliveryEvent[]) {
+  if (meta.formatVersion < 8) return false;
+  const version = resolveRoutineZone("Etc/UTC")!.timezoneVersion;
+  let after = 0, changed = false;
+  for (;;) {
+    const batch = tables.reminders.list(undefined, after, 100);
+    for (const saved of batch) {
+      const { reminder: row } = saved;
+      if (!isRoutine(row) || !row.timezoneVersion || row.timezoneVersion === version) continue;
+      if (row.timezoneVersion > version) fail("incompatible", "Routine requires newer timezone data");
+      if (row.state === "done" || row.state === "cancelled" || row.state === "expired" || row.timezoneMigration?.targetVersion === version) continue;
+      const anchor = Date.parse(row.acceptedAt);
+      const schedule = row.remainingCount === undefined ? row.schedule : { ...row.schedule, count: row.remainingCount, until: undefined };
+      const prepared = prepareRoutineRow(schedule, row.acceptedAt, anchor, saved.defaultedExpiry ? undefined : row.expiresAfter, saved.processedThrough);
+      let reminder: Reminder;
+      if (prepared.kind !== "valid") {
+        const timezoneMigration = { fromVersion: row.timezoneVersion, targetVersion: version, cause: prepared.kind };
+        reminder = { ...row, state: "blocked", nextRunAt: null, blockedReason: "invalid_schedule", timezoneMigration } as Reminder;
+        const event = { type: "routine_migration_blocked", reminderId: row.id, ...timezoneMigration } as const;
+        tables.reminders.recordDisposition(event);
+        events.push({ channel: row.channel, event });
+      } else {
+        const state = row.timezoneMigration ? "active" : row.state;
+        reminder = { ...row, ...prepared.fields, schedule: row.schedule, state,
+          blockedReason: row.timezoneMigration ? undefined : row.blockedReason,
+          nextRunAt: state === "active" ? prepared.fields.nextRunAt : null, timezoneMigration: undefined } as Reminder;
+      }
+      tables.reminders.put({ ...saved, reminder, episodeCutoff: undefined, coalescedPending: undefined });
+      events.push({ channel: row.channel, event: { type: "reminder_changed", reminder } });
+      changed = true;
+    }
+    if (batch.length < 100) return changed;
+    after = batch.at(-1)!.sequence;
+  }
+}
+
+export function migrateImportedRoutines(tables: Tables) {
+  const meta = tables.getMeta();
+  if (!migrateRoutineZones(tables, meta, [])) return;
+  refreshReminderWake(tables, meta);
+  tables.setMeta({ ...meta, revision: meta.revision + 1 });
+}
+
+export function recover(tables: Tables, upgrade?: () => void, reminderEvents: ReminderDeliveryEvent[] = []): void {
   tables.transaction(() => {
     if (upgrade) upgrade();
     const meta = tables.getMeta();
@@ -257,6 +324,7 @@ export function recover(tables: Tables, upgrade?: () => void): void {
       if (changed) tables.setModelState(state);
     }
     if (meta.formatVersion < 6) { meta.formatVersion = 6; changed = true; }
+    changed = migrateRoutineZones(tables, meta, reminderEvents) || changed;
     refreshReminderWake(tables, meta);
     if (changed) tables.setMeta({ ...meta, revision: meta.revision + 1 });
   });
@@ -280,7 +348,7 @@ function uncertain(tables: Tables, turn: TurnRow): string[] {
 }
 
 /** The contract over any backend. `ownerKey` is the key passed to this open. */
-export function createEngine(tables: Tables, ownerKey: string, release: () => void, config?: ManagedConfig, incompatibleViewOnly = false): SessionStorage {
+export function createEngine(tables: Tables, ownerKey: string, release: () => void, config?: ManagedConfig, incompatibleViewOnly = false, recoveredReminderEvents: ReminderDeliveryEvent[] = []): SessionStorage {
   let closed = false;
   // This is the config validated at open, not the separately mutable saved copy.
   const ownerSnapshot = config === undefined ? undefined : structuredClone(config);
@@ -475,21 +543,22 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       meta.formatVersion = 7;
     }
   };
-  const putReminder = (meta: Meta, reminder: OneOffReminder, defaultedExpiry?: boolean, original?: string) => {
+  const putReminder = (meta: Meta, reminder: Reminder, defaultedExpiry?: boolean, original?: string) => {
     activateReminders(meta);
     const existing = reminders.get(reminder.id);
     const revision = seq(meta);
-    reminders.put({ sequence: existing?.sequence ?? revision, reminder, defaultedExpiry: defaultedExpiry ?? existing?.defaultedExpiry ?? false, original: existing?.original ?? original });
+    reminders.put({ ...existing, sequence: existing?.sequence ?? revision, reminder, defaultedExpiry: defaultedExpiry ?? existing?.defaultedExpiry ?? false, original: existing?.original ?? original });
   };
   const validReminderPolicies = (names: readonly string[]) =>
     names.every(name => name !== legacy && Object.hasOwn(activeConfig.policies, name));
   function unblockReminders(meta: Meta, channelId?: string) {
-    const unblocked: OneOffReminder[] = [];
+    const unblocked: Reminder[] = [];
     let after = 0;
     for (;;) {
       const batch = reminders.blocked(channelId, after, 100);
       for (const { reminder } of batch) {
         if (tables.channel(reminder.channel)?.lifecycle !== "open" || !validReminderPolicies(reminder.policyNames)) continue;
+        if (isRoutine(reminder)) continue;
         const { blockedReason: _block, ...fields } = reminder;
         const active: OneOffReminder = { ...fields, state: "active", nextRunAt: reminder.schedule.at };
         putReminder(meta, active);
@@ -581,27 +650,54 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
 
     changeReminder: (change, wallTime) => run(meta => {
       requireCompatible();
+      if (change.op !== "cancel" && (change.payload.schedule?.at === undefined && change.payload.schedule !== undefined)) {
+        activateReminders(meta);
+        meta.formatVersion = 8;
+      }
+      const replacing = change.op === "update" && change.payload.schedule !== undefined;
       return applyReminderChange({
+        guardEnabled: () => reminders.guardLimit() !== undefined,
+        activeRoutines: channel => reminders.activeRoutines(channel),
+        processedThrough: id => reminders.get(id)?.processedThrough,
+        proofExhausted: () => fail("storage_failure", "Routine calendar proof budget exhausted"),
         receipt: reminders.receipt, highWater: reminders.highWater, originalCreate: reminders.originalCreate,
         defaultedExpiry: id => reminders.get(id)?.defaultedExpiry ?? false,
-        get: id => reminders.get(id)?.reminder, put: (reminder, defaulted, original) => putReminder(meta, reminder, defaulted, original),
+        get: id => reminders.get(id)?.reminder, put: (reminder, defaulted, original) => {
+          putReminder(meta, reminder, defaulted, original);
+          if (replacing && isRoutine(reminder)) {
+            const row = reminders.get(reminder.id)!;
+            if (row.episodeCutoff !== undefined || row.coalescedPending !== undefined)
+              reminders.put({ ...row, episodeCutoff: undefined, coalescedPending: undefined });
+          }
+        },
         saveReceipt(receipt) { activateReminders(meta); reminders.saveReceipt(receipt); seq(meta); },
         channelStatus: channel => tables.channel(channel)?.lifecycle, validPolicies: validReminderPolicies,
       }, change, wallTime);
     }),
-    scheduleAgentReminder: (turnId, invocationId, schedule, body, inherited, grace, wallTime) => run(meta => {
+    scheduleAgentReminder: (turnId, invocationId, schedule, body, inherited, grace, wallTime, delivery) => run(meta => {
       requireCompatible();
       const turn = running(turnId);
       const id = `agent-reminder:${invocationId}`;
       const existing = reminders.get(id)?.reminder;
       if (existing) return { reminder: existing, created: false };
       const anchor = new Date(wallTime).toISOString();
-      const at = resolveAgentReminder(schedule, wallTime);
-      const timing = at && normalizeReminderSchedule(at, anchor, grace, wallTime);
-      if (!timing) return fail("invalid_input", "Invalid reminder schedule");
       const policyNames = [...new Set(inherited.filter(name => name !== legacy))].sort();
       if (!validReminderPolicies(policyNames)) return fail("invalid_policy", "Unknown reminder policy");
       const creatorId = tables.itemsOfTurn(turnId).find(item => item.kind === "participant_message")?.senderId;
+      if ("every" in schedule || "cron" in schedule) {
+        if (reminders.guardLimit() === undefined) return fail("invalid_state", "An unattended turn guard is required");
+        if (reminders.activeRoutines(turn.channelId) >= 20) return fail("invalid_input", "Active routine limit reached");
+        const prepared = prepareRoutineRow(schedule, anchor, wallTime, grace);
+        if (prepared.kind === "proof_budget") return fail("storage_failure", "Routine calendar proof budget exhausted");
+        if (prepared.kind !== "valid") return fail("invalid_input", "Invalid routine schedule");
+        const routine = { ...prepared.fields, id, channel: turn.channelId, createdBy: "agent", creatorId, policyNames, text: body,
+          state: "active", missedRuns: delivery?.missedRuns ?? "coalesce", overlap: delivery?.overlap ?? "skip" } as Reminder;
+        putReminder(meta, routine, grace === undefined);
+        return { reminder: routine, created: true };
+      }
+      const at = resolveAgentReminder(schedule, wallTime);
+      const timing = at && normalizeReminderSchedule(at, anchor, grace, wallTime);
+      if (!timing) return fail("invalid_input", "Invalid reminder schedule");
       const reminder: OneOffReminder = { ...timing, id, channel: turn.channelId, createdBy: "agent",
         ...(creatorId === undefined ? {} : { creatorId }), policyNames, text: body, state: "active", nextRunAt: timing.schedule.at };
       putReminder(meta, reminder, grace === undefined);
@@ -633,12 +729,61 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return { reminders: page.map(row => row.reminder), ...(rows.length > limit ? { next: cursor(page.at(-1)!.sequence) } : {}) };
     }, true),
     reminderWake: () => run(() => reminders.wake(), true),
-    fireDueReminders: wallTime => run(meta => {
+    fireDueReminders: wallTime => {
+      const result = run(meta => {
       requireCompatible();
-      const events: Array<{ channel: string; event: ReminderChannelEvent }> = [];
+      const events: ReminderDeliveryEvent[] = [...recoveredReminderEvents];
       if (meta.lifecycle !== "running") return events;
       const firedAt = new Date(wallTime).toISOString();
-      for (const { reminder } of reminders.eligible(firedAt, 100)) {
+      const held = routineHeldChannels(tables, meta);
+      for (let attempts = 0; attempts < 100; attempts++) {
+        const saved = reminders.eligible(firedAt, 1, held)[0];
+        if (!saved) break;
+        const { reminder } = saved;
+        if (isRoutine(reminder)) {
+          const { channel, id } = reminder;
+          if (!validReminderPolicies(reminder.policyNames)) {
+            const blocked: Reminder = { ...reminder, state: "blocked", nextRunAt: null, blockedReason: "invalid_policy" };
+            putReminder(meta, blocked);
+            events.push({ channel, event: { type: "reminder_changed", reminder: blocked } });
+            continue;
+          }
+          const limit = reminders.guardLimit();
+          if (limit === undefined || !unattendedAdmission(limit, reminders.guardSpent(channel),
+            boundaryPending(channel).some(item => item.kind === "participant_message")).eligible) break;
+          const grace = saved.defaultedExpiry ? undefined : reminder.expiresAfter;
+          const schedule = reminder.remainingCount === undefined ? reminder.schedule
+            : { ...reminder.schedule, count: reminder.remainingCount, until: undefined };
+          const prepared = prepareRoutineSchedule(schedule, reminder.acceptedAt, Math.max(wallTime, Date.parse(reminder.acceptedAt)), saved.processedThrough);
+          if (prepared.kind !== "valid") fail("storage_failure", "Saved routine calendar cannot be evaluated");
+          if (prepared.kind !== "valid") continue;
+          const calendar = prepared.calendar;
+          const cutoff = saved.episodeCutoff ?? wallTime;
+          const step = planRoutineEpisode(calendar, 0, cutoff, grace, reminder.missedRuns)[0];
+          if (!step) break;
+          const overlapping = reminder.overlap === "skip" && tables.hasOpenRoutineNotice(channel, `reminder:${id}`);
+          const partial = saved.coalescedPending ?? 0;
+          const effective = step.kind === "enqueue" && partial ? { ...step, represented: step.represented + partial } : step;
+          const advanced = advanceRoutine(reminder, calendar, effective, wallTime, grace, overlapping);
+          if (advanced.disposition) {
+            reminders.recordDisposition(advanced.disposition);
+            events.push({ channel, event: advanced.disposition });
+          }
+          if (advanced.notice) {
+            const { noticeId, occurrenceId, scheduledAt, text } = advanced.notice;
+            accept(meta, { kind: "external_notice", itemId: noticeId, channelId: channel, senderId: `reminder:${id}`,
+              externalSource: `reminder:${id}`, text, inheritedPolicyNames: reminder.policyNames });
+            events.push({ channel, event: { type: "reminder_fired", reminderId: id, occurrenceId, scheduledAt, firedAt, noticeId } });
+          }
+          seq(meta);
+          const nextDue = advanced.reminder.nextRunAt;
+          reminders.put({ ...saved, reminder: advanced.reminder, processedThrough: calendar.at(step.last),
+            episodeCutoff: nextDue !== null && Date.parse(nextDue) <= cutoff ? cutoff : undefined,
+            coalescedPending: step.kind === "coalesced" ? partial + step.last - step.first + 1
+              : step.kind === "enqueue" ? undefined : saved.coalescedPending });
+          events.push({ channel, event: { type: "reminder_changed", reminder: advanced.reminder } });
+          continue;
+        }
         const { id, channel, schedule } = reminder;
         const scheduledAt = schedule.at, occurrenceId = `reminder:${id}:${scheduledAt}`;
         if (reminder.expiresAt !== null && reminder.expiresAt <= firedAt) {
@@ -659,7 +804,10 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         events.push({ channel, event: { type: "reminder_fired", reminderId: id, occurrenceId, scheduledAt, firedAt, noticeId } });
       }
       return events;
-    }),
+      });
+      if (result.ok) recoveredReminderEvents.length = 0;
+      return result;
+    },
 
     beginTurn: (channelId, intake) => run(meta => {
       requireCompatible();

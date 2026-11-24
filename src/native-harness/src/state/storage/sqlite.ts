@@ -453,6 +453,9 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     item(id) { const row = s.item.get(id); return row ? item(row) : undefined; },
     putItem(i) { s.putItem.run(i.itemId, i.kind, i.channelId, i.senderId, i.sourceChannelId ?? null, i.text, i.signature,
       i.acceptedSeq, i.acceptedAt, i.milestone, i.turnId ?? null, i.entrySeq ?? null, i.withdrawnAt ?? null, JSON.stringify(i.policy ?? { resolved: "__legacy_allow", inherited: [] }), i.externalSource ?? null); },
+    hasOpenRoutineNotice: (channelId, source) => !!db.query(`SELECT 1 FROM items i LEFT JOIN turns t USING(turn_id)
+      WHERE i.channel_id = ? AND i.external_source = ? AND i.kind = 'external_notice'
+      AND (i.milestone = 'received' OR t.status IN ('running','suspended')) LIMIT 1`).get(channelId, source),
     pendingItems: (channelId, limit) => s.pending.all(channelId, limit ?? -1).map(item),
     itemsOfTurn: turnId => s.ofTurn.all(turnId).map(item),
     items: () => s.items.all().map(item),
@@ -593,6 +596,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           } catch (error) { clone.close(); throw error; }
         }
         const tables = sqliteTables(db), owner = db;
+        const reminderEvents: NonNullable<Parameters<typeof recover>[2]> = [];
         tables.transaction(() => {
           checkUnattendedGuard(tables, config?.limits?.unattendedTurns);
           refreshReplyIds(owner);
@@ -600,12 +604,12 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           const compatible = meta.formatVersion < 4 || referencesCompatible(tables, config);
           if (meta.formatVersion >= 4 && meta.formatVersion < 6 && compatible) addExternalSource(owner);
           if (compatible)
-            recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); addExternalSource(owner); } : undefined);
+            recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); addExternalSource(owner); } : undefined, reminderEvents);
           if (compatible) bindUnattendedGuard(tables, config?.limits?.unattendedTurns);
           if (tables.getMeta().formatVersion >= 6) installContextPolicyIndex(owner);
           refreshRetrieval(owner, tables.entries);
         });
-        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config), revision: tables.getMeta().revision };
+        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config, false, reminderEvents), revision: tables.getMeta().revision };
       } catch (error) {
         try { db?.close(); } catch { /* The original failure is the one to report. */ }
         const code = (error as { code?: string }).code;

@@ -1,4 +1,4 @@
-import type { ReminderChannelEvent, OneOffReminderChange, ReminderClock, ReminderSessionEvent } from "../contracts/reminders.ts";
+import type { ReminderChannelEvent, ReminderChange, ReminderClock, ReminderSessionEvent } from "../contracts/reminders.ts";
 import type { ReminderStorage, StorageResult } from "../contracts/storage.ts";
 import { createReminderTimer } from "./reminder-timer.ts";
 
@@ -48,7 +48,7 @@ export function createReminderRuntime(
     },
     stop() { closed = true; running = false; timer.stop(); },
     refresh, process,
-    change(change: OneOffReminderChange) {
+    change(change: ReminderChange) {
       const prior = value(storage.readReminder(change.reminderId));
       const result = storage.changeReminder(change, clock.now());
       if (result.ok && result.value.outcome === "applied") {
