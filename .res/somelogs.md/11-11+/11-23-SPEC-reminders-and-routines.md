@@ -113,6 +113,38 @@ interface Reminder {
 - **Lists with the harness stopped** show the cached confirmed reminders plus pending intents, marked pending.
 - A cancel racing a firing: the harness decides and reports which happened.
 
+## Wire contract
+
+Proposed 2026-11-24, reusing the harness's existing patterns (decision 0020's startup channel changes, decision
+0025's notices).
+
+- **Changes at open:** `session/create` and `session/load` take `reminderChanges`, next to `channelChanges`, applied
+  after the channel changes and before recovered or due work, so a cancel made while stopped lands before a past-due
+  reminder fires. After the open, changes use the live requests.
+- **An entry:** `{ reminderId, changeId, op: "create" | "update" | "cancel", payload }` (`changeId` is acp-client's
+  version, echoed). **A result:** `{ reminderId, changeId, outcome: "applied" | "blocked", reason? }`, reasons
+  `invalid_policy`, `channel_missing`, `channel_retired`, `invalid_schedule`, `limit_exceeded`, `conflict`,
+  `not_found`. A malformed batch is rejected whole; otherwise each entry stands alone.
+- **Idempotency:** a create repeated with the same id and payload is `applied` (the existing reminder); the same id
+  with a different payload is `blocked`, `conflict`; a cancel of a cancelled or finished reminder is `applied`; an
+  update of an unknown one is `blocked`, `not_found`.
+- **Next due:** `nextDueAt: string | null` (ISO, UTC, leaving out suspended channels), in the open's response and in
+  a session event `reminders_due { nextDueAt, revision }` when it changes.
+- **Channel events:** `reminder_fired { reminderId, occurrenceId, scheduledAt, firedAt, noticeId, missed? }`,
+  `reminder_cancelled { reminderId, by: "host" | "agent" | "channel_retired" | "completed" }`,
+  `reminder_changed { reminder }`. **No replay at open:** the open's view carries each reminder's state (`state`,
+  `lastRunAt`, last occurrence), and what a missed fire produced is in the view's turns and items.
+- **Idle stop, atomic:** `session/stop { ifIdle: true, unlessDueWithinMs? }`: the harness checks idle (no running
+  turn, no waiting input, no pending approval) and no reminder due within the window, then stops, in one step;
+  returns `{ stopped: boolean }`. acp-client passes the window (it knows the startup time).
+- **Limits:** a harness limit refusal is `blocked`, `limit_exceeded` on an intent, and a typed error with the same
+  code on a live request.
+- **Capabilities:** the server advertises `capabilities.reminders: true` in `initialize` (requests, events and
+  `reminderChanges`); acp-client's consumer flag is `conversationCapabilities.reminders`.
+- **Absolute schedules only on the wire:** `{ at }`, `{ every, startAt }`, `{ cron, timezone }`. acp-client converts
+  `in` before sending; the agent's tools accept `in` and the harness converts it; a host request with `in` is
+  `invalid_schedule`.
+
 ## Routines
 
 A routine is a reminder whose schedule produces many due times (added 2026-11-23). Ownership, storage, the notice
