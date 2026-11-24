@@ -80,6 +80,7 @@ export async function openOrCreate(
         if (staged.length && code === "storage_failure") {
           if (++storageAttempts === 1 && !frozen) await reminders?.freezeStartupRetry(config.sessionId, staged);
           if (storageAttempts === 3) {
+            await reminders?.freezeStartupRetry(config.sessionId, staged, true);
             throw new HarnessClientError("reminder_batch_retry_exhausted", "Startup reminder batch exhausted three attempts");
           }
           // Create can publish before failing. The same frozen batch goes through

@@ -45,6 +45,7 @@ export interface ReminderServiceOptions {
   readonly negotiatedLimits?: () => ReminderLimits | undefined;
   readonly refresh?: (channel?: string, id?: string) => Promise<void>;
   readonly running?: () => boolean;
+  readonly canDiscardExhausted?: () => boolean;
   readonly now?: () => number;
   readonly limits?: ReminderLimits;
   readonly authorize?: (conversationId: string, op: ReminderChange["op"]) => boolean;
@@ -212,6 +213,16 @@ export class ReminderService {
       pause: (id: string) => mutate("update", id, {}, "paused"),
       resume: (id: string) => mutate("update", id, {}, "active"),
       cancel: (id: string) => mutate("cancel", id, {}, "cancelled"),
+      discardExhausted: async (id: string) => {
+        check();
+        authorize("update");
+        return this.transact(async repo => {
+          if (this.options.canDiscardExhausted?.() === false) {
+            throw new ReminderError("conflict", "Stop the harness before discarding exhausted reminder entries");
+          }
+          return repo.discardExhausted(id, conversationId);
+        });
+      },
       discardBlocked: async (id: string) => {
         check();
         authorize("update");
@@ -236,6 +247,7 @@ export function createAgentReminderService(
 ): ReminderService {
   const service = new ReminderService({
     ...options, persistence,
+    canDiscardExhausted: () => host?.state === "stopped" || host?.state === "failed",
     running: () => host?.state === "running" && host.reminderSync?.supported === true,
     supported: () => host?.reminderSync?.supported,
     routineUnavailable: () => host?.reminderSync

@@ -439,3 +439,28 @@ test("routine expiry consumes a range and becomes terminal only from the authori
     expect(await snapshot()).toMatchObject({ status: "completed", remainingCount: 0, nextRunAt: null });
   } finally { await s.persistence.close(); }
 });
+
+test("discardExhausted removes only the chosen reminder from the frozen batch", async () => {
+  const s = await startup();
+  try {
+    for (const id of ["broken", "keep"]) s.peer.rows.set(id, s.saved(id));
+    await s.sync.initialize({ capabilities: negotiated });
+    await s.open(3);
+    await s.reminders.update("broken", { text: "bad change" });
+    await s.reminders.update("keep", { text: "good change" });
+    expect(await s.reminders.discardExhausted("broken")).toBe(false);
+    s.peer.failId = "broken";
+    s.peer.failures = 10;
+    await expect(s.open()).rejects.toMatchObject({ code: "reminder_batch_retry_exhausted" });
+    const original = (await s.repo.wake()).startupRetry?.entries;
+    expect(original?.map(entry => entry.reminderId)).toEqual(["broken", "keep"]);
+    expect(await s.reminders.discardExhausted("broken")).toBe(true);
+    expect(await s.reminders.discardExhausted("broken")).toBe(false);
+    expect((await s.repo.wake()).startupRetry?.entries).toEqual(original?.slice(1));
+    expect((await s.repo.list()).find(row => row.id === "broken")).toMatchObject({ highWater: 1, changes: [] });
+    await s.open();
+    expect(s.peer.rows.get("broken")?.text).toBe("broken");
+    expect(s.peer.rows.get("keep")?.text).toBe("good change");
+    expect((await s.repo.wake()).startupRetry).toBeUndefined();
+  } finally { await s.persistence.close(); }
+});

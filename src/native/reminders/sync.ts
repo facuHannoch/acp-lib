@@ -112,8 +112,8 @@ export class ReminderSync {
     return retry?.sessionId === id ? [...retry.entries] : undefined;
   }
 
-  async freezeStartupRetry(sessionId: string, entries: readonly WireChange[]): Promise<void> {
-    await this.repository.setStartupRetry({ sessionId, entries });
+  async freezeStartupRetry(sessionId: string, entries: readonly WireChange[], exhausted?: true): Promise<void> {
+    await this.repository.setStartupRetry({ sessionId, entries, exhausted });
   }
 
   async replacementAttempted(id: string): Promise<boolean> {

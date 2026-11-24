@@ -65,7 +65,7 @@ export interface ReminderWakeIndex {
   readonly effectiveAt: number | null;
   readonly supported?: boolean;
   readonly replacementAttempted?: string;
-  readonly startupRetry?: { sessionId: string; entries: readonly WireChange[] };
+  readonly startupRetry?: { sessionId: string; entries: readonly WireChange[]; exhausted?: true };
 }
 
 export interface ReminderStorage {
@@ -93,6 +93,7 @@ export interface ReminderPersistence {
   markMaybeSent(id: string, changeId: number, wire?: WireChange): Promise<ReminderChange | undefined>;
   acknowledge(id: string, changeId: number, outcome: { confirmed: Reminder } | { reason: string }): Promise<boolean>;
   discardBlocked(id: string): Promise<void>;
+  discardExhausted(id: string, conversationId: string): Promise<boolean>;
   observe(reminder: Reminder): Promise<void>;
   restoreStaged(change: ReminderChange): Promise<void>;
   quarantine(id: string, changeId: number, reason: string): Promise<void>;
@@ -336,6 +337,21 @@ export class StoredReminderPersistence implements ReminderPersistence {
         if (!row.confirmed || seen.has(row.id) || row.changes.some(change => change.state === "pending" || change.state === "maybe_sent")) continue;
         this.store.save({ ...row, confirmed: { ...row.confirmed, unreconciled: false, missing: true } });
       }
+    });
+  }
+
+  discardExhausted(id: string, conversationId: string): Promise<boolean> {
+    return this.write(() => {
+      const journal = this.store.get(id);
+      const { startupRetry, ...wake } = this.store.wake();
+      if (!startupRetry?.exhausted || journal?.conversationId !== conversationId) return false;
+      const discarded = new Set(startupRetry.entries.filter(entry => entry.reminderId === id).map(entry => entry.changeId));
+      if (!discarded.size) return false;
+      const remaining = startupRetry.entries.filter(entry => entry.reminderId !== id);
+      this.store.save({ ...journal, changes: journal.changes.filter(change => !discarded.has(change.changeId)) });
+      this.store.saveWake(remaining.length ? { ...wake, startupRetry: { ...startupRetry, entries: remaining } } : wake);
+      this.recompute();
+      return true;
     });
   }
 
