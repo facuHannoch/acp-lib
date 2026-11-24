@@ -319,3 +319,16 @@ Copied to `contracts/0031-one-off-reminders-34969fd.md`; it overrides the plan w
 - Stop: `{ stopped:true }` or `{ stopped:false, reason: busy | next_due_soon }`; window defaults to 0.
 - Harness timer is clamped to 60 s chunks with a wall-clock recheck; the cold wake is acp-client's (R-H3 on their side).
 - Real-stdio tests wait for R-H2 (reviewed runnable SHA); R8 uses a scripted fake from 0031. Brief: `briefs/11-24-BRIEF-R8-reminders-wire.md`.
+
+## Round 10 (2026-11-24): R8 rulings and haurness-l's clarifications
+
+R8 conformance report (cod2b-t `e0caeaa`) reviewed by clad2a (`e204496`, 14 points); core-p rulings sent with the Part 2 go: no local
+one-off cap; public event union without collisions (local kinds `reminder_intent_*`); schema 22 changed in place (R7 unreleased),
+cache without a journal FK, staging-order column; never brick the open (local validation, quarantine, no verbatim batch resend);
+no wake spin on a past deadline while the harness runs; unsupported/routine entries off the wake; receipt/row ordering; new
+reminderId to correct a blocked create; session-replacement handling; routines_unavailable; explicit grace 300000..86400000;
+idle stop without the explicit-stop flag. No edits under `src/native-harness/` (Cod1a owns it, Clad1a reviews).
+haurness-l's answers: a schedule edit omitting expiresAfter recomputes a previously DEFAULTED grace from the new lead and keeps an
+explicit duration or null; the receipt row is frozen as of that receipt (get/list authoritative); a blocked create is corrected by a
+new reminderId; session identity is `OpenResult.sessionId` (a different id or a confirmed fresh create after confirmed absence is a
+replacement; a lower revision is never evidence of replacement).
