@@ -1,6 +1,6 @@
 import { RoutineAdmission } from "./routine-guard.ts";
 import { isRoutineSchedule } from "./routine-schedule.ts";
-import { type ReminderWireRow, type ReminderWireResult, type ReminderWireList, type ReminderWireOpen } from "./routine-wire.ts";
+import { type ReminderNegotiation, type ReminderWireRow, type ReminderWireResult, type ReminderWireList, type ReminderWireOpen } from "./routine-wire.ts";
 import type { AgentConversationId } from "../../agent-ids.ts";
 import type { Logger } from "../../logger.ts";
 import type { HarnessClient } from "../../native-harness/src/client.ts";
@@ -10,7 +10,7 @@ import { codeOf } from "../errors.ts";
 import { defaultReminderLimits } from "./limits.ts";
 import {
   fromWireReminder, negotiatedLimits, routineReminderRequest,
-  type HarnessDescription, type ReminderNotification, type WireChange, type WireReminderEvent,
+  type ReminderNotification, type WireChange, type WireReminderEvent,
 } from "./wire.ts";
 
 const batchLimit = 100;
@@ -46,12 +46,7 @@ export class ReminderSync {
 
   settled(): Promise<void> { return this.tail; }
 
-  async initialize(offered: {
-    capabilities?: Pick<Partial<HarnessDescription["capabilities"]>, "reminders"> & {
-      routines?: boolean; unattendedTurnGuard?: boolean;
-    };
-    reminderLimits?: Parameters<typeof negotiatedLimits>[0];
-  }): Promise<void> {
+  async initialize(offered: ReminderNegotiation): Promise<void> {
     this.supported = offered.capabilities?.reminders === true;
     this.routineAdmission.initialize(offered.capabilities?.routines, offered.capabilities?.unattendedTurnGuard, this.supported);
     this.limits = negotiatedLimits(offered.reminderLimits, this.routineAdmission.supported);

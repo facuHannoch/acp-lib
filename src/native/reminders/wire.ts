@@ -1,5 +1,5 @@
 import { isRoutineSchedule } from "./routine-schedule.ts";
-import type { ReminderWireChange as WireChange, ReminderWireRow } from "./routine-wire.ts";
+import type { ReminderWireChange as WireChange, ReminderWireRow, AdvertisedReminderLimits } from "./routine-wire.ts";
 import { normalizeReminderSchedule } from "./schedule.ts";
 import type {
   ChannelEvent, HarnessClient, ReminderChange as OneOffChange,
@@ -25,10 +25,6 @@ export type ConsumerReminderEvent = Exclude<WireReminderEvent, { kind: "reminder
 );
 export type KnownReminderBlockReason = Extract<ReminderChangeResult, { outcome: "blocked" }>["reason"];
 export type HarnessOpenResult = Awaited<ReturnType<HarnessClient["openSession"]>>;
-export type HarnessDescription = Awaited<ReturnType<HarnessClient["initialize"]>>["description"];
-
-type AdvertisedReminderLimits = Partial<NonNullable<HarnessDescription["reminderLimits"]>>;
-
 export function negotiatedLimits(value: AdvertisedReminderLimits | undefined, routines = false): ReminderLimits {
   const read = (name: keyof AdvertisedReminderLimits, fallback: number) => {
     const limit = value?.[name];

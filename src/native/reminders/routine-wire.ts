@@ -1,4 +1,4 @@
-import type { Reminder } from "../../native-harness/src/client.ts";
+import type { InitializeResult, Reminder, ReminderLimits } from "../../native-harness/src/client.ts";
 
 export type {
   Reminder as ReminderWireRow, ReminderChange as ReminderWireChange,
@@ -8,3 +8,10 @@ export type {
 } from "../../native-harness/src/client.ts";
 
 export type RoutineRow = Extract<Reminder, { missedRuns: string }>;
+
+export type AdvertisedReminderLimits = Partial<ReminderLimits>;
+export interface ReminderNegotiation {
+  capabilities?: Partial<Record<Extract<keyof InitializeResult["description"]["capabilities"],
+    "reminders" | "routines" | "unattendedTurnGuard">, boolean>>;
+  reminderLimits?: AdvertisedReminderLimits;
+}
