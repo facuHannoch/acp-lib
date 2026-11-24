@@ -248,3 +248,15 @@ routines): the same limits apply to the agent tools and the consumer API.
   does not hardcode them; if the harness does not advertise them, acp-client does not check, and the harness refuses.
 - With the doubling `expiresAfter` default, a 2-minute lead gets a 4-minute grace.
 - Needs harness agreement: its draft proposes 5 minutes for repeating.
+
+## haurness-l confirmation of rounds 3 and 4 (2026-11-24)
+
+Confirmed and written into their local reminder-tools SPEC: one common minimum (one-shot at least 2 min after acceptance; repeats
+at least 10 min between occurrences); the harness validates `cron` as well as `every` (`invalid_schedule`: typed live error,
+`blocked` on a change; Gate 1 pins a bounded validation method for timezone and calendar transitions); `initialize` advertises
+both minimums, the per-channel active routine cap and the expiry defaults. Expiry grace starts at the scheduled instant: 2x the
+acceptance-to-due lead for one-offs, 2x the occurrence interval for routines, capped at 1 day; `null` permits late delivery.
+Left to contract review: the floor for short leads, a variable cron interval, the expiry outcome. Retries must preserve the
+RESOLVED expiry (acp-client stores the resolved absolute expiry with the change and never recomputes it on resend). Idle stop:
+per-Agent setting with conversation overrides; acp-client passes the largest applicable pending-reminder window; the harness
+atomic stop check is authoritative.
