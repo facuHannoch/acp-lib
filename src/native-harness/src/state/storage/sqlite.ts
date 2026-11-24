@@ -296,6 +296,8 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     contextPreviousResponse: q(`SELECT seq FROM entries WHERE turn_id = ? AND ${ASSISTANT} ORDER BY seq DESC LIMIT 1`),
     contextInputs: q(`SELECT ${contextHeader("'input'")}, (SELECT octet_length(text) FROM items WHERE items.item_id = e.item_id) AS text_bytes FROM entries AS e
       WHERE turn_id = ? AND item_id IS NOT NULL AND seq > ? ORDER BY seq LIMIT ?`),
+    contextAttachmentInputs: q(`SELECT ${contextHeader("'input'")}, (SELECT octet_length(text) FROM items WHERE items.item_id = e.item_id) AS text_bytes FROM entries AS e
+      WHERE turn_id = ? AND item_id IS NOT NULL AND json_type(message, '$.parts') = 'array' ORDER BY seq DESC LIMIT ?`),
     contextActive: q(`SELECT ${contextHeader(`CASE WHEN item_id IS NOT NULL THEN 'input'
       WHEN EXISTS (SELECT 1 FROM entries AS a INDEXED BY entries_context_assistants
         WHERE a.turn_id = e.turn_id AND a.seq = e.seq AND ${ASSISTANT}) THEN 'assistant' ELSE 'other' END`)}
@@ -367,6 +369,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     },
     contextPreviousResponse: turnId => s.contextPreviousResponse.get(turnId)?.seq ?? 0,
     contextInputs: (turnId, after, limit) => s.contextInputs.all(turnId, after, limit).map(contextRow),
+    contextAttachmentInputs: (turnId, limit) => s.contextAttachmentInputs.all(turnId, limit).reverse().map(contextRow),
     contextActive: (turnId, limit) => s.contextActive.all(turnId, limit).map(contextRow),
     contextLocal: (channelId, start, limit) => s.contextLocal.all(channelId, start, limit).map(contextRow),
     contextRecent: (before, limit, legacy) => (legacy ? s.contextRecentLegacy : s.contextRecent).all(before, limit).map(contextRow),

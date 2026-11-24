@@ -71,6 +71,9 @@ function memoryTables(data: Data): Tables {
       const start = before(rows, after + 1);
       return rows.slice(start, start + limit).map(header);
     },
+    contextAttachmentInputs(turnId, limit) {
+      return (data.inputs.get(turnId) ?? []).filter(row => row.entry.message.role === "user" && row.entry.message.parts !== undefined).slice(0, limit).map(header);
+    },
     contextActive: (turnId, limit) => recent(data.byTurn.get(turnId) ?? [], limit).map(header),
     contextLocal(channelId, start, limit) {
       const rows = data.conversation.get(channelId) ?? [];

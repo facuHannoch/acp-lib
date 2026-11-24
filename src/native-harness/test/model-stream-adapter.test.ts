@@ -37,7 +37,7 @@ test("vision provider request preserves order without storing image bytes in the
 
 test("vision provider reports all unavailable images without making a partial request", async () => {
   let fetched = false;
-  const fetcher = (async () => { fetched = true; return new Response(); }) as typeof fetch;
+  const fetcher = (async () => { fetched = true; return new Response(); }) as unknown as typeof fetch;
   const metadata = (id: string) => ({ id, channel: "a", filename: "a.png", mediaType: "image/png", bytes: 1, sha256: "0".repeat(64) });
   const attempt = openRouterAttempt("secret", "model", fetcher, undefined, { supported: true, metadata, read: () => { throw Error("missing"); } });
   const events = [];

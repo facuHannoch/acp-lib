@@ -8,6 +8,7 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { createUploadManager } from "../src/capabilities/attachments/upload.ts";
 import { readAttachment } from "../src/capabilities/attachments/read.ts";
+import { CONTEXT_LIMITS } from "../src/capabilities/context/session.ts";
 import type { StorageResult, SessionArchive } from "../src/contracts/storage.ts";
 function take<T>(result: StorageResult<T>): T { if (!result.ok) throw Error(JSON.stringify(result.error)); return result.value; }
 const identity = { sessionId: "a1-rh4-fixture", compatibilityKey: "test" };
@@ -180,6 +181,11 @@ test("durable publication activates format 9 through the owning session and surv
       expect(turn?.entries[0]?.message).toMatchObject({ parts: input.parts });
       expect(turn?.items[1]?.parts).toEqual(only.parts);
       expect(take(reopened.readManagedAttachment(metadata.id))?.timelineVisible).toBe(true);
+      take(reopened.appendMessage(turn!.turn.turnId, { role: "assistant", content: "first response", calls: [] }));
+      const context = take(reopened.readInferenceContext({ channelId: "a", turnId: turn!.turn.turnId, limits: CONTEXT_LIMITS }));
+      expect(context).not.toHaveProperty("code");
+      if ("code" in context) throw Error("Unexpected context limit");
+      expect(context.required.map(entry => entry.itemId)).toContain("file-only");
       const lookup = (id: string) => { const saved = take(reopened.readManagedAttachment(id)); return saved && { ...saved, timelineReadable: true }; };
       expect(Buffer.from(readAttachment({ root, channel: "a", id: metadata.id, offset: 0, lookup }).data, "base64")).toEqual(data);
       expect(reopened.exportArchive()).toMatchObject({ ok: false, error: { code: "busy" } });
