@@ -255,7 +255,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   }
   return {
     ...(tools ? { tools } : {}),
-    agent, channels: scheduler.channels, approvals, operatorReads: store, turnPhase: id => phases.get(id),
+    agent, channels: scheduler.channels, approvals, operatorReads: store, readModelCalls: (after, limit) => store.readCalls(after, limit), turnPhase: id => phases.get(id),
     store: { snapshot: () => read().timeline, subscribe: listener => changes.subscribe(listener) },
     snapshot: read, status, start: scheduler.start,
     suspend: scheduler.suspend, resume: scheduler.resume, stop: scheduler.stop,

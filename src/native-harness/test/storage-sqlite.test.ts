@@ -360,3 +360,61 @@ test("inference sizes rows before point-reading bodies and uses bounded indexed 
     expect(calls.every(sql => !/\bmodelState\b|SELECT \* FROM (entries|items)/.test(sql))).toBe(true);
   } finally { trace.mockRestore(); ok(s.close()); }
 });
+
+test("model-call paging reads indexed rows and single-call writes patch one projection row", () => {
+  const path = fresh(), adapter = createSqliteStorageAdapter(path);
+  must(adapter.open({ mode: "create", identity })).close();
+  const history = { nextCall: 10001, itemIds: {}, scriptPositions: {}, entryIds: {},
+    calls: Array.from({ length: 10000 }, (_, index) => ({
+      callId: String(index + 1), turnId: "1", channel: "c1", messageId: `model:${index + 1}`,
+      startedAt: "start", endedAt: "end", outcome: "succeeded", attempts: [],
+    })) };
+  const legacyWrite = () => {
+    using db = new Database(path);
+    db.run("INSERT OR REPLACE INTO meta VALUES ('modelState', ?)", [JSON.stringify(history)]);
+  };
+  legacyWrite();
+  let storage = must(adapter.open({ mode: "open", identity }));
+  try {
+    let owner!: Database;
+    const originalQuery = Database.prototype.query;
+    const query = spyOn(Database.prototype, "query").mockImplementation(function (this: Database, sql: string) {
+      if (sql.includes("SELECT summary FROM model_call_pages")) owner = this;
+      return originalQuery.call(this, sql);
+    } as typeof Database.prototype.query);
+    try {
+      const defaultPage = must(storage.readCalls());
+      expect(defaultPage.calls).toHaveLength(100);
+      expect(defaultPage.next).toBe("100");
+      expect(must(storage.readCalls("9998", 1))).toMatchObject({ calls: [{ callId: "9999" }], next: "9999" });
+      expect(must(storage.readCalls("9999", 100))).toMatchObject({ calls: [{ callId: "10000" }] });
+      expect(storage.readCalls("09999")).toMatchObject({ ok: false, error: { code: "not_found" } });
+      expect(query.mock.calls.map(([sql]) => sql).some(sql => sql.includes("key = 'modelState'"))).toBe(false);
+    } finally { query.mockRestore(); }
+    {
+      const plan = owner.prepare("EXPLAIN QUERY PLAN SELECT summary FROM model_call_pages WHERE call_number > ? ORDER BY call_number LIMIT ?");
+      try { expect(JSON.stringify(plan.all(9998, 2))).toContain("USING INTEGER PRIMARY KEY"); } finally { plan.finalize(); }
+      owner.exec(`CREATE TABLE projection_writes (id INTEGER);
+        CREATE TRIGGER count_call_rows AFTER INSERT ON model_call_pages
+        BEGIN INSERT INTO projection_writes VALUES (NEW.call_number); END;`);
+    }
+    must(storage.acceptItem({ itemId: "new", kind: "participant_message", channelId: "c1", senderId: "ana", text: "hello" }));
+    const turn = must(storage.beginTurn("c1"))!.turn;
+    expect(must(storage.startCall(String(turn.turnId), ["new"])).callId).toBe("10001");
+    {
+      const writes = owner.prepare("SELECT id FROM projection_writes");
+      try { expect(writes.all()).toEqual([{ id: 10001 }]); } finally { writes.finalize(); }
+    }
+    history.nextCall = 10002;
+    history.calls.push({ ...history.calls[0]!, callId: "10001", messageId: "model:10001" });
+    const legacy = owner.prepare("INSERT OR REPLACE INTO meta VALUES ('modelState', ?)");
+    try { legacy.run(JSON.stringify(history)); } finally { legacy.finalize(); }
+    expect(storage.readCalls("10000")).toMatchObject({ ok: false, error: { code: "storage_failure" } });
+    must(storage.close());
+    history.nextCall = 10003;
+    history.calls.push({ ...history.calls[0]!, callId: "10002", messageId: "model:10002" });
+    legacyWrite();
+    storage = must(adapter.open({ mode: "open", identity }));
+    expect(must(storage.readCalls("10000")).calls.map(call => call.callId)).toEqual(["10001", "10002"]);
+  } finally { storage.close(); }
+});

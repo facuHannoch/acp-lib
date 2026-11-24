@@ -20,7 +20,7 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: model calls ret
     take(storage.recordUsage(call.callId, attempt.attemptId, { inputTokens: 9 }));
     expect(storage.recordUsage(call.callId, attempt.attemptId, { inputTokens: -1 }).ok).toBe(false);
     take(storage.close()); storage = take(adapter.open({ mode: "open", identity }));
-    const view = take(storage.snapshot()); expect(view.items[0]!.milestone).toBe("seen");
+    const view = take(storage.snapshot()); expect(take(storage.readCalls()).calls).toEqual(view.modelCalls); expect(view.items[0]!.milestone).toBe("seen");
     expect(view.modelCalls[0]).toMatchObject({ outcome: "interrupted", attempts: [{ outcome: "interrupted", providerRequestId: "provider", usage: { inputTokens: 9 }, scriptStep: 0 }] });
     expect(view.scriptPositions.a).toBe(1);
     take(storage.acceptItem({ itemId: "i2", kind: "participant_message", channelId: "a", senderId: "u", text: "next" }));
@@ -35,7 +35,7 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: model calls ret
     const archive = take(storage.exportArchive()); expect(archive.archiveVersion).toBe(5);
     const destination = kind === "memory" ? createMemoryStorageAdapter() : createSqliteStorageAdapter(join(dir, "copy.db"));
     take(destination.importArchive(archive));
-    const copy = take(destination.open({ mode: "open", identity })); expect(take(copy.snapshot()).timeline.at(-1)?.messageId).toBe(next.messageId); take(copy.close());
+    const copy = take(destination.open({ mode: "open", identity })); expect(take(copy.readCalls("1", 1)).calls).toEqual(committed.modelCalls.slice(1)); expect(take(copy.snapshot()).timeline.at(-1)?.messageId).toBe(next.messageId); take(copy.close());
     take(storage.close());
     storage = take(adapter.open({ mode: "open", identity })); expect(take(storage.snapshot()).timeline.at(-1)?.messageId).toBe(next.messageId); take(storage.close());
   } finally { rmSync(dir, { recursive: true, force: true }); }

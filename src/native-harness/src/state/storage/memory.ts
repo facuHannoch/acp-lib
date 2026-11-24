@@ -94,6 +94,18 @@ function memoryTables(data: Data): Tables {
       // The engine detaches the selected values at the transaction boundary.
       return messageId ? { ...entry, messageId } : entry;
     },
+    modelCallPage(after, count) {
+      const calls = data.modelState?.calls ?? [];
+      if (after === undefined) return copy(calls.slice(0, count));
+      let lo = 0, hi = calls.length;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (Number(calls[mid]!.callId) < Number(after)) lo = mid + 1;
+        else hi = mid;
+      }
+      if (calls[lo]?.callId !== after) throw new Fail("not_found", "Unknown call cursor");
+      return copy(calls.slice(lo + 1, lo + 1 + count));
+    },
     getModelState: () => copy(data.modelState),
     setModelState(state) { const old = data.modelState; log(() => { data.modelState = old; }); data.modelState = copy(state); },
     getRevokedTools: () => copy(data.revokedTools),

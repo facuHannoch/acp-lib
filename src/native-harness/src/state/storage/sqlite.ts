@@ -1,3 +1,4 @@
+import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import { entryOverhead, type ContextRow } from "./inference.ts";
 import { checkScriptIdentity } from "./script-identity.ts";
 import { Database } from "bun:sqlite";
@@ -137,6 +138,30 @@ const installReadIndexes = (db: Database) => db.exec(`
     BEGIN UPDATE meta SET value = '1' WHERE key = 'replyIdsDirty'; END;
 `);
 
+const rebuildModelCalls = (db: Database) => db.exec(`
+  DELETE FROM model_call_pages;
+  INSERT INTO model_call_pages
+    SELECT CAST(json_extract(call.value, '$.callId') AS INTEGER), call.value
+    FROM meta, json_each(meta.value, '$.calls') AS call WHERE meta.key = 'modelState';
+  UPDATE meta SET value = '0' WHERE key = 'modelCallPagesDirty';
+`);
+
+function refreshModelCalls(db: Database): void {
+  db.exec(`
+    INSERT OR IGNORE INTO meta VALUES ('modelCallPagesDirty', '1');
+    UPDATE meta SET value = '1' WHERE key = 'modelCallPagesDirty'
+      AND NOT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'model_call_pages');
+    CREATE TABLE IF NOT EXISTS model_call_pages (call_number INTEGER PRIMARY KEY, summary TEXT NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS model_calls_legacy_insert AFTER INSERT ON meta WHEN NEW.key = 'modelState'
+      BEGIN UPDATE meta SET value = '1' WHERE key = 'modelCallPagesDirty'; END;
+    CREATE TRIGGER IF NOT EXISTS model_calls_legacy_update AFTER UPDATE OF value ON meta WHEN NEW.key = 'modelState'
+      BEGIN UPDATE meta SET value = '1' WHERE key = 'modelCallPagesDirty'; END;
+  `);
+  const dirty = db.prepare("SELECT value FROM meta WHERE key = 'modelCallPagesDirty'");
+  try { if ((dirty.get() as { value: string }).value === "1") rebuildModelCalls(db); }
+  finally { dirty.finalize(); }
+}
+
 // Older writers keep the blob authoritative. Rebuild only on upgrade or when
 // one of those writers changed it, under the same transaction as recovery.
 function refreshReplyIds(db: Database): void {
@@ -190,6 +215,12 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       run: (...args: any[]) => { prepared().run(...args); } };
   };
   const s = {
+    modelCallPagesDirty: q("SELECT value FROM meta WHERE key = 'modelCallPagesDirty'"),
+    callCursor: q("SELECT call_number FROM model_call_pages WHERE call_number = ?"),
+    callPage: q("SELECT summary FROM model_call_pages WHERE call_number > ? ORDER BY call_number LIMIT ?"),
+    putCallPage: q(`INSERT INTO model_call_pages VALUES (?, ?)
+      ON CONFLICT(call_number) DO UPDATE SET summary = excluded.summary`),
+    markCallPagesClean: q("UPDATE meta SET value = '0' WHERE key = 'modelCallPagesDirty'"),
     contextTurnStart: q("SELECT started_seq FROM turns WHERE turn_id = ? AND channel_id = ?"),
     contextTrigger: q(`SELECT ${contextHeader("'input'")}, (SELECT octet_length(text) FROM items WHERE items.item_id = e.item_id) AS text_bytes FROM entries AS e
       WHERE turn_id = ? AND item_id IS NOT NULL ORDER BY seq LIMIT 1`),
@@ -295,7 +326,23 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     },
     dispose() { for (const finalize of finalizers.splice(0)) finalize(); },
     getModelState() { const row = s.modelState.get(); return row ? JSON.parse(row.value) : undefined; },
-    setModelState(state) { s.setMeta.run("modelState", JSON.stringify(state)); s.markReplyIdsClean.run(); },
+    setModelState(state, changed) {
+      const canPatch = changed !== undefined && s.modelCallPagesDirty.get()?.value === "0";
+      s.setMeta.run("modelState", JSON.stringify(state));
+      s.markReplyIdsClean.run();
+      if (canPatch) {
+        for (const call of changed) s.putCallPage.run(Number(call.callId), JSON.stringify(call));
+        s.markCallPagesClean.run();
+      } else rebuildModelCalls(db);
+    },
+    modelCallPage(after, count) {
+      if (s.modelCallPagesDirty.get()?.value !== "0") throw new Fail("storage_failure", "Model call page projection requires reopen");
+      const cursor = after === undefined ? 0 : Number(after);
+      if (after !== undefined && (!Number.isSafeInteger(cursor) || String(cursor) !== after || !s.callCursor.get(cursor))) {
+        throw new Fail("not_found", "Unknown model call cursor");
+      }
+      return s.callPage.all(cursor, count).map(row => JSON.parse(row.summary) as ModelCallSummary);
+    },
     // A meta key, like the model state: no schema or format change (decision 0021).
     getRevokedTools() { const row = s.revoked.get(); return row ? JSON.parse(row.value) : undefined; },
     setRevokedTools(names) { s.setMeta.run("revokedTools", JSON.stringify(names)); },
@@ -358,7 +405,7 @@ function publish(path: string, meta: Meta, fill?: (tables: Tables) => void): voi
       db.exec(SCHEMA);
       installReadIndexes(db);
       const tables = sqliteTables(db);
-      try { tables.transaction(() => { tables.setMeta(meta); installContextPolicyIndex(db); fill?.(tables); refreshReplyIds(db); }); }
+      try { tables.transaction(() => { tables.setMeta(meta); installContextPolicyIndex(db); refreshModelCalls(db); fill?.(tables); refreshReplyIds(db); }); }
       finally { tables.dispose(); }
     } finally { db.close(); }
     try { linkSync(draft, path); }
@@ -443,13 +490,14 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           try {
             const view = sqliteTables(clone);
             view.transaction(() => { if (meta.formatVersion === 2) upgradeFromFormat2(clone); upgradeFromFormat3(clone); addExternalSource(clone);
-              view.setMeta({ ...view.getMeta(), formatVersion: 4 }); refreshReplyIds(clone); });
+              view.setMeta({ ...view.getMeta(), formatVersion: 4 }); refreshReplyIds(clone); refreshModelCalls(clone); });
             return { ok: true, value: createEngine(view, identity.compatibilityKey, () => { view.dispose(); clone.close(true); owner.close(true); }, config, true), revision: meta.revision };
           } catch (error) { clone.close(); throw error; }
         }
         const tables = sqliteTables(db), owner = db;
         tables.transaction(() => {
           refreshReplyIds(owner);
+          refreshModelCalls(owner);
           const compatible = meta.formatVersion < 4 || referencesCompatible(tables, config);
           if (meta.formatVersion >= 4 && meta.formatVersion < 6 && compatible) addExternalSource(owner);
           if (compatible)
