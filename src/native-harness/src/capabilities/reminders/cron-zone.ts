@@ -8,11 +8,13 @@ type CivilCalendar = NonNullable<ReturnType<typeof cronCivilCalendar>>;
  * layer must supply the versioned zone rules for the whole supported span. */
 export function zonedCalendar(
   civil: CivilCalendar, start: number, end: number, initialOffset: number, transitions: readonly ZoneTransition[],
+  check = () => {},
 ): RoutineCalendar | undefined {
   const segments: { offset: number; first: number; before: number; end: number; after: number }[] = [];
   let cursor = start, offset = initialOffset, total = 0, localFence = -Infinity;
   let previous: number | undefined;
   for (const transition of [...transitions, { at: end + 1, offset }]) {
+    check();
     const stop = transition.at;
     if (stop <= cursor || stop > end + 1) return;
     const first = civil.rank(Math.max(cursor + offset - 1, localFence));

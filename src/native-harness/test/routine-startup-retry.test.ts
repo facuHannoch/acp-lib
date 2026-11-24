@@ -1,3 +1,4 @@
+import { proveRoutineCron } from "../src/capabilities/reminders/cron-proof.ts";
 import { expect, test } from "bun:test";
 import { HarnessClient, createInProcessTransport } from "../src/client.ts";
 import { createSession } from "../src/index.ts";
@@ -30,7 +31,12 @@ for (const mode of ["create", "open"] as const) {
         attempts.push(entry.reminderId);
         if (entry.reminderId === "budget" && !failed) {
           failed = true;
-          return { ok: false, error: { code: "storage_failure", message: "Injected proof budget exhaustion" } };
+          let reads = 0;
+          const proof = proveRoutineCron("0 9 * * *", {
+            start: Date.UTC(2000, 0, 1), end: Date.UTC(2400, 0, 1), initialOffset: 0, transitions: [],
+          }, () => ++reads < 30 ? 0 : 250);
+          if (proof.kind !== "proof_budget") throw Error("Expected real proof exhaustion");
+          return { ok: false, error: { code: "storage_failure", message: "Calendar proof budget exhausted" } };
         }
         return change(entry);
       };

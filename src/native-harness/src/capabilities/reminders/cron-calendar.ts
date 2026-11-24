@@ -17,10 +17,11 @@ function upperBound(values: readonly number[], target: number): number {
 
 /** Index a Gregorian cycle once and use it for range arithmetic. Local civil
  * ordinals are signed around 2000-01-01 and do not apply zone transitions. */
-export function cronCivilCalendar(fields: CronFields) {
+export function cronCivilCalendar(fields: CronFields, check = () => {}) {
   const days: number[] = [];
   const date = new Date(cycleStart);
   for (let offset = 0; offset < cycleDays; offset++) {
+    if (offset % 256 === 0) check();
     date.setTime(cycleStart + offset * dayMs);
     if (fields.matchesDay({ day: date.getUTCDate(), month: date.getUTCMonth() + 1, weekday: date.getUTCDay() })) days.push(offset);
   }

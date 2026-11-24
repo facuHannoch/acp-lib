@@ -1,3 +1,4 @@
+import { proveRoutineCron } from "../src/capabilities/reminders/cron-proof.ts";
 import { routineExpiry } from "../src/capabilities/reminders/routine-expiry.ts";
 import { zonedCalendar } from "../src/capabilities/reminders/cron-zone.ts";
 import { cronCivilCalendar } from "../src/capabilities/reminders/cron-calendar.ts";
@@ -68,4 +69,13 @@ test("routine default grace uses the next real match across DST", () => {
   const first = Date.UTC(2026, 2, 8, 6);
   expect(routineExpiry(short, first)).toEqual({ expiresAfter: 2 * hour, expiresAt: first + 2 * hour });
   expect(routineExpiry(short, first, null)).toEqual({ expiresAfter: null, expiresAt: null });
+});
+
+test("real calendar proof distinguishes invalid spacing from proof exhaustion", () => {
+  const zone = { start: Date.UTC(2000, 0, 1), end: Date.UTC(2400, 0, 1), initialOffset: 0, transitions: [] };
+  expect(proveRoutineCron("0 9 * * *", zone).kind).toBe("valid");
+  expect(proveRoutineCron("*/5 * * * *", zone).kind).toBe("invalid_schedule");
+  let reads = 0;
+  expect(proveRoutineCron("0 9 * * *", zone, () => ++reads < 30 ? 0 : 250).kind).toBe("proof_budget");
+  expect(reads).toBe(30);
 });

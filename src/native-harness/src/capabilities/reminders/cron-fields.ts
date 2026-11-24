@@ -11,9 +11,10 @@ export interface CronFields {
   matchesDay(day: CalendarDay): boolean;
 }
 
-function expand(field: string, min: number, max: number): number[] | undefined {
+function expand(field: string, min: number, max: number, check: () => void): number[] | undefined {
   const values = new Set<number>();
   for (const expression of field.split(",")) {
+    check();
     const match = /^(\*|([0-9]{1,2})(?:-([0-9]{1,2}))?)(?:\/([0-9]{1,2}))?$/.exec(expression);
     if (!match) return;
     const wildcard = match[1] === "*";
@@ -26,12 +27,13 @@ function expand(field: string, min: number, max: number): number[] | undefined {
   return [...values].sort((left, right) => left - right);
 }
 
-export function parseRoutineCron(expression: string): CronFields | undefined {
+export function parseRoutineCron(expression: string, check = () => {}): CronFields | undefined {
+  check();
   const fields = expression.trim().split(/\s+/);
   if (fields.length !== 5) return;
-  const minutes = expand(fields[0]!, 0, 59), hours = expand(fields[1]!, 0, 23);
-  const days = expand(fields[2]!, 1, 31), months = expand(fields[3]!, 1, 12);
-  const weekdays = expand(fields[4]!, 0, 6);
+  const minutes = expand(fields[0]!, 0, 59, check), hours = expand(fields[1]!, 0, 23, check);
+  const days = expand(fields[2]!, 1, 31, check), months = expand(fields[3]!, 1, 12, check);
+  const weekdays = expand(fields[4]!, 0, 6, check);
   if (!minutes || !hours || !days || !months || !weekdays) return;
   const minutesOfDay = hours.flatMap(hour => minutes.map(minute => hour * 60 + minute));
   const wrapsAt = minutesOfDay[0]! + dayMinutes;
