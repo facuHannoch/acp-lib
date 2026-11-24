@@ -1,5 +1,5 @@
-import { closeSync, constants, fsyncSync, mkdirSync, openSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { SessionStorage, StorageResult } from "../../contracts/storage.ts";
 import { createUploadManager, UploadError } from "./upload.ts";
 import { readAttachment, readAttachmentForInference } from "./read.ts";
@@ -19,7 +19,9 @@ function take<T>(result: StorageResult<T>): T {
 export function createManagedAttachmentService(root: string, storage: SessionStorage,
   validateImage: Parameters<typeof createUploadManager>[0]["validateImage"], now: () => number = Date.now,
   fault?: (point: string) => void) {
+  const existed = existsSync(root);
   mkdirSync(root, { recursive: true, mode: 0o700 });
+  if (!existed) { const parent = openSync(dirname(root), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); try { fsyncSync(parent); } finally { closeSync(parent); } }
   recoverAttachmentOrphans(root, new Set(take(storage.managedAttachmentIds())));
   const uploads = createUploadManager({ root, validateImage, publishReady(metadata) { fault?.("attachmentPublished"); take(storage.registerReadyAttachment(metadata)); fault?.("attachmentReady"); } });
   const channel = (id: string) => { if (!take(storage.readChannel(id))) throw new UploadError("not_found", "Unknown channel"); };

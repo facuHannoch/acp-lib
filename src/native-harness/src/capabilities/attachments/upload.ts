@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, constants, existsSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { ATTACHMENT_LIMITS, type AttachmentMetadata } from "../../contracts/attachments.ts";
 
 export class UploadError extends Error {
@@ -21,8 +21,10 @@ export function createUploadManager(options: {
   validateImage: (path: string, metadata: AttachmentMetadata, signal: AbortSignal) => void | Promise<void>;
   publishReady: (metadata: AttachmentMetadata) => void;
 }) {
+  const existed = existsSync(options.root);
   mkdirSync(options.root, { recursive: true, mode: 0o700 });
   if (!lstatSync(options.root).isDirectory()) throw new Error("Attachment root must be a directory, not a symlink");
+  if (!existed) { const parent = openSync(dirname(options.root), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); try { fsyncSync(parent); } finally { closeSync(parent); } }
   const now = options.now ?? Date.now;
   const uploads = new Map<string, Upload>();
   const completed = new Map<string, Finalized>();
@@ -109,6 +111,10 @@ export function createUploadManager(options: {
         throw new UploadError("invalid_attachment", "Staged attachment changed during validation");
       fsyncSync(upload.fd);
       const target = join(options.root, upload.metadata.id);
+      // Reserve the generated destination exclusively before replacing our
+      // own empty reservation with the durable staging inode.
+      const reservation = openSync(target, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      closeSync(reservation);
       renameSync(upload.path, target);
       let published: ReturnType<typeof lstatSync>;
       try { published = lstatSync(target); } catch { throw new UploadError("invalid_attachment", "Published attachment is unavailable"); }
