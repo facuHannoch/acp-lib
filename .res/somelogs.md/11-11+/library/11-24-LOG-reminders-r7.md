@@ -23,3 +23,15 @@ never started Part 2), clad2a-s reviewer (`reminders-r7-reviews`). Base: alpha `
 Backoff for a past validation wake (restart budget 3/60 s, no spin); log equal-revision mismatch; the live request seam has no
 AgentConfig binding yet; widened `AgentSessionEvent` union to note in release notes; add one assertion that update/pause/resume
 while a cancel is pending/maybe_sent is refused with `conflict` (minor, non-blocking).
+
+## R8 and R-H3 (2026-11-24)
+
+- Decision 0031 (`34969fd`) released; brief R8; conformance report (cod2b-t `e0caeaa`), clad2a review `e204496` (14 points), core-p
+  rulings and haurness-l clarifications (plan rounds 9, 10).
+- R8 Part 2 (cod2b-t): `cefe832` extraction, `c47dae2` wire/reconcile, `af47cd1` cold wake, `423a3d4` idle stop, `ebd2993`
+  hardening. core-p clean-copy gate on `ebd2993`: typecheck clean, plain `bun test` 2,115 pass / 0 fail / 218 files, 35 snapshots;
+  protected files not above ceilings (host.ts 897/909); no change under `src/native-harness/`. clad2a review in progress.
+- Harness R-H2 approved `d9f24b8` (`aiagent/cod1a-reminders-rh2`); R-H3 joint testing released. Merged into `joint-r8-rh2`
+  (`5e98d46`): clean textually, FAILS typecheck at `src/native/recovery.ts(64)`: our `reminderChanges` entry type is not
+  discriminated by op like the harness `CreateParams`/`LoadResultOpenParams`. Fix and joint real-stdio acceptance assigned to cod2b-t.
+- R9 (routines) still needs a separate harness R-H4 contract review.
