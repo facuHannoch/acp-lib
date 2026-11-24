@@ -112,3 +112,25 @@ test("already aborted calls do not invoke the Exa transport", async () => {
   const result = await runExa({ operation: "web_search", args: { query: "a" }, key: "key", signal: controller.signal, transport: async () => { called = true; return { status: 200, body: {} }; } });
   expect(called).toBe(false); expect(result).toMatchObject({ ok: false, code: "tool_interrupted" });
 });
+
+test("production Exa transport sends fixed-origin headers and does not follow redirects", async () => {
+  const { createExaHttpsTransport } = await import("../src/capabilities/tools/web/exa-transport.ts");
+  const { Writable, Readable } = await import("node:stream");
+  const requests: Array<{ options: any; payload: string }> = [];
+  const send = ((options: any, callback: (response: any) => void) => {
+    let payload = "";
+    return new Writable({
+      write(chunk, _encoding, done) { payload += chunk.toString(); done(); },
+      final(done) {
+        requests.push({ options, payload });
+        const response = Object.assign(Readable.from([Buffer.from('{"requestId":"id","costDollars":{"total":0}}')]), { statusCode: 302, headers: { location: "https://hostile.invalid/" } });
+        callback(response); done();
+      },
+    });
+  }) as unknown as typeof import("node:https").request;
+  const result = await runExa({ operation: "web_search", args: { query: "x" }, key: "canary", transport: createExaHttpsTransport(send) });
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.options).toMatchObject({ protocol: "https:", hostname: "api.exa.ai", path: "/search", method: "POST", headers: { "x-api-key": "canary", "content-type": "application/json" } });
+  expect(JSON.parse(requests[0]!.payload).query).toBe("x");
+  expect(result).toMatchObject({ ok: false, code: "provider_error", usage: { requestId: "id", usd: 0 } });
+});

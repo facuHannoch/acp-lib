@@ -15,9 +15,11 @@ export function boundedBytes(max: number): Transform {
   } });
 }
 /** Fixed Exa origin: no redirects, proxy forwarding, cookies or source-site secrets. */
-export const exaHttpsTransport: ExaTransport = ({ path, key, body, signal }) => new Promise((resolve, reject) => {
+/** Injection is an assembly-only offline test seam, not managed configuration. */
+export function createExaHttpsTransport(send: typeof request = request): ExaTransport {
+ return ({ path, key, body, signal }) => new Promise((resolve, reject) => {
   const payload = JSON.stringify(body);
-  const req = request({ protocol: "https:", hostname: "api.exa.ai", port: 443, method: "POST", path, signal,
+  const req = send({ protocol: "https:", hostname: "api.exa.ai", port: 443, method: "POST", path, signal,
     headers: { "content-type": "application/json", "accept": "application/json", "accept-encoding": "gzip, deflate, br", "content-length": Buffer.byteLength(payload), "x-api-key": key } }, async response => {
     const status = response.statusCode ?? 0;
     const encoding = response.headers["content-encoding"]?.trim().toLowerCase() ?? "identity";
@@ -34,4 +36,6 @@ export const exaHttpsTransport: ExaTransport = ({ path, key, body, signal }) => 
   });
   req.on("error", reject);
   req.end(payload);
-});
+ });
+}
+export const exaHttpsTransport = createExaHttpsTransport();
