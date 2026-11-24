@@ -133,3 +133,8 @@ test("unsupported encoding closes the socket before rejecting", async () => {
   await expect(f.fetch()).rejects.toMatchObject({ code: "unsupported_content" });
   expect(f.closed).toEqual([true]);
 });
+
+test("close-delimited plain text has unknown coverage", async () => {
+  const f = fixture(() => ({ fragments: [Buffer.from("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\ntext")] }));
+  expect(JSON.parse(await f.fetch())).toMatchObject({ text: "text", coverage: "unknown", truncated: false });
+});
