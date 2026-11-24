@@ -1,7 +1,7 @@
 import type { ItemStatus, LoadResult, StatusResult, StoredMessage, TurnStatus } from "../../contracts/protocol.ts";
 import type { SessionStatus } from "../../contracts/session.ts";
 import type { StorageSnapshot, StoredTurn } from "../../contracts/storage.ts";
-import { parseAttachmentFailure } from "../../util/attachment-failure.ts";
+import { parseAttachmentFailure } from "../../contracts/attachments.ts";
 import { MAX_FRAME_BYTES } from "./framing.ts";
 
 /** Room left in a frame for the JSON-RPC envelope around a result. */

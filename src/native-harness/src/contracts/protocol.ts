@@ -117,6 +117,7 @@ export interface ItemStatus {
   milestone: ItemMilestone; turnId?: string;
   policy?: import("./config-permissions.ts").ItemPolicy;
   externalSource?: string;
+  parts?: import("./attachments.ts").AttachmentViewPart[];
 }
 export interface TurnStatus {
   turnId: string; channel: string; items: string[];

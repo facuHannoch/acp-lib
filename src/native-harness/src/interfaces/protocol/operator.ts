@@ -1,3 +1,4 @@
+import { attachmentView } from "../../contracts/attachments.ts";
 import { timelineMessageId as messageId } from "../../util/timeline-text.ts";
 import { messagePosition } from "../../util/message-position.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
@@ -66,7 +67,7 @@ export function operatorRead(session: PersistentSession, method: string, p: Reco
     const page = readValue(storage.readTimeline({ kind: "replies", channel, turnIds: turns, direction: "newer", throughRevision: revision,
       exclusiveSeq: cursor ? sequence(cursor[4]) : undefined, limit: 50 })).value;
     const items = tracked?.items.map(item => ({ id: item.itemId, channel: item.channelId, kind: item.kind, sender: item.senderId, ...(item.externalSource === undefined ? {} : { externalSource: item.externalSource }),
-      milestone: item.milestone, ...(item.policy ? { policy: item.policy } : {}), ...(item.turnId !== undefined ? { turnId: String(item.turnId) } : {}) })) ?? [];
+      milestone: item.milestone, ...(item.parts ? { parts: attachmentView(item.parts, storage.readManagedAttachment, { ownerChannel: channel! }) } : {}), ...(item.policy ? { policy: item.policy } : {}), ...(item.turnId !== undefined ? { turnId: String(item.turnId) } : {}) })) ?? [];
     const foundTurns = tracked?.turns.map(turnStatus) ?? [];
     const result = { revision, items, turns: foundTurns, unknownItemIds: inputIds.filter(id => !items.some(item => item.id === id)),
       unknownTurnIds: cursor ? [] : turns.map(String).filter(id => !foundTurns.some(turn => turn.turnId === id)),

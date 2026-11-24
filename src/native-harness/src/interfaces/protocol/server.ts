@@ -1,3 +1,4 @@
+import { attachmentView } from "../../contracts/attachments.ts";
 import { OperatorFault, operatorMethods, operatorRead, readValue } from "./operator.ts";
 import type { ProtocolEndpoint, RpcRequest, RpcResponse, RpcNotification, RpcSessionNotification, ProtocolConfig, Description, Subscription, DurableErrorCode } from "../../contracts/protocol.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
@@ -372,7 +373,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const channel = text(p.channel);
       if (method === "attachment/begin") {
         keys(p, ["channel", "filename", "mediaType", "bytes", "sha256"]);
-        return service.begin({ channel, filename: text(p.filename), mediaType: text(p.mediaType), bytes: p.bytes, sha256: text(p.sha256) });
+        return service.begin({ channel, filename: p.filename, mediaType: text(p.mediaType), bytes: p.bytes, sha256: text(p.sha256) });
       }
       if (method === "attachment/read") { keys(p, ["channel", "id", "offset"]); return service.read(channel, text(p.id), p.offset); }
       const uploadId = text(p.uploadId);
@@ -516,11 +517,13 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const result = session.agent.send({ channelId: channel, participantId: sender, itemId: id, ...(item.policy == null ? {} : { policy: text(item.policy) }),
       text: parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n"), ...(mixed ? { parts } : {}) });
     if (!result.accepted) throw new Fault(result.code === "invalid_input" ? "invalid_params" : result.code, result.error);
-    const policy = session.operatorReads
-      ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]?.policy
-      : session.snapshot().items.find(value => value.itemId === id)?.policy;
+    const saved = session.operatorReads
+      ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]
+      : session.snapshot().items.find(value => value.itemId === id);
+    const policy = saved?.policy;
     return { accepted: true, duplicate: result.duplicate, item: { id, channel, kind: "participant_message", sender, milestone: result.milestone,
       ...(policy === undefined ? {} : { policy }),
+      ...(saved?.parts ? { parts: attachmentView(saved.parts, session.operatorReads?.readManagedAttachment, { ownerChannel: channel }) } : {}),
       ...(result.turnId === undefined ? {} : { turnId: String(result.turnId) }) } };
   }
   return {

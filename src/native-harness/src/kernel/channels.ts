@@ -2,8 +2,9 @@ import type { ContextLimits } from "../contracts/context.ts";
 import type { ActiveTurn, ChannelInput, ChannelNotice, SendResult, SessionAgent, TurnExecutor, TurnPort } from "../contracts/agent.ts";
 import type { EventSink, SessionEventSink } from "../contracts/events.ts";
 import type { ChannelControls, ChannelStatus, ControlResult, LifecycleResult, SessionStatus } from "../contracts/session.ts";
-import type { AcceptItem, SessionLifecycle, SessionStorage, StorageError, StorageResult, StorageSnapshot, StoredTurn } from "../contracts/storage.ts";
-import { attachmentFailureReason, parseAttachmentFailure } from "../util/attachment-failure.ts";
+import type { AcceptItem, SessionLifecycle, SessionStorage, StorageError, StorageResult, StorageSnapshot, StoredTurn, TimelineEntry } from "../contracts/storage.ts";
+import { attachmentFailureReason, parseAttachmentFailure } from "../contracts/attachments.ts";
+import { attachmentView } from "../contracts/attachments.ts";
 
 export interface ChannelScheduler {
   wakeCommittedChannel(channelId: string): void;
@@ -111,6 +112,12 @@ export function createChannelScheduler(
       error: turn.state.reason, ...(parseAttachmentFailure(turn.state.reason) ? { attachmentFailure: parseAttachmentFailure(turn.state.reason) } : {}),
       ...(turn.state.uncertainCallIds.length ? { uncertainCalls: turn.state.uncertainCallIds } : {}) } });
   };
+  const takenMessages = (entries: readonly TimelineEntry[]) => entries.flatMap(entry => {
+    if (entry.kind !== "participant_message" || !entry.itemId) return [];
+    const parts = entry.message.role === "user" ? entry.message.parts : undefined;
+    return [{ itemId: entry.itemId, messageId: `item:${entry.itemId}`, position: String(entry.seq),
+      ...(parts ? { parts: attachmentView(parts, storage.readManagedAttachment, { timeline: true }) } : {}) }];
+  });
 
   /** Start the channel's next turn if storage has one to start. */
   function pump(channelId: string) {
@@ -122,8 +129,7 @@ export function createChannelScheduler(
     if (!begun.ok || !begun.value) { if (begun.ok) waiting.delete(channelId); return; }
     waiting.delete(channelId);
     emit({ channel: channelId, revision: begun.revision, event: { type: "turn_started", turnId: String(begun.value.turn.turnId),
-      items: begun.value.items.map(item => item.itemId), messages: begun.value.entries.flatMap(entry =>
-        entry.kind === "participant_message" && entry.itemId ? [{ itemId: entry.itemId, messageId: `item:${entry.itemId}`, position: String(entry.seq) }] : []) } });
+      items: begun.value.items.map(item => item.itemId), messages: takenMessages(begun.value.entries) } });
     run({ channelId, turnId: begun.value.turn.turnId, resumed: false });
   }
 
@@ -143,8 +149,7 @@ export function createChannelScheduler(
         if (!taken.ok) { if (taken.error.code !== "not_running" && taken.error.code !== "channel_suspended") fenced(taken.error.message); return; }
         waiting.delete(channelId);
         if (taken.value.items.length) emit({ channel: channelId, revision: taken.revision,
-          event: { type: "turn_took", turnId: String(turnId), items: taken.value.items.map(item => item.itemId), messages: taken.value.entries.flatMap(entry =>
-        entry.kind === "participant_message" && entry.itemId ? [{ itemId: entry.itemId, messageId: `item:${entry.itemId}`, position: String(entry.seq) }] : []) } });
+          event: { type: "turn_took", turnId: String(turnId), items: taken.value.items.map(item => item.itemId), messages: takenMessages(taken.value.entries) } });
       },
       confirm(milestone) {
         const advanced = storage.confirmReceipts(turnId, milestone);

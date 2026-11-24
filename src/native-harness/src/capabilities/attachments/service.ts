@@ -24,7 +24,11 @@ export function createManagedAttachmentService(root: string, storage: SessionSto
   if (!existed) { const parent = openSync(dirname(root), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); try { fsyncSync(parent); } finally { closeSync(parent); } }
   recoverAttachmentOrphans(root, new Set(take(storage.managedAttachmentIds())));
   const uploads = createUploadManager({ root, validateImage, publishReady(metadata) { fault?.("attachmentPublished"); take(storage.registerReadyAttachment(metadata)); fault?.("attachmentReady"); } });
-  const channel = (id: string) => { if (!take(storage.readChannel(id))) throw new UploadError("not_found", "Unknown channel"); };
+  const channel = (id: string, active = false) => {
+    const view = take(storage.readChannel(id));
+    if (!view) throw new UploadError("not_found", "Unknown channel");
+    if (active && view.channel.lifecycle === "retired") throw new AttachmentServiceError("channel_retired", "Channel is retired");
+  };
   const cleanup = () => {
     const before = new Date(now() - 24 * 60 * 60 * 1000).toISOString();
     let removed = 0;
@@ -39,7 +43,7 @@ export function createManagedAttachmentService(root: string, storage: SessionSto
   };
   cleanup();
   return {
-    begin(input: Parameters<typeof uploads.begin>[0]) { channel(input.channel); return uploads.begin(input); },
+    begin(input: Parameters<typeof uploads.begin>[0]) { channel(input.channel, true); return uploads.begin(input); },
     status(channelId: string, id: string) { channel(channelId); return uploads.status(channelId, id); },
     write(channelId: string, id: string, offset: number, data: string) { channel(channelId); return uploads.write(channelId, id, offset, data); },
     finalize(channelId: string, id: string) { channel(channelId); return uploads.finalize(channelId, id); },
