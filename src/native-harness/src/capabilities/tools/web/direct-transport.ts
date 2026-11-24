@@ -41,13 +41,13 @@ function closeSocket(socket: Socket): Promise<void> {
   });
 }
 
-function dial(target: DirectSocketTarget, signal: AbortSignal): Promise<Socket> {
+export function dialDirect(target: DirectSocketTarget, signal: AbortSignal, trustedCa?: string): Promise<Socket> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const options = { host: target.address, family: target.family, port: target.port };
     const socket = target.secure ? connectTls({
       ...options, ...(isIP(target.hostname) ? {} : { servername: target.hostname }),
-      ALPNProtocols: ["http/1.1"],
+      ALPNProtocols: ["http/1.1"], ca: trustedCa,
       rejectUnauthorized: true, checkServerIdentity: (_hostname, certificate) => checkServerIdentity(target.hostname, certificate),
     }) : connect(options);
     const event = target.secure ? "secureConnect" : "connect";
@@ -82,7 +82,7 @@ function dial(target: DirectSocketTarget, signal: AbortSignal): Promise<Socket> 
   });
 }
 
-export const directTransport: DirectTransportDependencies = { resolve, connect: dial };
+export const directTransport: DirectTransportDependencies = { resolve, connect: dialDirect };
 
 export async function requestDirect(url: URL, signal: AbortSignal, dependencies = directTransport): Promise<DirectResponse> {
   signal.throwIfAborted();
@@ -101,6 +101,14 @@ export async function requestDirect(url: URL, signal: AbortSignal, dependencies 
     exact.addAddress(address, type);
     if (!peer || publicAddress(peer) !== family || !exact.check(peer, type) || socket.remotePort !== port)
       throw new DirectHttpError("blocked_destination", "Connected peer did not match the validated destination.");
+    return await readPinnedResponse(socket, url, signal);
+  } catch (error) { await closeSocket(socket); throw error; }
+}
+
+// This stage takes ownership of the already-connected and verified socket.
+export async function readPinnedResponse(socket: Socket, url: URL, signal: AbortSignal): Promise<DirectResponse> {
+  try {
+    signal.throwIfAborted();
     const stop = () => socket.destroy(new Error("Web request aborted."));
     signal.addEventListener("abort", stop, { once: true });
     socket.once("close", () => signal.removeEventListener("abort", stop));
@@ -114,6 +122,7 @@ interface DirectResponse {
   statusCode: number;
   headers: Record<string, string | undefined>;
   body: Readable;
+  close(): Promise<void>;
 }
 
 const malformed = () => new DirectHttpError("page_unavailable", "Malformed web response.");
@@ -221,6 +230,6 @@ class ResponseReader {
     const body = Readable.from(this.#body(!empty && transfer === "chunked" ? "chunked" : "fixed",
       empty ? 0 : length === undefined ? undefined : Number(length)), { objectMode: false });
     body.once("close", () => this.socket.destroy());
-    return { statusCode, headers, body };
+    return { statusCode, headers, body, close: () => closeSocket(this.socket) };
   }
 }

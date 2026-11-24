@@ -1,4 +1,3 @@
-import type { Readable } from "node:stream";
 import { PassThrough, Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
@@ -8,7 +7,7 @@ import { requestDirect, type DirectTransportDependencies } from "./direct-transp
 const rawLimit = 2 * 1024 * 1024, decodedLimit = 4 * 1024 * 1024, previewLimit = 2048;
 const tooLarge = () => new DirectHttpError("response_too_large", "Web response exceeded the transfer limit.");
 
-async function boundedBody(response: { body: Readable; headers: Record<string, string | undefined> }, signal: AbortSignal, discard: boolean): Promise<Buffer> {
+async function boundedBody(response: Awaited<ReturnType<typeof requestDirect>>, signal: AbortSignal, discard: boolean): Promise<Buffer> {
   let received = 0, decoded = 0;
   const chunks: Buffer[] = [];
   const encoding = response.headers["content-encoding"]?.trim().toLowerCase();
@@ -16,6 +15,7 @@ async function boundedBody(response: { body: Readable; headers: Record<string, s
     : encoding === "br" ? createBrotliDecompress() : encoding === undefined || encoding === "identity" ? new PassThrough() : undefined;
   if (!decoder) {
     response.body.destroy();
+    await response.close();
     throw new DirectHttpError("unsupported_content", "Unsupported response encoding.");
   }
   const count = new Transform({ transform(chunk: Buffer, _encoding, callback) {
@@ -28,7 +28,11 @@ async function boundedBody(response: { body: Readable; headers: Record<string, s
     if (!discard) chunks.push(chunk);
     callback();
   } });
-  await pipeline(response.body, count, decoder, collect, { signal });
+  try {
+    await pipeline(response.body, count, decoder, collect, { signal });
+  } finally {
+    await response.close();
+  }
   return Buffer.concat(chunks, discard ? 0 : decoded);
 }
 
