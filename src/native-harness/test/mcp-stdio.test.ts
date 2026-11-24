@@ -83,3 +83,12 @@ test("portable MCP configuration keeps declarations and policy denies mixed work
     headers: { Authorization: { runtime: true, literal: "secret" } },
   } } })).toThrow();
 });
+
+test("MCP redaction refuses schema changes and ambiguous secret-bearing object keys", async () => {
+  const { mcpSecrets } = await import("../src/capabilities/tools/mcp/secrets.ts");
+  const credential = crypto.randomUUID();
+  const redactor = mcpSecrets([credential]);
+  expect(redactor.text(`prefix ${credential} suffix`)).toBe("prefix [redacted] suffix");
+  expect(() => redactor.tree({ nested: [{ [credential]: true }] })).toThrow();
+  expect(() => redactor.tree({ type: "string", enum: [credential] }, true)).toThrow();
+});

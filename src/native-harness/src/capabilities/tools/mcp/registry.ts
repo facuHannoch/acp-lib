@@ -26,7 +26,7 @@ export async function openMcpRegistry(config: ManagedConfig, environment: Record
       let child;
       try { child = spawnMcpStdio({ ...entry, env }); }
       catch { status[name] = { transport, state: "unavailable", reason: "spawn" }; return; }
-      try { return { name, connection: await connectMcpStdio(name, child, config.limits?.mcpCallTimeoutMs) }; }
+      try { return { name, connection: await connectMcpStdio(name, child, config.limits?.mcpCallTimeoutMs, Object.values(env)) }; }
       catch { status[name] = { transport, state: "unavailable", reason: "discovery" }; return; }
     }));
     for (const result of batch) {

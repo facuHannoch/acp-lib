@@ -115,3 +115,69 @@ test("disconnect after MCP dispatch is uncertain and a replacement connection ca
     expect((await second.bindings.get(tool)!.call({}, AbortSignal.timeout(2000))).content).toContain("fixture result");
   } finally { await second.close(); }
 });
+
+test("standalone close and post-discovery startup rollback reap the MCP subprocess", async () => {
+  const { openDevelopment } = await import("../src/interfaces/cli/development.ts");
+  const { readFileSync } = await import("node:fs");
+  const home = mkdtempSync(join(tmpdir(), "mcp-reap-"));
+  const script = join(home, "script.jsonl"), pidFile = join(home, "child.pid"), invalidMedia = join(home, "not-a-directory");
+  writeFileSync(script, '{"type":"scenario","version":1,"name":"cleanup"}\n{"type":"model","content":"done"}\n');
+  writeFileSync(invalidMedia, "fixture");
+  const code = fixture.replace('for await', 'import {writeFileSync} from "node:fs"; for await')
+    .replace('if (request.method === "tools/list")', 'if (request.method === "tools/list") writeFileSync(process.env.PID_FILE, String(process.pid)); if (request.method === "tools/list")');
+  const managedConfig = {
+    version: 1 as const, system: "", model: { protocol: "scripted" as const, script },
+    defaultPolicy: "owner", policies: { owner: { fallback: "allow" as const, tools: {}, mcp: "allow" as const } },
+    mcpServers: { docs: { transport: "stdio" as const, command: Bun.argv[0]!, args: ["-e", code], env: { PID_FILE: { env: "PID_FILE" } } } },
+  };
+  const options = { managedConfig, systemPrompt: "", environment: { PID_FILE: pidFile }, create: true };
+  try {
+    const opened = await openDevelopment({ ...options, database: join(home, "ok.sqlite") });
+    const first = Number(readFileSync(pidFile, "utf8"));
+    try { expect(() => process.kill(first, 0)).not.toThrow(); }
+    finally { await opened.close(); }
+    expect(() => process.kill(first, 0)).toThrow();
+    await expect(openDevelopment({ ...options, database: join(home, "rollback.sqlite"), mediaRoot: invalidMedia })).rejects.toThrow();
+    const second = Number(readFileSync(pidFile, "utf8"));
+    expect(second).not.toBe(first);
+    expect(() => process.kill(second, 0)).toThrow();
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("stdio credential echoes stay out of MCP definitions, durable results, capture, inspection and export", async () => {
+  const home = mkdtempSync(join(tmpdir(), "mcp-redact-")), script = join(home, "script.jsonl");
+  const credential = crypto.randomUUID();
+  const code = fixture
+    .replace('description: "Read fixture"', 'description: "Description " + process.env.TOKEN')
+    .replace('text: "fixture result" }]','text: "Result " + process.env.TOKEN }], structuredContent: { nested: [{ value: process.env.TOKEN }] }');
+  writeFileSync(script, [
+    { type: "scenario", version: 1, name: "mcp-redaction" },
+    { type: "model", content: null, calls: [{ id: "call", name: tool, arguments: {} }] },
+    { type: "model", content: "done" },
+  ].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const harness = createInProcessHarness({ home, captureRequests: true, environment: { TOKEN: credential } });
+  try {
+    await harness.client.initialize();
+    await harness.client.createSession({ sessionId: "mcp", participants: [], channels: {}, config: {
+      version: 1, system: "", model: { protocol: "scripted", script }, defaultPolicy: "owner",
+      policies: { owner: { mcp: "allow", fallback: "allow", tools: {} } },
+      mcpServers: { docs: { transport: "stdio", command: Bun.argv[0]!, args: ["-e", code], env: { TOKEN: { env: "TOKEN" } } } },
+    } });
+    await harness.client.push({ channel: "room", item: { id: "input", kind: "user_message", sender: "owner", content: [{ type: "text", text: "go" }] } });
+    const expires = performance.now() + 4000;
+    while (!(await harness.client.idle()).idle && performance.now() < expires) await Bun.sleep(10);
+    const requests = harness.models.get("room")!;
+    expect(requests).toHaveLength(2);
+    expect(requests[0]!.tools.find(value => value.name === tool)?.description).toBe("Description [redacted]");
+    const result = requests[1]!.messages.find(message => message.role === "tool");
+    expect(result?.role === "tool" && JSON.parse(result.content)).toMatchObject({
+      text: "Result [redacted]", structuredContent: { nested: [{ value: "[redacted]" }] },
+    });
+    const inspected = await harness.client.toolInvocations("1");
+    expect(inspected.invocations).toMatchObject([{ tool, state: "succeeded" }]);
+    expect(JSON.stringify(inspected).includes(credential)).toBe(false);
+    expect(JSON.stringify(requests).includes(credential)).toBe(false);
+    await harness.client.suspend();
+    expect(Buffer.from(await harness.client.exportArchive()).includes(credential)).toBe(false);
+  } finally { await harness.close(); rmSync(home, { recursive: true, force: true }); }
+});

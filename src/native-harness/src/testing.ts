@@ -174,77 +174,82 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       }
       if (execution.value && config.mcpServers) mcp = await openMcpRegistry(config, environment);
       if (execution.value && paths && !options.adapter) attachments = createManagedAttachmentService(join(paths.directory, "media"), storage, validateManagedImage, Date.now, hit);
-    } catch (error) { await mcp?.close(); opened.value.close(); throw error; }
-    const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
-    const executeTool: ExecuteTool = async (call, signal) => {
-      const result = await (call.name === "record" ? record(call, signal) : call.name === "hold" ? hold(call, signal) : executeEcho(call, signal));
-      hit("tool");
-      return result;
-    };
-    const revisions = new Map<string, number>();
-    const session = createSession({
-      ...(script && options.reminderTime !== undefined && Number.isSafeInteger(options.reminderTime)
-        ? { reminderClock: { ...wallReminderClock, now: () => options.reminderTime! } } : {}), ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
-      revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, imageInput, webTools, mcpTools: mcp?.bindings, ...(catalog ? { catalog } : {}), configureTurn(turn) {
-      if (compatible) {
-        const model: Model = async () => { throw new Error("Chat Completions requires a model attempt"); };
-        bindModelAttempt(model, { scripted: false,
-          ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }),
-          create: () => openAICompatibleAttempt(compatible.baseUrl, compatible.model, compatibleKey, fetch, undefined, attachments ? id => {
-            const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
-          } : undefined) });
-        return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
-      }
-      if (config.model.protocol === "openrouter") {
-        const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
-        if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "", providerFetch, undefined,
-          attachments ? { supported: imageInput, metadata(id) { const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined; },
-            read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
-            verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); } } : undefined) });
-        return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
-      }
-      const model: Model = async () => { throw new Error("Scripted model requires a reserved attempt"); };
-      bindModelAttempt(model, { scripted: true, ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }), create: (step, ordinal) => {
-        const next = scenarioAttempt(script!, turn.channelId, step!);
-        return async function* (request, signal) {
-          // Offline rehearsal can observe the real provider projection while
-          // retaining scripted records as the source of model decisions.
-          if (fixtureEndpoint && imageInput && attachments && request.messages.some(message => message.role === "user" && message.parts)) {
-            const probe = openRouterAttempt("fixture", "scripted-fixture", providerFetch, undefined, {
-              supported: true, metadata(id) { const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined; },
+      const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
+      const executeTool: ExecuteTool = async (call, signal) => {
+        const result = await (call.name === "record" ? record(call, signal) : call.name === "hold" ? hold(call, signal) : executeEcho(call, signal));
+        hit("tool");
+        return result;
+      };
+      const revisions = new Map<string, number>();
+      const session = createSession({
+        ...(script && options.reminderTime !== undefined && Number.isSafeInteger(options.reminderTime)
+          ? { reminderClock: { ...wallReminderClock, now: () => options.reminderTime! } } : {}), ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
+        revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, imageInput, webTools, mcpTools: mcp?.bindings, ...(catalog ? { catalog } : {}), configureTurn(turn) {
+        if (compatible) {
+          const model: Model = async () => { throw new Error("Chat Completions requires a model attempt"); };
+          bindModelAttempt(model, { scripted: false,
+            ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }),
+            create: () => openAICompatibleAttempt(compatible.baseUrl, compatible.model, compatibleKey, fetch, undefined, attachments ? id => {
+              const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
+            } : undefined) });
+          return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
+        }
+        if (config.model.protocol === "openrouter") {
+          const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
+          if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "", providerFetch, undefined,
+            attachments ? { supported: imageInput, metadata(id) { const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined; },
               read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
-              verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); },
-            });
-            for await (const event of probe(request, signal)) if (event.type === "failure") throw new Error(event.code ?? event.message);
-          }
-          if (options.attempts) appendFileSync(options.attempts, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, step, ordinal, itemIds: request.takenItemIds })}\n`);
-          if (options.captureRequests) {
-            const requests = models.get(turn.channelId) ?? [];
-            requests.push(structuredClone(request));
-            models.set(turn.channelId, requests);
-          }
-          if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, revision: revisions.get(turn.channelId), messages: request.messages, tools: request.tools.map(tool => tool.name) })}\n`);
-          if (options.stallChannel === turn.channelId && step === 0) {
-            yield { type: "accepted" }; yield { type: "usage", usage: { inputTokens: 7 } };
-            yield { type: "text_delta", text: "Partial reply" };
-            if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
-            return;
-          }
-          let streamed = false;
-          for await (const event of next(request, signal)) {
-            if (event.type === "text_delta") streamed = true;
-            if (!streamed && options.streamResponses && event.type === "response" && event.response.content)
-              yield { type: "text_delta", text: event.response.content };
-            yield event;
-          }
-        };
+              verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); } } : undefined) });
+          return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
+        }
+        const model: Model = async () => { throw new Error("Scripted model requires a reserved attempt"); };
+        bindModelAttempt(model, { scripted: true, ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }), create: (step, ordinal) => {
+          const next = scenarioAttempt(script!, turn.channelId, step!);
+          return async function* (request, signal) {
+            // Offline rehearsal can observe the real provider projection while
+            // retaining scripted records as the source of model decisions.
+            if (fixtureEndpoint && imageInput && attachments && request.messages.some(message => message.role === "user" && message.parts)) {
+              const probe = openRouterAttempt("fixture", "scripted-fixture", providerFetch, undefined, {
+                supported: true, metadata(id) { const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined; },
+                read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
+                verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); },
+              });
+              for await (const event of probe(request, signal)) if (event.type === "failure") throw new Error(event.code ?? event.message);
+            }
+            if (options.attempts) appendFileSync(options.attempts, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, step, ordinal, itemIds: request.takenItemIds })}\n`);
+            if (options.captureRequests) {
+              const requests = models.get(turn.channelId) ?? [];
+              requests.push(structuredClone(request));
+              models.set(turn.channelId, requests);
+            }
+            if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, revision: revisions.get(turn.channelId), messages: request.messages, tools: request.tools.map(tool => tool.name) })}\n`);
+            if (options.stallChannel === turn.channelId && step === 0) {
+              yield { type: "accepted" }; yield { type: "usage", usage: { inputTokens: 7 } };
+              yield { type: "text_delta", text: "Partial reply" };
+              if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+              return;
+            }
+            let streamed = false;
+            for await (const event of next(request, signal)) {
+              if (event.type === "text_delta") streamed = true;
+              if (!streamed && options.streamResponses && event.type === "response" && event.response.content)
+                yield { type: "text_delta", text: event.response.content };
+              yield event;
+            }
+          };
+        } });
+        return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
       } });
-      return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
-    } });
-    return { session, config, imageInput, ...(mcp ? { mcpStatus: mcp.status, stopMcp: mcp.close } : {}), ...(attachments ? { attachments } : {}), close() { void mcp?.close(); attachments?.close(); opened.value.close(); }, commitConfig() {
-      const saved = storage.saveConfig(config);
-      if (!saved.ok && saved.error.code !== "incompatible") throw new SessionOpenError("storage_failure", saved.error.message);
-    }, exportArchive: () => storage.exportArchive() };
+      return { session, config, imageInput, ...(mcp ? { mcpStatus: mcp.status, stopMcp: mcp.close } : {}), ...(attachments ? { attachments } : {}), close() { void mcp?.close(); attachments?.close(); opened.value.close(); }, commitConfig() {
+        const saved = storage.saveConfig(config);
+        if (!saved.ok && saved.error.code !== "incompatible") throw new SessionOpenError("storage_failure", saved.error.message);
+      }, exportArchive: () => storage.exportArchive() };
+    } catch (error) {
+      for (const cleanup of [() => mcp?.close(), () => attachments?.close(), () => opened.value.close()]) {
+        try { await cleanup(); } catch { /* Preserve the original startup failure. */ }
+      }
+      throw error;
+    }
   }, { durable, functions: true, mcpStdio: true, attachments: !!options.home && !options.adapter, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
     importArchive(payload, sessionId) {
       let createdDirectory: string | undefined;

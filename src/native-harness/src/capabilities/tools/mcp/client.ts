@@ -1,16 +1,18 @@
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { McpTool } from "../../../contracts/mcp.ts";
 import { acceptsMcpSchema, matchesMcpArguments, mcpToolName } from "./schema.ts";
+import { mcpSecrets } from "./secrets.ts";
 import { projectMcpResult } from "./result.ts";
 import { McpStdioTransport, type McpStdioProcess } from "./stdio.ts";
 
 const supported = new Set(["2025-03-26", "2025-06-18", "2025-11-25"]);
 const encoder = new TextEncoder();
 
-export async function connectMcpStdio(name: string, child: McpStdioProcess, deadlineMs = 1_800_000) {
+export async function connectMcpStdio(name: string, child: McpStdioProcess, deadlineMs = 1_800_000, secrets: readonly string[] = []) {
   let transport: McpStdioTransport<JSONRPCMessage> | undefined;
   const startup = AbortSignal.timeout(10_000);
   try {
+    const redact = mcpSecrets(secrets);
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     const { ErrorCode, McpError, JSONRPCMessageSchema } = await import("@modelcontextprotocol/sdk/types.js");
     const liveTransport = new McpStdioTransport<JSONRPCMessage>(child, supported, value => JSONRPCMessageSchema.parse(value));
@@ -29,10 +31,12 @@ export async function connectMcpStdio(name: string, child: McpStdioProcess, dead
       if (page === 4) throw new Error("MCP catalog exceeds page limit");
       const list = await client.listTools(cursor === undefined ? undefined : { cursor }, { signal: startup, timeout: 10_000 });
       for (const remote of list.tools) {
+        if (redact.contains(remote.name)) throw new Error("Unsafe MCP tool name");
+        redact.tree(remote.inputSchema, true);
         const key = mcpToolName(name, remote.name);
         const schema = remote.inputSchema;
         if (!key || bindings.has(key) || bindings.size === 32 || !acceptsMcpSchema(schema)) throw new Error("Invalid MCP tool catalog");
-        const definition = { name: key, description: remote.description ?? "", parameters: schema };
+        const definition = { name: key, description: redact.text(remote.description ?? ""), parameters: schema };
         bytes += encoder.encode(JSON.stringify(definition)).length;
         if (bytes > 128 * 1024) throw new Error("MCP catalog exceeds byte limit");
         bindings.set(key, {
@@ -49,7 +53,15 @@ export async function connectMcpStdio(name: string, child: McpStdioProcess, dead
               });
               if (result.isError) return fail("mcp_tool_error");
               if (!Array.isArray(result.content)) return fail("mcp_protocol_error");
-              return { content: projectMcpResult(result as Parameters<typeof projectMcpResult>[0]) };
+              try {
+                return { content: projectMcpResult({
+                  content: result.content.map(block => {
+                    if (block.type !== "text" || !("text" in block) || typeof block.text !== "string") return { type: "omitted" };
+                    return { type: "text", text: redact.text(block.text) };
+                  }),
+                  structuredContent: redact.tree(result.structuredContent),
+                }) };
+              } catch { return fail("mcp_protocol_error"); }
             } catch (error) {
               if (signal.aborted) return fail("tool_interrupted");
               if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) return fail("tool_timeout");

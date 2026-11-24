@@ -132,62 +132,69 @@ export async function openDevelopment(options: DevelopmentOptions) {
       if (managedConfig?.mcpServers) mcp = await openMcpRegistry(managedConfig, environment);
       attachments = createManagedAttachmentService(mediaRoot, storage, validateManagedImage);
     }
-  }
-  catch (error) { await mcp?.close(); storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw error; }
-  if (savedConfig) {
-    const saved = storage.saveConfig(savedConfig);
-    if (!saved.ok && saved.error.code !== "incompatible") { attachments?.close(); storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw new Error(`Cannot save config: ${saved.error.message}`); }
-  }
+    if (savedConfig) {
+      const saved = storage.saveConfig(savedConfig);
+      if (!saved.ok && saved.error.code !== "incompatible") throw new Error(`Cannot save config: ${saved.error.message}`);
+    }
 
-  let session: PersistentSession;
-  const inspection = createInspection(systemPrompt, [...tools, ...(webTools ?? []).map(value => value.definition)], storage, options.database ?? "memory",
-    turnId => session.tools?.invocations(turnId) ?? []);
-  const captureScript = (options.environment ?? process.env).HARNESS_CAPTURE_SCRIPT_REQUESTS === "1";
-  session = createSession({
-    systemPrompt, storage, config: managedConfig, imageInput, webTools, mcpTools: mcp?.bindings, captureContext: (!script || captureScript) ? inspection.capture : undefined,
-    observeModelCall: inspection.modelCall,
-    configureTurn(turn) {
-      const model = observeModel(inspection, turn.channelId, onRequest => {
-        if (script || compatible) return async () => { throw new Error("Model requires a reserved attempt"); };
-        const provider = (options.providerFactory ?? openRouter)(apiKey!, providerModel!.model, onRequest);
-        return provider;
-      }, turn.turnId);
-      if (script) {
-        bindModelAttempt(model, { scripted: true, create: step => {
-          const next = scenarioAttempt(script, turn.channelId, step!);
-          return async function* (request, signal) {
-            if (captureScript)
-              inspection.request(turn.channelId, JSON.stringify(request), turn.turnId);
-            for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; }
-          };
+    let session: PersistentSession;
+    const inspection = createInspection(systemPrompt, [...tools, ...(webTools ?? []).map(value => value.definition),
+      ...[...(mcp?.bindings.values() ?? [])].map(value => value.definition)], storage, options.database ?? "memory",
+      turnId => session.tools?.invocations(turnId) ?? []);
+    const captureScript = (options.environment ?? process.env).HARNESS_CAPTURE_SCRIPT_REQUESTS === "1";
+    session = createSession({
+      systemPrompt, storage, config: managedConfig, imageInput, webTools, mcpTools: mcp?.bindings, captureContext: (!script || captureScript) ? inspection.capture : undefined,
+      observeModelCall: inspection.modelCall,
+      configureTurn(turn) {
+        const model = observeModel(inspection, turn.channelId, onRequest => {
+          if (script || compatible) return async () => { throw new Error("Model requires a reserved attempt"); };
+          const provider = (options.providerFactory ?? openRouter)(apiKey!, providerModel!.model, onRequest);
+          return provider;
+        }, turn.turnId);
+        if (script) {
+          bindModelAttempt(model, { scripted: true, create: step => {
+            const next = scenarioAttempt(script, turn.channelId, step!);
+            return async function* (request, signal) {
+              if (captureScript)
+                inspection.request(turn.channelId, JSON.stringify(request), turn.turnId);
+              for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; }
+            };
+          } });
+        } else if (compatible) {
+          bindModelAttempt(model, { scripted: false, create: () => openAICompatibleAttempt(compatible.baseUrl, compatible.model, compatibleKey, fetch,
+            body => inspection.request(turn.channelId, body, turn.turnId), attachments ? id => {
+              const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
+            } : undefined) });
+        } else if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => {
+          const next = openRouterAttempt(apiKey!, providerModel!.model, fetch, body => inspection.request(turn.channelId, body, turn.turnId),
+            attachments ? { supported: imageInput, metadata(id) { const result = storage.readManagedAttachment(id); return result.ok ? result.value?.metadata : undefined; },
+              read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
+              verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); } } : undefined);
+          return async function* (request, signal) { for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; } };
         } });
-      } else if (compatible) {
-        bindModelAttempt(model, { scripted: false, create: () => openAICompatibleAttempt(compatible.baseUrl, compatible.model, compatibleKey, fetch,
-          body => inspection.request(turn.channelId, body, turn.turnId), attachments ? id => {
-            const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
-          } : undefined) });
-      } else if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => {
-        const next = openRouterAttempt(apiKey!, providerModel!.model, fetch, body => inspection.request(turn.channelId, body, turn.turnId),
-          attachments ? { supported: imageInput, metadata(id) { const result = storage.readManagedAttachment(id); return result.ok ? result.value?.metadata : undefined; },
-            read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
-            verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); } } : undefined);
-        return async function* (request, signal) { for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; } };
-      } });
-      return { model, tools, executeTool: (call, signal) => {
-        const debug = options.debugTools ? debugToolHandlers.get(call.name) : undefined;
-        if (debug) return debug(call, signal);
-        return call.name === currentTimeDefinition.name || !scriptedTools
-          ? executeCurrentTime(call, signal) : scriptedTools.executeTool(call, signal);
-      } };
-    },
-  });
-  const observed = observeSession(session, inspection);
-  const stop = session.stop;
-  session.stop = reason => { const result = stop(reason); inspection.stopped(); return result; };
-  return {
-    session, inspection, attachments, imageInput, storage: options.database ?? "memory",
-    /** The session as local clients use it: acceptance also refreshes the inspector. */
-    local: { agent: observed.agent, subscribe: session.subscribe },
-    close() { void mcp?.close(); session.reminders?.releaseTimer(); observed.stop(); attachments?.close(); const closed = storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); if (!closed.ok) throw new Error(`Cannot close session storage (${closed.error.code}): ${closed.error.message}`); },
-  };
+        return { model, tools, executeTool: (call, signal) => {
+          const debug = options.debugTools ? debugToolHandlers.get(call.name) : undefined;
+          if (debug) return debug(call, signal);
+          return call.name === currentTimeDefinition.name || !scriptedTools
+            ? executeCurrentTime(call, signal) : scriptedTools.executeTool(call, signal);
+        } };
+      },
+    });
+    const observed = observeSession(session, inspection);
+    const stop = session.stop;
+    session.stop = reason => { const result = stop(reason); inspection.stopped(); return result; };
+    return {
+      session, inspection, attachments, imageInput, storage: options.database ?? "memory",
+      /** The session as local clients use it: acceptance also refreshes the inspector. */
+      local: { agent: observed.agent, subscribe: session.subscribe },
+      async close() { if (mcp) await mcp.close(); session.reminders?.releaseTimer(); observed.stop(); attachments?.close(); const closed = storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); if (!closed.ok) throw new Error(`Cannot close session storage (${closed.error.code}): ${closed.error.message}`); },
+    };
+  } catch (error) {
+    const rollback = [() => mcp?.close(), () => attachments?.close(), () => storage.close(),
+      () => { if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); }];
+    for (const cleanup of rollback) {
+      try { await cleanup(); } catch { /* Preserve the original startup failure. */ }
+    }
+    throw error;
+  }
 }

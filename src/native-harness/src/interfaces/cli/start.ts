@@ -75,10 +75,9 @@ export async function start(options: StartOptions = {}) {
   } catch (error) {
     // Startup is all-or-nothing: do not leave an agent listening if the inspector
     // could not bind its port and the command reports a startup failure.
-    stopOutput();
-    await server?.stop(true);
-    await inspector?.stop(true);
-    development.close();
+    for (const cleanup of [stopOutput, () => server?.stop(true), () => inspector?.stop(true), () => development.close()]) {
+      try { await cleanup(); } catch { /* Preserve the original startup failure. */ }
+    }
     throw error;
   }
   const status = session.status();
@@ -96,12 +95,21 @@ export async function start(options: StartOptions = {}) {
     session.start();
   }
   console.log("Ctrl+C stops the agent: running turns are recorded as interrupted. Run `bun run suspend` first to pause cleanly.");
-  const stop = () => {
+  let stopping: Promise<void> | undefined;
+  const stop = () => stopping ??= (async () => {
     // Stop is immediate and is not suspension; a cleanly suspended session keeps its checkpoints.
-    session.stop("Agent process stopped");
-    stopOutput(); server?.stop(true); inspector?.stop(true); webChat.server.stop(true);
-    development.close();
-  };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+    try {
+      session.stop("Agent process stopped");
+      stopOutput();
+      await Promise.allSettled([server?.stop(true), inspector?.stop(true), webChat.server.stop(true)]);
+    } finally {
+      await development.close();
+    }
+  })();
+  const onSignal = () => { void stop().catch(() => {
+    console.error("Failed to close the development session.");
+    process.exitCode = 1;
+  }); };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
 }

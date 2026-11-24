@@ -91,7 +91,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   }
   // ---- Tools, decision 0021. The catalog's definitions come from the open;
   // the revoked set mirrors storage; the executor belongs to the connection.
-  const catalogInput = options.catalog ?? (options.webTools?.length ? { catalog: [] } : undefined);
+  const catalogInput = options.catalog ?? ((options.webTools?.length || options.mcpTools?.size) ? { catalog: [] } : undefined);
   const revoked = catalogInput ? store.readRevokedTools() : undefined;
   if (revoked && !revoked.ok) throw new Error(revoked.error.message);
   if (options.catalog?.catalog.some(tool => isTimelineTool(tool.name) || isReminderTool(tool.name) || isWebTool(tool.name) || tool.name.startsWith("mcp__"))) throw new Error("Native tool names are reserved");

@@ -182,9 +182,9 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   }
   /** An open that fails after attaching releases the session. With a batch,
    * stop first: a resume in it may already have handed a turn to an executor. */
-  function abandon(opened: OpenedSession, batch: boolean) {
+  async function abandon(opened: OpenedSession, batch: boolean) {
     if (batch) { try { opened.session.stop("Open failed"); } catch { /* Storage may be the failure. */ } }
-    opened.close();
+    try { await opened.stopMcp?.(); } finally { opened.close(); }
   }
 
   /** Read one snapshot, then keep every later notification behind the response.
@@ -289,7 +289,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         reminderResult = prepareReminders(opened.session, reminderBatch);
         current = opened;
         if (batch) startup = { batch, results: results! };
-      } catch (error) { abandon(opened, !!batch); throw error; }
+      } catch (error) { try { await abandon(opened, !!batch); } catch { /* Preserve startup failure. */ } throw error; }
       finally { opening = false; }
       if (batch?.length || opened.session.reminders) holdAfterResponse(() => { if (current === opened) opened.session.start(); });
       else opened.session.start();
@@ -327,7 +327,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { ...result, ...reminderResult, ...(results ? { channelChanges: results } : {}) };
       }
       // Work was not started; release the session so no partial load is observable.
-      catch (error) { abandon(opened, !!batch); throw error; }
+      catch (error) { try { await abandon(opened, !!batch); } catch { /* Preserve startup failure. */ } throw error; }
       finally { opening = false; }
     }
     if (transfers && method.startsWith("transfer/")) {
