@@ -65,6 +65,7 @@ export interface Description {
      * reject the field. */
     startupChannelChanges?: true;
     /** Decision 0021: tool catalogs, `functions/call` callbacks and invocation records. */
+    mcpServers?: { stdio: boolean; http: boolean; sse: false };
     functions?: true; reminders?: true; routines?: true; unattendedTurnGuard?: true; managedAttachments?: true; orderedParts?: true };
 }
 
@@ -133,6 +134,7 @@ export interface TurnStatus {
 /** `idle`, `suspended` and unresolved interrupted work are distinguishable:
  * see SessionStatus in the session contract for the exact derivation. */
 export interface StatusResult {
+  mcpServers?: Record<string, import("./mcp.ts").McpServerStatus>;
   sessionId: string; revision: number;
   lifecycle: "running" | "suspending" | "suspended";
   execution: "idle" | "working" | "suspending" | "suspended" | "stopped" | "incompatible";

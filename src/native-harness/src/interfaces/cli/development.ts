@@ -1,3 +1,4 @@
+import { openMcpRegistry } from "../../capabilities/tools/mcp/registry.ts";
 import { createWebRegistry, directWebFetch } from "../../capabilities/tools/web/registry.ts";
 import { exaHttpsTransport } from "../../capabilities/tools/web/exa-transport.ts";
 import { compatibleInferenceKey } from "../../runtime/config/inference-key.ts";
@@ -120,6 +121,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
     identity: { sessionId, compatibilityKey }, config: managedConfig, requiredScriptDigest: script?.modelDigest });
   if (!opened.ok) { if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw new Error(`Cannot open session storage (${opened.error.code}): ${opened.error.message}`); }
   const storage = opened.value;
+  let mcp: Awaited<ReturnType<typeof openMcpRegistry>> | undefined;
   let attachments: ReturnType<typeof createManagedAttachmentService> | undefined;
   try {
     const execution = storage.executionCompatible();
@@ -127,10 +129,11 @@ export async function openDevelopment(options: DevelopmentOptions) {
     if (!execution.value) imageInput = false;
     else {
       if (!creating) { if (compatible) compatibleKey = resolveCompatibleCredential(compatible, environment); webTools = makeWebTools(); }
+      if (managedConfig?.mcpServers) mcp = await openMcpRegistry(managedConfig, environment);
       attachments = createManagedAttachmentService(mediaRoot, storage, validateManagedImage);
     }
   }
-  catch (error) { storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw error; }
+  catch (error) { await mcp?.close(); storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw error; }
   if (savedConfig) {
     const saved = storage.saveConfig(savedConfig);
     if (!saved.ok && saved.error.code !== "incompatible") { attachments?.close(); storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw new Error(`Cannot save config: ${saved.error.message}`); }
@@ -141,7 +144,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
     turnId => session.tools?.invocations(turnId) ?? []);
   const captureScript = (options.environment ?? process.env).HARNESS_CAPTURE_SCRIPT_REQUESTS === "1";
   session = createSession({
-    systemPrompt, storage, config: managedConfig, imageInput, webTools, captureContext: (!script || captureScript) ? inspection.capture : undefined,
+    systemPrompt, storage, config: managedConfig, imageInput, webTools, mcpTools: mcp?.bindings, captureContext: (!script || captureScript) ? inspection.capture : undefined,
     observeModelCall: inspection.modelCall,
     configureTurn(turn) {
       const model = observeModel(inspection, turn.channelId, onRequest => {
@@ -185,6 +188,6 @@ export async function openDevelopment(options: DevelopmentOptions) {
     session, inspection, attachments, imageInput, storage: options.database ?? "memory",
     /** The session as local clients use it: acceptance also refreshes the inspector. */
     local: { agent: observed.agent, subscribe: session.subscribe },
-    close() { session.reminders?.releaseTimer(); observed.stop(); attachments?.close(); const closed = storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); if (!closed.ok) throw new Error(`Cannot close session storage (${closed.error.code}): ${closed.error.message}`); },
+    close() { void mcp?.close(); session.reminders?.releaseTimer(); observed.stop(); attachments?.close(); const closed = storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); if (!closed.ok) throw new Error(`Cannot close session storage (${closed.error.code}): ${closed.error.message}`); },
   };
 }

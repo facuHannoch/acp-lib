@@ -335,6 +335,8 @@ export interface SessionStorage extends ModelCallStore, ReminderStorage, Timelin
   /** False when stored policy references cannot be resolved by this owner. */
   unattendedGuard(): StorageResult<number | undefined>;
   executionCompatible(): StorageResult<boolean>;
+  /** Bind the current open catalog before any checkpoint can run. */
+  bindMcpCatalog?(fingerprint: string): void;
   /** Imported configuration, or undefined for sessions not imported from a file. */
   importedConfig(): StorageResult<import("./session-file.ts").PortableSessionConfig | undefined>;
   /** Persist the validated configuration used by this owner. */

@@ -92,6 +92,7 @@ export interface PersistentSessionOptions {
   /** Trusted assembly has verified the opted-in model and image validator. */
   imageInput?: boolean;
   /** Local web implementations created by trusted session assembly. */
+  mcpTools?: ReadonlyMap<string, import("./mcp.ts").McpTool>;
   webTools?: readonly import("./web.ts").CheckedWebRegistration[];
   systemPrompt: string;
   /** Optional assertion of the storage owner's validated config. Omission uses

@@ -764,3 +764,17 @@ tool policy and produce bounded JSON previews; inspect per-invocation provider
 estimates separately from model token usage. See
 [decision 0035](.res/decisions/0035-web-search-fetch.md) for transport limits,
 address checks, cost recovery and defaults.
+
+### Managed MCP stdio
+
+Decision 0036 adds the optional `@modelcontextprotocol/sdk` 1.31.0 dependency
+for executable sessions with configured MCP servers. Install the harness
+package dependencies before running the feature. Set `mcpServers` in managed
+configuration, with a direct executable, arguments and any explicit environment
+references. Grant `mcp: "allow"` under the trusted owner policy. MCP defaults
+to deny, including when any taken input contributes a policy without a grant.
+An executable reopen discovers the configured server's tools again.
+
+This slice supports local stdio. Streamable HTTPS credential execution and
+upstream launcher acceptance follow separately. The offline fixture does not
+establish the approval behavior of agents-tools or the door.

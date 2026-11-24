@@ -16,6 +16,6 @@ export async function serve(home?: string) {
     output.write(bytes);
     await output.flush();
   });
-  server.dispose();
+  await server.dispose();
   await output.end();
 }

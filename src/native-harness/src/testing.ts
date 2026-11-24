@@ -1,3 +1,4 @@
+import { openMcpRegistry } from "./capabilities/tools/mcp/registry.ts";
 import { createWebRegistry, directWebFetch } from "./capabilities/tools/web/registry.ts";
 import { exaHttpsTransport } from "./capabilities/tools/web/exa-transport.ts";
 import { webDefinitions } from "./capabilities/tools/web/definitions.ts";
@@ -161,6 +162,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       if (point === "snapshot" && options.snapshotLog) appendFileSync(options.snapshotLog, "snapshot\n");
       hit(point);
     }) : opened.value;
+    let mcp: Awaited<ReturnType<typeof openMcpRegistry>> | undefined;
     let attachments: ReturnType<typeof createManagedAttachmentService> | undefined;
     try {
       const execution = storage.executionCompatible();
@@ -170,8 +172,9 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         if (compatible) compatibleKey = resolveCompatibleCredential(compatible, environment);
         webTools = makeWebTools();
       }
+      if (execution.value && config.mcpServers) mcp = await openMcpRegistry(config, environment);
       if (execution.value && paths && !options.adapter) attachments = createManagedAttachmentService(join(paths.directory, "media"), storage, validateManagedImage, Date.now, hit);
-    } catch (error) { opened.value.close(); throw error; }
+    } catch (error) { await mcp?.close(); opened.value.close(); throw error; }
     const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
     const executeTool: ExecuteTool = async (call, signal) => {
       const result = await (call.name === "record" ? record(call, signal) : call.name === "hold" ? hold(call, signal) : executeEcho(call, signal));
@@ -182,7 +185,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const session = createSession({
       ...(script && options.reminderTime !== undefined && Number.isSafeInteger(options.reminderTime)
         ? { reminderClock: { ...wallReminderClock, now: () => options.reminderTime! } } : {}), ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
-      revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, imageInput, webTools, ...(catalog ? { catalog } : {}), configureTurn(turn) {
+      revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, imageInput, webTools, mcpTools: mcp?.bindings, ...(catalog ? { catalog } : {}), configureTurn(turn) {
       if (compatible) {
         const model: Model = async () => { throw new Error("Chat Completions requires a model attempt"); };
         bindModelAttempt(model, { scripted: false,
@@ -238,11 +241,11 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       } });
       return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
     } });
-    return { session, config, imageInput, ...(attachments ? { attachments } : {}), close() { attachments?.close(); opened.value.close(); }, commitConfig() {
+    return { session, config, imageInput, ...(mcp ? { mcpStatus: mcp.status, stopMcp: mcp.close } : {}), ...(attachments ? { attachments } : {}), close() { void mcp?.close(); attachments?.close(); opened.value.close(); }, commitConfig() {
       const saved = storage.saveConfig(config);
       if (!saved.ok && saved.error.code !== "incompatible") throw new SessionOpenError("storage_failure", saved.error.message);
     }, exportArchive: () => storage.exportArchive() };
-  }, { durable, functions: true, attachments: !!options.home && !options.adapter, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
+  }, { durable, functions: true, mcpStdio: true, attachments: !!options.home && !options.adapter, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
     importArchive(payload, sessionId) {
       let createdDirectory: string | undefined;
       try {
@@ -266,5 +269,5 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
 export function createInProcessHarness(options?: ScriptedServerOptions) {
   const { server, models } = createScriptedServer(options);
   const client = new HarnessClient(createInProcessTransport(server));
-  return { client, models, server, close: () => { client.close(); server.dispose(); } };
+  return { client, models, server, close: () => { client.close(); return server.dispose(); } };
 }

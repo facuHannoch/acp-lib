@@ -26,6 +26,7 @@ export interface RehearsalOptions {
   imageInput?: boolean;
   webSearch?: ProtocolConfig["webSearch"];
   webFetch?: ProtocolConfig["webFetch"];
+  mcpServers?: ProtocolConfig["mcpServers"];
   /** Trusted offline test assembly entry point. */
   testEntrypoint?: string;
 }
@@ -57,7 +58,7 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
   const host = new NativeHarnessHost({
     sessionId: "rehearsal", home, functions, approvalResponder: options.approvalResponder, text: "stream",
     config: { version: 1, system: "Offline rehearsal", model: { protocol: "scripted", script: path, ...(options.imageInput ? { imageInput: true } : {}) },
-      timelineTools: options.timelineTools, ...(options.webSearch ? { webSearch: options.webSearch } : {}), ...(options.webFetch ? { webFetch: options.webFetch } : {}), defaultPolicy: "rehearsal", policies: options.policies ?? { rehearsal: { fallback: "allow", tools: {} } } },
+      timelineTools: options.timelineTools, ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}), ...(options.webSearch ? { webSearch: options.webSearch } : {}), ...(options.webFetch ? { webFetch: options.webFetch } : {}), defaultPolicy: "rehearsal", policies: options.policies ?? { rehearsal: { fallback: "allow", tools: {} } } },
     requestTimeoutMs: 8000,
     async connect() {
       const child = Bun.spawn([process.execPath, options.testEntrypoint ?? main, "serve", "--stdio", "--home", home], {

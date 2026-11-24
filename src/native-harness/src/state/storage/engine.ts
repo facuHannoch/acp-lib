@@ -486,8 +486,12 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
   const requireCompatible = () => {
     if (!referencesCompatible(tables, activeConfig)) fail("incompatible", "A stored policy no longer exists");
   };
-  const turnFingerprint = (turn: TurnRow) => fingerprint(activeConfig, contributingPolicies(tables.itemsOfTurn(turn.turnId)
-    .map(item => item.policy ?? { resolved: legacy, inherited: [] })));
+  let mcpCatalog: string | undefined;
+  const turnFingerprint = (turn: TurnRow) => {
+    const policy = fingerprint(activeConfig, contributingPolicies(tables.itemsOfTurn(turn.turnId)
+      .map(item => item.policy ?? { resolved: legacy, inherited: [] })));
+    return mcpCatalog === undefined ? policy : JSON.stringify([policy, "mcp-v1", mcpCatalog]);
+  };
   const compatible = (turn: TurnRow) => {
     try { return turn.compatibilityKey === ownerKey && turn.state.status === "suspended" && turn.state.checkpoint.policyFingerprint === turnFingerprint(turn); }
     catch { return false; }
@@ -1191,6 +1195,10 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
 
     ownerConfig: () => run(() => ownerSnapshot, true),
     unattendedGuard: () => run(meta => logicalFormat(tables, meta) >= 8 ? reminders.guardLimit() : undefined, true),
+    bindMcpCatalog(value) {
+      if (mcpCatalog !== undefined) throw new Error("MCP catalog already bound");
+      mcpCatalog = value;
+    },
     executionCompatible: () => run(() => !incompatibleViewOnly && referencesCompatible(tables, activeConfig), true),
     importedConfig: () => run(() => tables.getConfig(), true),
     saveConfig: value => run(() => {

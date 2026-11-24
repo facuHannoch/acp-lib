@@ -49,6 +49,8 @@ export interface OpenedSession {
   exportArchive?(): StorageResult<SessionArchive>;
   attachments?: ReturnType<typeof createManagedAttachmentService>;
   imageInput?: boolean;
+  mcpStatus?(): Record<string, import("../../contracts/mcp.ts").McpServerStatus>;
+  stopMcp?(): Promise<void>;
 }
 export interface ProtocolServerOptions {
   durable?: boolean;
@@ -61,6 +63,7 @@ export interface ProtocolServerOptions {
   /** Decision 0021: the session factory accepts tool catalogs. */
   functions?: boolean;
   attachments?: boolean;
+  mcpStdio?: boolean;
 }
 
 const bad = (message: string): never => { throw new Fault("invalid_params", message); };
@@ -95,10 +98,11 @@ export function describe(durable: boolean, archives = false, functions = false, 
   };
 }
 
-export function createProtocolServer(open: (request: SessionRequest) => Promise<OpenedSession>, options: ProtocolServerOptions = {}): ProtocolEndpoint & { dispose(): void } {
+export function createProtocolServer(open: (request: SessionRequest) => Promise<OpenedSession>, options: ProtocolServerOptions = {}): ProtocolEndpoint & { dispose(): Promise<void> } {
   const limits = { ...TRANSFER_LIMITS, ...options.limits } as TransferLimits;
   const transfers = options.importArchive && options.transferDirectory ? createTransfers(options.transferDirectory, limits) : undefined;
   const description = describe(!!options.durable, !!transfers, !!options.functions, !!options.attachments);
+  if (options.mcpStdio) description.capabilities.mcpServers = { stdio: true, http: false, sse: false };
   let initialized = false;
   let approvalConsumer = false;
   let opening = false;
@@ -121,7 +125,11 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   const catalogOf = (raw: unknown) => {
     if (raw === undefined) return undefined;
     if (!options.functions) bad("This server does not accept tool catalogs");
-    try { return parseCatalog(raw, []); } catch (error) { throw error instanceof CatalogError ? new Fault(error.code, error.message) : error; }
+    try {
+      const parsed = parseCatalog(raw, []);
+      if (parsed.catalog.some(tool => tool.name.startsWith("mcp__"))) bad("MCP tool names are reserved");
+      return parsed;
+    } catch (error) { throw error instanceof CatalogError ? new Fault(error.code, error.message) : error; }
   };
 
   async function attach(request: SessionRequest): Promise<OpenedSession> {
@@ -190,7 +198,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const image = opened.imageInput && (opened.session.reminders?.executable() ?? true)
       ? { imageInput: true as const, imageLimits: { formats: ["image/png", "image/jpeg", "image/webp"], fileBytes: ATTACHMENT_LIMITS.fileBytes,
         turnBytes: ATTACHMENT_LIMITS.imageBytesPerTurn, maxImages: ATTACHMENT_LIMITS.references, maxSide: ATTACHMENT_LIMITS.imageSide, maxPixels: ATTACHMENT_LIMITS.imagePixels } } : {};
-    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision, ...image };
+    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision, ...image, ...(opened.mcpStatus ? { mcpServers: opened.mcpStatus() } : {}) };
   }
 
   function holdAfterResponse(start?: () => void) {
@@ -446,7 +454,11 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { channel: status, ...(method === "channel/create" ? { created: (result.value as { created: boolean }).created } : {}) };
     }
     if (method === "session/idle") { keys(p, []); return { idle: session.agent.idle() && session.status().execution !== "working" }; }
-    if (method === "session/status") { keys(p, []); return wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
+    if (method === "session/status") {
+      keys(p, []);
+      return { ...wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()),
+        ...(current.mcpStatus ? { mcpServers: current.mcpStatus() } : {}) };
+    }
     if (method === "session/suspend" || method === "session/resume") {
       keys(p, []);
       // Suspend answers only once `suspended` is committed, after in-flight
@@ -475,7 +487,12 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       if (!session.reminders) throw new Fault("invalid_state", "Conditional stop is unavailable");
       return session.reminders.conditionalStop(windowMs);
     }
-    if (method === "session/stop") { keys(p, []); return wireStatus(session.stop("Stopped by the host"), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
+    if (method === "session/stop") {
+      keys(p, []);
+      const status = session.stop("Stopped by the host");
+      await current.stopMcp?.();
+      return wireStatus(status, session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot());
+    }
     if (method === "session/model-calls") {
       keys(p, ["after", "limit"]);
       const after = p.after === undefined ? undefined : text(p.after);
@@ -549,6 +566,16 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     respond(response) { bridge.respond(response); },
     // A connection that is gone serves no handler and answers no callback.
     disconnect() { approvalConsumer = false; current?.session.approvals.disconnect(); current?.session.tools?.serve([]); bridge.disconnect(); },
-    dispose() { approvalConsumer = false; current?.session.approvals.disconnect(); bridge.disconnect(); transfers?.dispose(); current?.session.reminders?.releaseTimer(); current?.close(); current = undefined; },
+    async dispose() {
+      const opened = current;
+      current = undefined;
+      approvalConsumer = false;
+      opened?.session.approvals.disconnect();
+      bridge.disconnect();
+      transfers?.dispose();
+      opened?.session.reminders?.releaseTimer();
+      if (opened?.stopMcp) await opened.stopMcp();
+      opened?.close();
+    },
   };
 }

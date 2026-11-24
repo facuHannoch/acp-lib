@@ -396,3 +396,25 @@ test("cumulative real stdio direct-only fetch needs no Exa credential", async ()
     expect(JSON.parse(result.content)).toMatchObject({ url: "https://www.public-site.com/source", text: "Direct fixture text", coverage: "full", truncated: false });
   } finally { await run.close(); await rm(directory, { recursive: true, force: true }); }
 }, 40000);
+
+test("cumulative real stdio rehearsal calls an MCP subprocess and observes its paired result", async () => {
+  const direction = await mkdtemp(join(tmpdir(), "mcp-rehearsal-"));
+  const requests = join(direction, "requests.jsonl");
+  const run = await createRehearsal(new URL("./fixtures/rehearsal-cumulative-mcp.jsonl", import.meta.url).pathname, {
+    deadlineMs: 30000, exactConsumption: true, timelineTools: true,
+    policies: { rehearsal: { fallback: "allow", mcp: "allow", tools: {} } },
+    mcpServers: { docs: { transport: "stdio", command: process.execPath, args: [new URL("./fixtures/mcp-stdio-fixture.ts", import.meta.url).pathname] } },
+    env: { HARNESS_TEST_REQUESTS: requests, HARNESS_TEST_ATTEMPTS: join(direction, "attempts.jsonl") },
+  });
+  try {
+    await run.setup();
+    await run.schedule(async offset => { if (offset) await until(() => run.activity.filter(event => event.kind === "completed").length >= offset, "previous phase completed"); });
+    const summary = await run.finish();
+    expect(Object.values(summary.unused).every(count => count === 0)).toBe(true);
+    const captures = readFileSync(requests, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(row => row.channel === "mcp");
+    expect(captures).toHaveLength(2);
+    expect(captures[0].tools).toContain("mcp__docs__72656164");
+    const result = captures[1].messages.find((message: { role: string; callId?: string }) => message.role === "tool" && message.callId === "mcp-read");
+    expect(JSON.parse(result.content)).toMatchObject({ text: "MCP fixture evidence", truncated: false });
+  } finally { await run.close(); await rm(direction, { recursive: true, force: true }); }
+}, 35000);

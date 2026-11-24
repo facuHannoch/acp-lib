@@ -17,8 +17,13 @@ export class McpStdioTransport<Message> {
   #sends = Promise.resolve();
   readonly #process: McpStdioProcess;
 
-  constructor(process: McpStdioProcess) {
+  constructor(process: McpStdioProcess, private readonly revisions?: ReadonlySet<string>,
+    private readonly parse?: (value: unknown) => Message) {
     this.#process = process;
+  }
+
+  setProtocolVersion(version: string) {
+    if (this.revisions && !this.revisions.has(version)) throw new Error("Unsupported MCP protocol revision");
   }
 
   async start(): Promise<void> {
@@ -52,7 +57,7 @@ export class McpStdioTransport<Message> {
             if (!message || typeof message !== "object" || Array.isArray(message)) {
               throw new Error("Invalid MCP message");
             }
-            this.onmessage?.(message as Message);
+            this.onmessage?.(this.parse ? this.parse(message) : message as Message);
             size = 0;
           }
           start = end + 1;
@@ -71,11 +76,22 @@ export class McpStdioTransport<Message> {
     if (frame.length > frameLimit + 1) return Promise.reject(new Error("MCP frame too large"));
     const write = this.#sends.then(async () => {
       if (!this.#started || this.#closing) throw new Error("MCP transport is closed");
-      await this.#process.write(frame);
+      const stop = AbortSignal.timeout(250);
+      const writeDeadline = new Promise<never>((_, reject) => {
+        stop.addEventListener("abort", () => reject(new Error("MCP stdio write timed out")), { once: true });
+      });
+      try {
+        await Promise.race([this.#process.write(frame), writeDeadline]);
+      } catch (error) {
+        void this.close().catch(() => {});
+        throw error;
+      }
     });
     this.#sends = write.catch(() => {});
     return write;
   }
+
+  async drain(): Promise<void> { await this.#sends; }
 
   close(): Promise<void> {
     return this.#closing ??= Promise.resolve().then(async () => {

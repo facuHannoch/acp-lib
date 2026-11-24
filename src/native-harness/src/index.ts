@@ -82,12 +82,19 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   const config = owner.value ?? { version: 1 as const, system: options.systemPrompt, model: { protocol: "scripted" as const, script: "legacy" },
     defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow" as const, tools: {} } } };
   if (options.imageInput && (config.model.protocol === "openai-compatible" || config.model.imageInput !== true)) throw new Error("Image input requires explicit model configuration");
+  if (options.config?.mcpServers !== undefined) {
+    const canonical = (value: unknown) => JSON.stringify(value, (_key, object) =>
+      object && typeof object === "object" && !Array.isArray(object)
+        ? Object.fromEntries(Object.keys(object).sort().map(key => [key, object[key]])) : object);
+    store.bindMcpCatalog?.(canonical([options.config.mcpServers,
+      [...(options.mcpTools?.values() ?? [])].map(tool => tool.definition).sort((a, b) => a.name.localeCompare(b.name))]));
+  }
   // ---- Tools, decision 0021. The catalog's definitions come from the open;
   // the revoked set mirrors storage; the executor belongs to the connection.
   const catalogInput = options.catalog ?? (options.webTools?.length ? { catalog: [] } : undefined);
   const revoked = catalogInput ? store.readRevokedTools() : undefined;
   if (revoked && !revoked.ok) throw new Error(revoked.error.message);
-  if (options.catalog?.catalog.some(tool => isTimelineTool(tool.name) || isReminderTool(tool.name) || isWebTool(tool.name))) throw new Error("Native tool names are reserved");
+  if (options.catalog?.catalog.some(tool => isTimelineTool(tool.name) || isReminderTool(tool.name) || isWebTool(tool.name) || tool.name.startsWith("mcp__"))) throw new Error("Native tool names are reserved");
   const catalog = catalogInput ? createToolCatalog(catalogInput, revoked?.value ?? []) : undefined;
   const limits = { ...TOOL_LIMITS, ...options.toolLimits };
   let executor: FunctionExecutor | undefined;
@@ -115,7 +122,8 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
     const offer = (policies: readonly string[]): { tools: ToolDefinition[]; fixedToolCount?: number } => {
       const allowed = <T extends ToolDefinition>(tools: readonly T[]) => tools.filter(tool => toolDecision(config, policies, tool.name) !== "deny");
       const definition = ({ name, description, parameters }: ToolDefinition): ToolDefinition => ({ name, description, parameters });
-      const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel" && !isTimelineTool(tool.name) && !isReminderTool(tool.name) && !isWebTool(tool.name)), notifyChannelDefinition, ...sessionReminderDefinitions, ...(options.webTools ?? []).map(value => value.definition),
+      const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel" && !isTimelineTool(tool.name) && !isReminderTool(tool.name) && !isWebTool(tool.name) && !tool.name.startsWith("mcp__")), notifyChannelDefinition, ...sessionReminderDefinitions, ...(options.webTools ?? []).map(value => value.definition),
+        ...[...(options.mcpTools?.values() ?? [])].filter(tool => tool.available()).map(tool => tool.definition),
         ...((owner.value === undefined ? options.timelineTools : config.timelineTools) ? timelineDefinitions : [])]);
       if (!catalog) { offered = new Set(builtins.map(tool => tool.name)); return { tools: [...builtins] }; }
       const available = catalog.offered();
@@ -141,6 +149,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       dispatchTool(call, execute) {
         const registration = catalog?.get(call.name), reader = !!catalog && call.name === READ_TOOL_RESULT;
         const retrieval = isTimelineTool(call.name), reminder = isReminderTool(call.name), webName = isWebTool(call.name);
+        const mcpName = call.name.startsWith("mcp__"), mcp = options.mcpTools?.get(call.name);
         const web = options.webTools?.find(value => value.definition.name === call.name);
         const action = reminder ? reminderAction(call.name, JSON.parse(call.arguments)) : undefined;
         const id = invocationId(turn.turnId, call.id);
@@ -150,8 +159,13 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
           decide: () => toolDecision(config, policies = policySnapshot(), call.name),
           // Catalog tools and the reader must have been offered by this request,
           // still be available, and carry arguments their definition accepts.
-          ...(registration || reader || retrieval || reminder || webName ? { refuse: () => {
+          ...(registration || reader || retrieval || reminder || webName || mcpName ? { refuse: () => {
             if (!offered.has(call.name)) return { code: "tool_unavailable", detail: "it was not offered for this request" };
+            if (mcpName) {
+              if (!mcp?.available()) return { code: "tool_unavailable", detail: "MCP binding is unavailable" };
+              let args: unknown; try { args = JSON.parse(call.arguments); } catch { return { code: "invalid_arguments", detail: "Invalid JSON" }; }
+              return mcp.accepts(args) ? undefined : { code: "invalid_arguments", detail: "MCP schema rejected arguments" };
+            }
             if (webName) {
               if (!web) return { code: "tool_unavailable", detail: "web backend is disabled" };
               let args: unknown; try { args = JSON.parse(call.arguments); } catch { return { code: "invalid_arguments", detail: "Invalid JSON" }; }
@@ -169,7 +183,10 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
             const problem = schemaProblem(registration.parameters, JSON.parse(call.arguments));
             return problem ? { code: "invalid_arguments", detail: problem } : undefined;
           } } : {}),
-          execute: web ? async (_call, signal) => {
+          execute: mcp ? async (_call, signal) => {
+            const result = await mcp.call(JSON.parse(call.arguments), signal ?? port.signal);
+            return { content: result.content, outcome: result.code ? { status: "failed", code: result.code } : { status: "succeeded" } };
+          } : web ? async (_call, signal) => {
             const result = await web.execute(JSON.parse(call.arguments), signal ?? port.signal);
             const usage = web.dispatch.paid && Object.keys(result.usage).length ? { usage: result.usage } : {};
             return result.ok ? { content: result.content, outcome: { status: "succeeded" as const }, ...usage }
@@ -193,7 +210,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
           recordSkip: (content, code) => {
             append({ role: "tool", callId: call.id, content, outcome: { status: "skipped", code }, ...(webName ? { webNoDispatch: true as const } : {}) });
             // Built-in tools keep their event stream as it was: a skip is silent.
-            if (registration || reader || retrieval || reminder || webName) emit({ channel: turn.channelId, ...(recorded ? { revision: recorded.revision } : {}),
+            if (registration || reader || retrieval || reminder || webName || mcpName) emit({ channel: turn.channelId, ...(recorded ? { revision: recorded.revision } : {}),
               event: { type: "tool_call", turnId: String(turn.turnId), id: call.id, name: call.name, status: "skipped", output: content, invocationId: id } });
           },
           mark: () => {

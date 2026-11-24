@@ -10,7 +10,8 @@ export function spawnMcpStdio(config: McpStdioLaunch) {
   const child = Bun.spawn([config.command, ...config.args], {
     cwd: config.cwd, env: { ...config.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });
-  const drain = child.stderr.pipeTo(new WritableStream()).catch(() => {});
+  const stopDrain = new AbortController();
+  const drain = child.stderr.pipeTo(new WritableStream(), { signal: stopDrain.signal }).catch(() => {});
   let closed: Promise<void> | undefined;
   return {
     stdout: child.stdout,
@@ -22,6 +23,7 @@ export function spawnMcpStdio(config: McpStdioLaunch) {
       return closed ??= (async () => {
         child.kill("SIGKILL");
         await child.exited;
+        stopDrain.abort();
         await drain;
       })();
     },

@@ -70,12 +70,12 @@ export function readInference(rows: ContextRows, input: Parameters<InferenceStor
   const takenItemIds = taken.map(row => bySeq.get(row.seq)!.itemId!);
   const requiredSeqs = new Set(requiredRows.map(row => row.seq));
 
-  // The latest web exchange must reach the next inference intact. Inspect the
+  // The latest web or MCP exchange must reach the next inference intact. Inspect the
   // last assistant directly so a bounded suffix cannot silently omit its call.
   const latest = rows.contextPreviousResponse(turnId);
   if (latest) {
     const assistant = rows.contextEntry(latest);
-    if (assistant.message.role === "assistant" && assistant.message.calls.some(call => call.name === "web_search" || call.name === "web_fetch")) {
+    if (assistant.message.role === "assistant" && assistant.message.calls.some(call => call.name === "web_search" || call.name === "web_fetch" || call.name.startsWith("mcp__"))) {
       const suffix = rows.contextActive(turnId, maxReadRecords + 1);
       const first = suffix.find(row => row.seq === latest);
       if (!first) return overflow;
