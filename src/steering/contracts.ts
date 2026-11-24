@@ -2,6 +2,7 @@ import type { AgentSessionPromptResult } from "../agent-conversation-contracts.t
 import type { PersistenceJsonValue } from "../persistence/backend.ts";
 import type { Attachment, PromptHandlers } from "../types.ts";
 import type { MessagePart } from "../media/parts.ts";
+import type { MessageStatus, MessageStatusEvent } from "../message-status.ts";
 
 /**
  * How a prompt sent while a turn is running waits.
@@ -36,6 +37,8 @@ export interface PendingMessage {
  */
 export interface PromptHandle extends Promise<AgentSessionPromptResult> {
   readonly id: PendingMessageId;
+  /** How far the message has got: queued, received, taken, delivered, seen, or withdrawn/failed (`message-status.ts`). */
+  readonly status: MessageStatus;
   /** Remove the message if it has not been delivered yet. Returns whether it was still pending. */
   withdraw(): boolean;
   /** Also requests confirmed withdrawal of a native input already submitted. */
@@ -60,7 +63,9 @@ export type MessageEvent =
       /** The operation id of the prompt (equals the first id). */
       readonly turnId: string;
     }
-  | { readonly kind: "message_withdrawn"; readonly id: PendingMessageId };
+  | { readonly kind: "message_withdrawn"; readonly id: PendingMessageId }
+  /** The message's status changed; see `PromptHandle.status`. */
+  | MessageStatusEvent;
 
 /** One original message of a combined prompt. */
 export interface CombinedMessage {

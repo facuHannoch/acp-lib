@@ -119,6 +119,7 @@ import type {
   TranscriptHeaderRecord,
 } from "./persistence/records.ts";
 import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.ts";
+import { MessageStatusTracker } from "./message-status.ts";
 import {
   RegistryPersistenceRuntime,
   type PersistenceStateRuntime,
@@ -375,6 +376,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly sentRuns = new Map<string, { readonly run: TurnRun; cause?: TurnCause }>();
   /** Ids of the messages (queued prompts) the session accepted and has not settled yet. */
   private readonly backendTurns = new BackendTurns();
+  private readonly messageStatus = new MessageStatusTracker((event) => this.emit(event));
   private readonly acceptedMessages = new Map<string, { readonly order: number; dispatched: boolean }>();
   private acceptedMessageCount = 0;
   private readonly sessions?: SessionManager;
@@ -657,6 +659,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       turns: this.backendTurns,
       log: this.log,
       markSent: (id) => { const message = this.acceptedMessages.get(id); if (message) message.dispatched = true; },
+      received: (id) => this.messageStatus.advance(id, "received"),
       get stopped() { return session.stopPromise !== null; }, // `phase` is rewritten by each queue item
       emit: (event) => this.emit(event),
       enqueue: (item) => { this.operations.enqueue(item); this.emitStateIfChanged(); void this.pump(); },
@@ -671,7 +674,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private onControllerTurnEvent(controller: ConversationController, event: TurnEvent): void {
     if (event.kind === "input_withdrawn") return this.onNativeWithdrawal(event.messageId);
     if (event.kind === "items_receipt") { if (!this.stopPromise) this.emit(event); return; }
-    if (event.kind === "turn_took") return reportTurnTook(this.backendTurnHost(), event);
+    if (event.kind === "turn_took") {
+      const ids = event.cause.messageIds ?? [];
+      this.messageStatus.link(event.turnId, ids);
+      for (const id of ids) this.messageStatus.advance(id, "taken");
+      return reportTurnTook(this.backendTurnHost(), event);
+    }
     if (!event.sentBySession) return reportBackendTurn(this.backendTurnHost(), controller, event);
     const sent = this.sentRuns.get(event.turnId);
     if (!sent) {
@@ -1917,7 +1925,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private rejectedPrompt(error: Error): PromptHandle {
     const id = this.mintTurnId();
     const rejected = Promise.reject<AgentSessionPromptResult>(error);
-    return Object.assign(rejected, { id, withdraw: () => false, withdrawAsync: async () => false });
+    return Object.assign(rejected, { id, status: "failed" as const, withdraw: () => false, withdrawAsync: async () => false });
   }
 
   private enqueuePrompt(
@@ -1962,21 +1970,27 @@ export class AgentConversation implements AgentClient, Bridgeable {
         beforeDispatch,
         resolve: (result) => {
           this.acceptedMessages.delete(id);
+          // Settled as cancelled before any turn took it: withdrawn (the tracker ignores it once taken).
+          if (result.status === "cancelled") this.messageStatus.end(id, "withdrawn");
           resolve(result);
         },
         reject: (error) => {
           this.acceptedMessages.delete(id);
+          this.messageStatus.end(id, "failed");
           reject(error);
         },
       };
       this.acceptedMessages.set(id, { order: ++this.acceptedMessageCount, dispatched: false });
+      this.messageStatus.accept(id);
       if (steerIntoRunningTurn(this.backendTurnHost(), this.controller, item)) return;
       this.operations.enqueue(item);
       this.steering.accepted(item);
       this.emitStateIfChanged();
       void this.pump();
     });
-    return Object.assign(promise, { id, withdraw: () => this.withdraw(id) || (!this.controller.withdrawInput && withdrawWaiting(this.backendTurns, id, messages => this.steering.dropped(messages))), withdrawAsync: () => this.withdrawAsync(id) });
+    const handle = Object.assign(promise, { id, withdraw: () => this.withdraw(id) || (!this.controller.withdrawInput && withdrawWaiting(this.backendTurns, id, messages => this.steering.dropped(messages))), withdrawAsync: () => this.withdrawAsync(id) });
+    const statusOf = this.messageStatus;
+    return Object.defineProperty(handle, "status", { get: () => statusOf.statusOf(id) ?? "failed", enumerable: true }) as PromptHandle;
   }
 
   /**
@@ -4336,6 +4350,26 @@ export class AgentConversation implements AgentClient, Bridgeable {
       event: Object.freeze(event),
     });
     this.listeners.emit(notification);
+    this.observeMessageStatus(event);
+  }
+
+  /**
+   * Advances message statuses from the events the session already emits. Native conversations
+   * (backend-supervised) report real milestones; ACP ones are approximated: sent means taken and
+   * delivered, the provider's first output means seen.
+   */
+  private observeMessageStatus(event: AgentSessionEvent): void {
+    const native = this.controller?.conversationCapabilities?.supervision === "backend";
+    if (event.kind === "turn_started") {
+      const ids = event.cause.messageIds ?? [];
+      this.messageStatus.link(event.turnId, ids);
+      for (const id of ids) this.messageStatus.advance(id, native ? "taken" : "delivered");
+    } else if (event.kind === "items_receipt") {
+      this.messageStatus.link(event.turnId, event.itemIds);
+      for (const id of event.itemIds) this.messageStatus.advance(id, event.milestone);
+    } else if (event.kind === "operation_stage_changed" && !native && event.activity.lastOutputAt !== null) {
+      for (const id of this.messageStatus.idsOfTurn(event.activity.operationId)) this.messageStatus.advance(id, "seen");
+    }
   }
 }
 
