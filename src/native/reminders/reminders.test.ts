@@ -517,3 +517,22 @@ test("an unreleased R7 schema 22 fails fast with a migration diagnostic", () => 
     CREATE TABLE reminder_cache(id TEXT, value TEXT)`);
   expect(() => migrateSqliteAgentSchema(database)).toThrow("unreleased R7 build");
 });
+
+test("schema 22 reads a pre-routine one-off journal JSON row unchanged", async () => {
+  const { database, repository } = setup();
+  try {
+    database.query("INSERT INTO reminder_journals VALUES (?, ?, ?)").run("legacy", "channel", 1);
+    database.query("INSERT INTO reminder_changes VALUES (?, ?, ?, ?)").run("legacy", 1, 1, JSON.stringify({
+      op: "create", changeId: 1, stagingOrder: 1, acceptedAt: 0, state: "pending",
+      reminder: { id: "legacy", conversationId: "channel", text: "old", status: "active",
+        schedule: { at: 180_000 }, scheduleAcceptedAt: 0, expiry: { at: 540_000, graceMs: 360_000 },
+        expiryPolicy: { kind: "default" } },
+    }));
+    expect(database.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 22 });
+    const [row] = await repository.list();
+    expect(reminderRequest(row!.changes[0]!)).toEqual({
+      reminderId: "legacy", changeId: 1, op: "create",
+      payload: { acceptedAt: new Date(0).toISOString(), channel: "channel", text: "old", schedule: { at: new Date(180_000).toISOString() } },
+    });
+  } finally { database.close(); }
+});

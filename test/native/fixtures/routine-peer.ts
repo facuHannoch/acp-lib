@@ -23,6 +23,7 @@ export class RoutinePeer {
   failId?: string;
   failures = 0;
   blockActivation = false;
+  beforeStartupBatch?: () => Promise<void>;
   afterLiveChange?: (change: ReminderWireChange) => void;
   readonly sessionId = "routine-session";
   readonly client = {
@@ -52,6 +53,7 @@ export class RoutinePeer {
     this.sessions.add(params.sessionId);
     this.trace.push("guard");
     for (const entry of params.channelChanges ?? []) this.trace.push("channel:" + entry.channel);
+    await this.beforeStartupBatch?.();
     const reminderChanges = (params.reminderChanges ?? []).map(change => this.change(change));
     this.trace.push("due");
     return {
@@ -67,7 +69,7 @@ export class RoutinePeer {
     const seen = this.receipts.get(key);
     this.trace.push((seen ? "replay:" : "change:") + reminderId);
     if (seen) return structuredClone(seen);
-    if (reminderId === this.failId && this.failures > 0) {
+    if ((reminderId === this.failId || this.failId === "*") && this.failures > 0) {
       this.failures--;
       throw fail("storage_failure");
     }

@@ -113,11 +113,29 @@ export class ReminderSync {
     });
   }
 
+  async startupRetry(id: string): Promise<WireChange[] | undefined> {
+    const retry = (await this.repository.wake()).startupRetry;
+    return retry?.sessionId === id ? [...retry.entries] : undefined;
+  }
+
+  async freezeStartupRetry(sessionId: string, entries: readonly WireChange[]): Promise<void> {
+    await this.repository.setStartupRetry({ sessionId, entries });
+  }
+
+  async replacementAttempted(id: string): Promise<boolean> {
+    return (await this.repository.wake()).replacementAttempted === id;
+  }
+
+  async setReplacementAttempted(id: string | undefined): Promise<void> {
+    await this.repository.setReplacementAttempted(id);
+  }
+
   async opened(client: HarnessClient, result: ReminderWireOpen, configuredId: string, fresh: boolean): Promise<void> {
     if (!this.supported) return;
     const sessionId = result.sessionId ?? configuredId;
-    const saved = (await this.repository.wake()).reported?.sessionId;
-    if (fresh || ((this.sessionId ?? saved) !== undefined && (this.sessionId ?? saved) !== sessionId)) {
+    const wake = await this.repository.wake();
+    const saved = wake.reported?.sessionId;
+    if (fresh || wake.replacementAttempted === configuredId || ((this.sessionId ?? saved) !== undefined && (this.sessionId ?? saved) !== sessionId)) {
       this.fires.clear();
       this.routineEvents.clear();
       await this.repository.replaceSession(sessionId);
@@ -133,6 +151,7 @@ export class ReminderSync {
         await this.deadline(result.nextDueAt, result.reminderRevision);
       }
       if (result.reminders) await this.sweep(client, undefined, { reminders: result.reminders, next: result.remindersNext });
+      if (wake.startupRetry?.sessionId === configuredId) await this.repository.setStartupRetry(undefined);
     });
   }
 
@@ -219,14 +238,19 @@ export class ReminderSync {
         if (!batch.length) break;
         for (const entry of batch) {
           const send = () => routineTransport(client).changeReminder(entry);
-          let receipt: ReminderWireResult;
-          try { receipt = await send(); }
-          catch (error) {
-            if (codeOf(error) !== "storage_failure") throw error;
-            receipt = await send();
+          let receipt: ReminderWireResult | undefined;
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try { receipt = await send(); break; }
+            catch (error) { if (codeOf(error) !== "storage_failure") throw error; }
+          }
+          if (!receipt) {
+            await this.repository.deferStorageFailure(entry.reminderId, entry.changeId);
+            this.log.warn("reminder_live_retry_exhausted", { id: entry.reminderId, changeId: entry.changeId });
+            return target ? { retryable: true as const } : undefined;
           }
           if (receipt.reminderId !== entry.reminderId || receipt.changeId !== entry.changeId) throw new Error("Mismatched reminder receipt");
-          const outcome = await this.ordered(() => this.recordReceipt(receipt));
+          const received = receipt;
+          const outcome = await this.ordered(() => this.recordReceipt(received));
           if (entry.reminderId === target?.reminderId && entry.changeId === target.changeId) own = outcome;
         }
         if (own) break;

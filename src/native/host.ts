@@ -46,7 +46,7 @@ import { noopLogger, type Logger } from "../logger.ts";
 import type { ChannelDesire, ChannelPersistence, PendingChange } from "../persistence/channels.ts";
 import { createMemoryHostRecords, fileHasPendingChannelChanges, submissionRecords, type NativeHostRecords, type Submission } from "./records.ts";
 import { channelStore, NativeChannelChanges, type ChannelChangeOutcome } from "./channel-changes.ts";
-import { ambiguous, codeOf, HarnessIncompatibleError, HarnessUnavailableError } from "./errors.ts";
+import { ambiguous, codeOf, HarnessIncompatibleError, HarnessUnavailableError, terminalStartupError } from "./errors.ts";
 
 export { HarnessIncompatibleError, HarnessUnavailableError } from "./errors.ts";
 export type { ChannelChangeOutcome } from "./channel-changes.ts";
@@ -92,7 +92,7 @@ export class NativeHarnessHost {
   #stoppingExplicitly = false;
   // Keep receiving deadlines from the detached connection until explicit stop drains them.
   #stoppingConnection: NativeConnection | null = null;
-  #wakeFailure: HarnessUnavailableError | null = null;
+  #wakeFailure: Error | null = null;
   get reminderWakeState(): NativeHostState { return this.#wakeFailure ? "failed" : this.#stoppingExplicitly ? "running" : this.#state; }
   get reminderTimer() { return this.#config.reminderTimer; }
   startForReminder(now: number): Promise<void> {
@@ -102,7 +102,7 @@ export class NativeHarnessHost {
       this.#wakeFailure = new HarnessUnavailableError("the reminder wake exhausted its restart budget", { code: "reopen_failed" });
       return Promise.reject(this.#wakeFailure);
     }
-    return this.ensureStarted();
+    return this.ensureStarted().catch(error => { if (terminalStartupError(error)) { this.#restarts.pop(); this.#wakeFailure = error; } throw error; });
   }
   async changeReminder(change: WireChange) {
     await this.ensureStarted();
@@ -596,6 +596,7 @@ export class NativeHarnessHost {
         await this.ensureStarted();
         return;
       } catch (error) {
+        if (terminalStartupError(error)) { this.#restarts.pop(); this.#failReopen(error); return; }
         this.#log.warn("native_harness_reopen_failed", { error: String(error) });
         await new Promise((resolve) => setTimeout(resolve, 100 * this.#restarts.length));
       }
@@ -611,9 +612,8 @@ export class NativeHarnessHost {
     return true;
   }
 
-  #failReopen(): Error {
-    // Report exhausted retries to pending callers and stop automatic starts.
-    this.#failure = new HarnessUnavailableError("the native harness could not be reopened", { code: "reopen_failed" });
+  #failReopen(error?: Error): Error {
+    this.#failure = error ?? new HarnessUnavailableError("the native harness could not be reopened", { code: "reopen_failed" });
     this.#setState("failed");
     this.#rejectWaiters(this.#failure);
     for (const port of [...this.#ports.values()]) port.failed(this.#failure);

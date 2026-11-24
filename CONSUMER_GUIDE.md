@@ -1367,7 +1367,8 @@ view.
 | Local | `reminders_unsupported` | The conversation or connected harness lacks reminder support. |
 | Local | `routines_unavailable` | The peer lacks routine or unattended guard support, or executable open has yet to confirm an effective guard. |
 | Local or harness startup | `invalid_config` | The unattended-turn limit is invalid or differs from the saved limit. |
-| Harness request | `storage_failure` | A retryable storage or proof-budget failure returned no receipt. The client retries the frozen request with a bound and preserves unsettled changes. |
+| Harness request | `storage_failure` | A retryable storage or proof-budget failure returned no receipt. A live routine mutation that still has no receipt after retry returns a pending view. Retrying the same input reuses the saved ID and change. |
+| Startup | `reminder_batch_retry_exhausted` | Three startup attempts returned a storage failure. The session stays stopped and the frozen batch remains unacknowledged for the next explicit start. |
 | Harness | `unattended_guard_required` | Routine activation was blocked because the session lacks an enabled guard. |
 | Harness | `invalid_policy` | The reminder names a policy the harness does not accept. |
 | Harness | `channel_missing`, `channel_retired` | The destination channel is missing or retired. |
@@ -1416,7 +1417,7 @@ The guard counts consecutive turns per channel that begin without
 owning-host participant input. A taken participant item resets the count.
 Automated work should use notices. When the limit is exhausted, the
 channel's routines wait for eligible participant input and contribute no
-routine wake.
+routine wake. No disposition is emitted when the guard holds work.
 
 Use the existing reminder API to author a routine after startup.
 

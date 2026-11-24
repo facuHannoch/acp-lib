@@ -36,6 +36,7 @@ export interface Reminder {
 export interface ReminderChangeInput {
   readonly reminder: Reminder;
   readonly acceptedAt: number;
+  readonly retryKey?: string;
   readonly op: "create" | "update" | "cancel";
   readonly fields?: readonly ("text" | "schedule" | "expiry" | "status" | "policyNames" | "missedRuns" | "overlap")[];
 }
@@ -63,6 +64,8 @@ export interface ReminderWakeIndex {
   readonly reported: ReminderDeadline | null;
   readonly effectiveAt: number | null;
   readonly supported?: boolean;
+  readonly replacementAttempted?: string;
+  readonly startupRetry?: { sessionId: string; entries: readonly WireChange[] };
 }
 
 export interface ReminderStorage {
@@ -93,7 +96,10 @@ export interface ReminderPersistence {
   observe(reminder: Reminder): Promise<void>;
   restoreStaged(change: ReminderChange): Promise<void>;
   quarantine(id: string, changeId: number, reason: string): Promise<void>;
+  deferStorageFailure(id: string, changeId: number): Promise<void>;
   setSupported(supported: boolean): Promise<void>;
+  setReplacementAttempted(sessionId: string | undefined): Promise<void>;
+  setStartupRetry(retry: ReminderWakeIndex["startupRetry"]): Promise<void>;
   replaceSession(sessionId: string): Promise<void>;
   completeSweep(seen: ReadonlySet<string>): Promise<void>;
 }
@@ -119,7 +125,7 @@ export class StoredReminderPersistence implements ReminderPersistence {
   }
 
   private deriveWake(reported: ReminderWakeIndex["reported"], routineGuardConfirmed: boolean): ReminderWakeIndex {
-    const supported = this.store.wake().supported;
+    const { supported, replacementAttempted, startupRetry } = this.store.wake();
     const candidates = supported === false ? [] : this.store.list().flatMap(journal => journal.changes.filter(change => {
       const schedule = change.reminder.schedule;
       return isWakeSchedule(schedule) || (routineGuardConfirmed && change.op === "create" && activatesRoutine(change));
@@ -137,6 +143,8 @@ export class StoredReminderPersistence implements ReminderPersistence {
     return {
       reported,
       ...(supported === undefined ? {} : { supported }),
+      ...(replacementAttempted === undefined ? {} : { replacementAttempted }),
+      ...(startupRetry === undefined ? {} : { startupRetry }),
       effectiveAt: supported === false ? null : deriveReminderWake(reported, candidates, defaultReminderLimits.oneShotLeadMs),
     };
   }
@@ -278,10 +286,33 @@ export class StoredReminderPersistence implements ReminderPersistence {
     });
   }
 
+  deferStorageFailure(id: string, changeId: number): Promise<void> {
+    return this.write(() => {
+      const journal = this.store.get(id);
+      if (!journal) return;
+      this.store.save({ ...journal, changes: journal.changes.map(change =>
+        change.changeId === changeId && change.state === "maybe_sent" ? { ...change, reason: "storage_failure" } : change) });
+    });
+  }
+
   setSupported(supported: boolean): Promise<void> {
     return this.write(() => {
       this.store.saveWake({ ...this.store.wake(), supported });
       this.recompute();
+    });
+  }
+
+  setReplacementAttempted(sessionId: string | undefined): Promise<void> {
+    return this.write(() => {
+      const { replacementAttempted: _previous, ...wake } = this.store.wake();
+      this.store.saveWake(sessionId === undefined ? wake : { ...wake, replacementAttempted: sessionId });
+    });
+  }
+
+  setStartupRetry(startupRetry: ReminderWakeIndex["startupRetry"]): Promise<void> {
+    return this.write(() => {
+      const { startupRetry: _previous, ...wake } = this.store.wake();
+      this.store.saveWake(startupRetry ? { ...wake, startupRetry } : wake);
     });
   }
 
@@ -294,7 +325,8 @@ export class StoredReminderPersistence implements ReminderPersistence {
           ...(row.confirmed ? { confirmed: { ...row.confirmed, unreconciled: true }, receiptVersion: undefined } : {}),
         });
       }
-      this.recompute({ sessionId, revision: 0, nextDueAt: null });
+      const { replacementAttempted: _attempted, ...wake } = this.deriveWake({ sessionId, revision: 0, nextDueAt: null }, false);
+      this.store.saveWake(wake);
     });
   }
 

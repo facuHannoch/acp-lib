@@ -91,7 +91,7 @@ import type { RoutineConfig, RoutineRow } from "../../src/native/reminders/routi
 
 const negotiated = { reminders: true, routines: true, unattendedTurnGuard: true } as const;
 
-async function startup() {
+async function startup(live = false) {
   const id = createAgentSessionId();
   const channel = createAgentConversationId();
   const persistence = await SqliteAgentPersistence.open({ path: ":memory:", agentSessionId: id });
@@ -100,7 +100,8 @@ async function startup() {
   const sync = new ReminderSync(persistence, repo, noopLogger);
   const peer = new RoutinePeer();
   const service = new ReminderService({ persistence, now: () => anchor,
-    routineUnavailable: () => sync.routineAdmission.unavailable() });
+    routineUnavailable: () => sync.routineAdmission.unavailable(),
+    running: () => live, live: async change => await sync.dispatch(peer.client, change) ?? { reason: "not_found" } });
   const reminders = service.conversation(channel, true, () => {});
   const config: RoutineConfig = { version: 1, system: "test", model: { protocol: "scripted", script: "" },
     defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } } };
@@ -177,20 +178,28 @@ test("startup storage failure keeps the exact frozen batch and replays prior rec
     await s.open(3);
     for (const id of ["first", "failure", "later"]) await s.reminders.update(id, { text: "updated " + id });
     s.peer.failId = "failure";
-    s.peer.failures = 2;
+    s.peer.failures = 3;
     s.peer.trace.length = 0;
-    await expect(s.open(3)).rejects.toMatchObject({ code: "storage_failure" });
-    const [attempt, retry] = s.peer.calls.slice(-2);
+    let entered = 0;
+    let appended: string | undefined;
+    s.peer.beforeStartupBatch = async () => {
+      if (++entered === 2) appended = (await s.reminders.create({ text: "new one-off", schedule: { in: 180_000 } })).id;
+    };
+    await expect(s.open(3)).rejects.toMatchObject({ code: "reminder_batch_retry_exhausted" });
+    const [attempt, retry, final] = s.peer.calls.slice(-3);
     expect(attempt).toEqual(retry);
+    expect(attempt).toEqual(final);
+    expect(JSON.stringify(final)).not.toContain(appended!);
     expect(s.peer.trace).toEqual([
       "guard", "channel:" + s.saved("first").channel, "change:first", "change:failure",
       "guard", "channel:" + s.saved("first").channel, "replay:first", "change:failure",
+      "guard", "channel:" + s.saved("first").channel, "replay:first", "change:failure",
     ]);
-    expect((await s.repo.list()).flatMap(row => row.changes.map(change => change.state))).toEqual(["maybe_sent", "maybe_sent", "maybe_sent"]);
+    expect((await s.repo.list()).filter(row => row.id !== appended).flatMap(row => row.changes.map(change => change.state))).toEqual(["maybe_sent", "maybe_sent", "maybe_sent"]);
     expect(s.peer.rows.get("later")?.text).toBe("later");
     await s.open(3);
     expect(s.peer.calls.at(-1)).toEqual(attempt);
-    expect((await s.repo.list()).flatMap(row => row.changes)).toEqual([]);
+    expect((await s.repo.list()).flatMap(row => row.changes.map(change => change.reminder.id))).toEqual([appended]);
   } finally { await s.persistence.close(); }
 });
 
@@ -202,10 +211,18 @@ test("a partially published create recovers by open with the same frozen entries
     await s.reminders.update("owed", { text: "recover after create" });
     await s.sync.initialize({ capabilities: negotiated });
     s.peer.failId = "owed";
-    s.peer.failures = 1;
+    s.peer.failures = 3;
+    await s.repo.updateDeadline({ sessionId: s.peer.sessionId, revision: 15, nextDueAt: anchor });
+    await expect(s.open(3)).rejects.toMatchObject({ code: "reminder_batch_retry_exhausted" });
+    expect((await s.repo.wake()).replacementAttempted).toBe(s.peer.sessionId);
+    expect((await s.repo.wake()).reported?.revision).toBe(15);
     await s.open(3);
-    expect(s.peer.calls.map(call => call.method)).toEqual(["open", "create", "open"]);
-    expect(s.peer.calls[1]?.params.reminderChanges).toEqual(s.peer.calls[2]?.params.reminderChanges);
+    expect(s.peer.calls.map(call => call.method)).toEqual(["open", "create", "open", "open", "open"]);
+    for (const call of s.peer.calls.slice(2)) {
+      expect(call.params.reminderChanges).toEqual(s.peer.calls[1]?.params.reminderChanges);
+    }
+    expect((await s.repo.wake()).replacementAttempted).toBeUndefined();
+    expect((await s.repo.wake()).reported).toEqual({ sessionId: s.peer.sessionId, revision: 0, nextDueAt: null });
     expect(s.peer.guard).toBe(3);
     expect(s.peer.rows.get("owed")?.text).toBe("recover after create");
     expect(s.peer.trace.filter(step => step === "due")).toHaveLength(1);
@@ -347,5 +364,32 @@ test("startup processes the old calendar before a held routine replacement and i
     await s.sync.dispatch(s.peer.client);
     expect(s.peer.calls.slice(-2).map(call => (call.params as { op?: string }).op)).toEqual(["update", "cancel"]);
     expect(s.peer.rows.get("replace")?.state).toBe("cancelled");
+  } finally { await s.persistence.close(); }
+});
+
+test("live storage failure returns the same journaled identity on a consumer retry", async () => {
+  const s = await startup(true);
+  try {
+    await s.sync.initialize({ capabilities: negotiated });
+    await s.open(3);
+    // Fail each attempt of the next user create, before the peer records a receipt.
+    s.peer.failures = 3;
+    s.peer.failId = "*";
+    const initial = await s.reminders.create(interval);
+    expect(initial).toMatchObject({ state: "maybe_sent", reason: "storage_failure" });
+    const changeCalls = () => s.peer.calls.filter(call => call.method === "change");
+    expect(changeCalls()).toHaveLength(3);
+    expect(new Set(changeCalls().map(call => JSON.stringify(call.params))).size).toBe(1);
+    const recovered = await s.reminders.create({ schedule: interval.schedule, text: interval.text });
+    expect(recovered).toMatchObject({ id: initial.id, state: "confirmed" });
+    expect(changeCalls().at(-1)).toEqual(changeCalls()[0]);
+    expect(s.peer.rows.size).toBe(1);
+
+    s.peer.failures = 3;
+    const edited = await s.reminders.update(initial.id, { text: "retry edit" });
+    expect(edited).toMatchObject({ id: initial.id, state: "maybe_sent", reason: "storage_failure" });
+    const failedEdit = changeCalls().at(-1);
+    expect(await s.reminders.update(initial.id, { text: "retry edit" })).toMatchObject({ state: "confirmed" });
+    expect(changeCalls().at(-1)).toEqual(failedEdit);
   } finally { await s.persistence.close(); }
 });

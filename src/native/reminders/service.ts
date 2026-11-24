@@ -35,6 +35,8 @@ export type ReminderEvent = {
   reminder: ReminderView;
 };
 
+export type LiveReminderOutcome = { confirmed: Reminder } | { reason: string } | { retryable: true };
+
 export interface ReminderServiceOptions {
   readonly persistence?: PersistenceBackend;
   readonly repository?: ReminderPersistence;
@@ -46,7 +48,7 @@ export interface ReminderServiceOptions {
   readonly now?: () => number;
   readonly limits?: ReminderLimits;
   readonly authorize?: (conversationId: string, op: ReminderChange["op"]) => boolean;
-  readonly live?: (change: ReturnType<typeof reminderRequest>, original?: ReminderChange) => Promise<{ confirmed: Reminder } | { reason: string }>;
+  readonly live?: (change: ReturnType<typeof reminderRequest>, original?: ReminderChange) => Promise<LiveReminderOutcome>;
 }
 
 export { routineReminderRequest as reminderRequest } from "./wire.ts";
@@ -106,8 +108,18 @@ export class ReminderService {
       }
       const live = this.options.running?.() ? this.options.live : undefined;
       const acceptedAt = (this.options.now ?? Date.now)();
+      const retryKey = JSON.stringify([op, status, edit], (_key, value: unknown) =>
+        value !== null && typeof value === "object" && !Array.isArray(value)
+          ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))) : value);
       const prepared = await this.transact(async (repo) => {
         const rows = (await repo.list()).filter((row) => row.conversationId === conversationId);
+        const retry = rows.filter(row => op === "create" || row.id === id)
+          .map(row => row.changes.at(-1))
+          .find(change => change?.state === "maybe_sent" && change.reason === "storage_failure" && change.retryKey === retryKey);
+        if (retry) {
+          id = retry.reminder.id;
+          return { reminder: retry.reminder, change: retry, retry: true };
+        }
         const previous = rows.find((row) => row.id === id);
         const existing = previous && view(previous);
         const confirmed = previous?.confirmed;
@@ -171,15 +183,19 @@ export class ReminderService {
         if (edit.policyNames !== undefined) fields.push("policyNames");
         if (edit.missedRuns !== undefined) fields.push("missedRuns");
         if (edit.overlap !== undefined) fields.push("overlap");
-        const pending = await repo.enqueue({ reminder, acceptedAt, op, fields });
+        const pending = await repo.enqueue({ reminder, acceptedAt, op, fields, ...(routine && live ? { retryKey } : {}) });
         const outgoing = pending && live ? await repo.markMaybeSent(id, pending.changeId) : pending;
         return { reminder, change: outgoing };
       });
       if (prepared.unchanged) return prepared.unchanged;
       let result: ReminderView = { ...prepared.reminder, state: prepared.change?.state === "maybe_sent" ? "maybe_sent" : "pending" };
-      emit({ kind: prepared.change ? "reminder_intent_recorded" : "reminder_intent_discarded", reminder: result });
+      if (!prepared.retry) emit({ kind: prepared.change ? "reminder_intent_recorded" : "reminder_intent_discarded", reminder: result });
       if (live && prepared.change) {
         const outcome = await live(reminderRequest(prepared.change, this.limits), prepared.change);
+        if ("retryable" in outcome) {
+          await this.repository.deferStorageFailure(id, prepared.change.changeId);
+          return { ...result, reason: "storage_failure" };
+        }
         await this.repository.acknowledge(id, prepared.change.changeId, outcome);
         result = "reason" in outcome
           ? { ...result, state: "blocked", reason: outcome.reason }

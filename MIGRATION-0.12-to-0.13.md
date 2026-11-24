@@ -100,7 +100,10 @@ Custom backends can optionally expose a `reminders` repository and the
 `capabilities.reminders` flag. SQLite supplies the repository. Without
 durable storage, stopped mutations that need to write reject with `reminders_unavailable`
 as the `ReminderError.code`. SQLite journals
-offline changes for the next executable open. Reads while stopped show
+offline changes for the next executable open. The library keeps SQLite schema
+22 and accepts existing one-off journal rows. Routine and retry metadata fit
+in the existing JSON values. A 0032 harness binds its unattended-turn guard
+using its own session format 8. Reads while stopped show
 last-confirmed cached rows and local intents. A refused intent stays visible
 as blocked. Use `discardBlocked` to remove it locally and create a new ID
 when correcting a blocked create. The harness remains authoritative.
