@@ -1,3 +1,4 @@
+import { validateMcpServers } from "./mcp-config.ts";
 import { validateWebConfig } from "./web-config.ts";
 import type { ManagedConfig, ToolDecision, ToolPolicy } from "../contracts/config-permissions.ts";
 
@@ -35,7 +36,7 @@ function baseUrl(value: unknown): string {
 /** Validate without side effects. Only explicitly requested legacy imports may
  * fill absent policy fields; partly specified modern configs are invalid. */
 export function validateManagedConfig(input: unknown, legacy = false): ManagedConfig {
-  const raw = record(input, "config"); keys(raw, ["version", "system", "model", "defaultPolicy", "policies", "timelineTools", "limits", "webSearch", "webFetch"], "config");
+  const raw = record(input, "config"); keys(raw, ["version", "system", "model", "defaultPolicy", "policies", "timelineTools", "limits", "webSearch", "webFetch", "mcpServers"], "config");
   if (raw.version !== 1) fail("config.version", "expected version 1");
   if (typeof raw.system !== "string") fail("config.system", "expected a string");
   const model = record(raw.model, "config.model");
@@ -64,24 +65,35 @@ export function validateManagedConfig(input: unknown, legacy = false): ManagedCo
   for (const [policyName, rawPolicy] of Object.entries(policiesInput)) {
     name(policyName, "config.policies");
     const field = `config.policies.${policyName}`, policy = record(rawPolicy, field);
-    keys(policy, ["fallback", "tools"], field);
+    keys(policy, ["fallback", "tools", "mcp"], field);
+    const mcp = policy.mcp;
+    if (mcp !== undefined && mcp !== "allow" && mcp !== "deny") return fail(`${field}.mcp`, "expected allow or deny");
     const toolInput = record(policy.tools, `${field}.tools`), tools: Record<string, ToolDecision> = Object.create(null);
     for (const [tool, rule] of Object.entries(toolInput)) { name(tool, `${field}.tools`); tools[tool] = decision(rule, `${field}.tools.${tool}`); }
-    policies[policyName] = { fallback: decision(policy.fallback, `${field}.fallback`), tools };
+    policies[policyName] = { fallback: decision(policy.fallback, `${field}.fallback`), tools, ...(mcp === undefined ? {} : { mcp }) };
   }
   if (!Object.hasOwn(policies, defaultPolicy)) fail("config.defaultPolicy", `unknown policy ${defaultPolicy}`);
   if (raw.timelineTools !== undefined && typeof raw.timelineTools !== "boolean") fail("config.timelineTools", "expected a boolean");
   let limits: ManagedConfig["limits"];
   if (raw.limits !== undefined) {
     const value = record(raw.limits, "config.limits");
-    keys(value, ["unattendedTurns"], "config.limits");
-    if (typeof value.unattendedTurns !== "number" || !Number.isSafeInteger(value.unattendedTurns) || value.unattendedTurns < 1)
+    keys(value, ["unattendedTurns", "mcpCallTimeoutMs"], "config.limits");
+    const { unattendedTurns, mcpCallTimeoutMs } = value;
+    if (unattendedTurns !== undefined && (typeof unattendedTurns !== "number" || !Number.isSafeInteger(unattendedTurns) || unattendedTurns < 1))
       return fail("config.limits.unattendedTurns", "expected a positive safe integer");
-    limits = { unattendedTurns: value.unattendedTurns };
+    if (mcpCallTimeoutMs !== undefined && (typeof mcpCallTimeoutMs !== "number" || !Number.isInteger(mcpCallTimeoutMs) ||
+      mcpCallTimeoutMs < 1000 || mcpCallTimeoutMs > 1_800_000)) return fail("config.limits.mcpCallTimeoutMs", "expected 1000–1800000 milliseconds");
+    if (unattendedTurns === undefined && mcpCallTimeoutMs === undefined) return fail("config.limits", "expected at least one limit");
+    limits = { ...(unattendedTurns === undefined ? {} : { unattendedTurns }), ...(mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs }) };
   }
   const web = validateWebConfig({ webSearch: raw.webSearch, webFetch: raw.webFetch });
   if (!web.ok) return fail("config", web.error.message);
-  return { ...web.value, ...(limits ? { limits } : {}), ...(typeof raw.timelineTools === "boolean" ? { timelineTools: raw.timelineTools } : {}), version: 1, system: raw.system as string, model: selectedModel, defaultPolicy, policies };
+  let mcpServers: ManagedConfig["mcpServers"];
+  if (raw.mcpServers !== undefined) {
+    try { mcpServers = validateMcpServers(raw.mcpServers); }
+    catch { return fail("config.mcpServers", "invalid server declaration"); }
+  }
+  return { ...web.value, ...(mcpServers === undefined ? {} : { mcpServers }), ...(limits ? { limits } : {}), ...(typeof raw.timelineTools === "boolean" ? { timelineTools: raw.timelineTools } : {}), version: 1, system: raw.system as string, model: selectedModel, defaultPolicy, policies };
 }
 
 /** Resolve only at execution open, never during validation or import. */

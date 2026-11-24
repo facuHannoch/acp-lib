@@ -18,7 +18,8 @@ export interface InitializeParams {
 }
 export interface ProtocolConfig {
   version: 1;
-  limits?: { unattendedTurns: number };
+  limits?: import("./config-permissions.ts").ManagedConfig["limits"];
+  mcpServers?: Record<string, import("./mcp.ts").McpServer>;
   system: string;
   model: import("./config-permissions.ts").ManagedModel;
   webSearch?: import("./config-permissions.ts").ExaSearchConfig;

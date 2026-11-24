@@ -27,7 +27,8 @@ export function chooseManagedConfig(options: { mode: "create" | "open"; sidecar:
   if (options.mode !== "open" || options.inline === undefined || raw === options.inline) return selected;
   const requested = validateManagedConfig(options.inline).limits;
   if (!requested) return selected;
-  if (selected.limits && selected.limits.unattendedTurns !== requested.unattendedTurns)
+  if (selected.limits?.unattendedTurns !== undefined && requested.unattendedTurns !== undefined &&
+      selected.limits.unattendedTurns !== requested.unattendedTurns)
     throw new ConfigError("config.limits.unattendedTurns", "inline and selected limits differ");
-  return { ...selected, limits: requested };
+  return { ...selected, limits: { ...selected.limits, ...requested } };
 }
