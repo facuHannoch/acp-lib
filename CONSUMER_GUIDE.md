@@ -1409,12 +1409,17 @@ in memory and each connection obtains it from its own executable open.
 The bundled one-off harness reports a zero routine cap.
 
 Set `AgentConfig.harness.config.limits.unattendedTurns` to a positive safe
-integer to enable the guard on session creation or on the first executable
+integer or `"unlimited"` to enable the guard on session creation or on the first executable
 open that enables it for an existing session. There is no default. The
 harness persists the bound value and later opens can omit it. Setting a
 different value fails with `invalid_config`. Explicit configuration on a
 peer lacking support fails as incompatible. Inspection cannot enable the
 guard.
+
+`"unlimited"` sends `9007199254740991` (`Number.MAX_SAFE_INTEGER`). The
+guard stays on and keeps counting, with a limit high enough that it
+effectively leaves unattended paid turns uncapped. A spending cap is
+still a TODO. Both spellings bind the same numeric value.
 
 The guard counts consecutive turns per channel that begin without
 owning-host participant input. A taken participant item resets the count.

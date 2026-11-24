@@ -1,4 +1,4 @@
-import type { RoutineConfig } from "./reminders/routine-wire.ts";
+import type { RoutineConfigInput } from "./reminders/routine-wire.ts";
 import type { HarnessClient, ChannelEvent, ChannelChangeResult } from "../native-harness/src/client.ts";
 import type { AcpLauncher } from "../launcher.ts";
 import type { Logger } from "../logger.ts";
@@ -28,7 +28,7 @@ export interface NativeHarnessHostConfig {
   /** The durable harness session: the Agent's id. */
   readonly sessionId: string;
   /** Sent on every open. Session configuration is fixed while the session is open. */
-  readonly config: RoutineConfig;
+  readonly config: RoutineConfigInput;
   /** The harness home, a path in the harness's environment. Must survive process restarts. */
   readonly home: string;
   /** How to start the harness server; defaults to this package's harness in `serve --stdio` mode. */

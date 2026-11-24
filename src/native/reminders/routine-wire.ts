@@ -1,4 +1,4 @@
-import type { InitializeResult, Reminder, ReminderLimits } from "../../native-harness/src/client.ts";
+import type { InitializeResult, ProtocolConfig, Reminder, ReminderLimits } from "../../native-harness/src/client.ts";
 
 export type {
   Reminder as ReminderWireRow, ReminderChange as ReminderWireChange,
@@ -15,3 +15,7 @@ export interface ReminderNegotiation {
     "reminders" | "routines" | "unattendedTurnGuard">, boolean>>;
   reminderLimits?: AdvertisedReminderLimits;
 }
+
+export type RoutineConfigInput = Omit<ProtocolConfig, "limits"> & {
+  limits?: { unattendedTurns: number | "unlimited" };
+};

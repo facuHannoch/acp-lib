@@ -106,7 +106,7 @@ async function startup(live = false) {
   const reminders = service.conversation(channel, true, () => {});
   const config: RoutineConfig = { version: 1, system: "test", model: { protocol: "scripted", script: "" },
     defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } } };
-  const open = (guard?: number, target = peer) => openOrCreate(target.client, {
+  const open = (guard?: number | "unlimited", target = peer) => openOrCreate(target.client, {
     sessionId: peer.sessionId, config: guard === undefined ? config : { ...config, limits: { unattendedTurns: guard } },
   }, [{ channel, changeId: "1", displayName: "channel" }], undefined, new AbortController().signal, sync);
   const saved = (id: string): RoutineRow => ({
@@ -505,5 +505,36 @@ test("a non-exhausted frozen batch survives session loss and is replayed unchang
     ]);
     expect((await s.repo.wake()).startupRetry).toBeUndefined();
     expect(await s.reminders.get("owed")).toMatchObject({ state: "blocked", reason: "not_found" });
+  } finally { await s.persistence.close(); }
+});
+
+test("unlimited guard is encoded numerically and compares equal across spellings", async () => {
+  for (const [first, second] of [["unlimited", Number.MAX_SAFE_INTEGER], [Number.MAX_SAFE_INTEGER, "unlimited"]] as const) {
+    const s = await startup();
+    try {
+      await s.sync.initialize({ capabilities: negotiated });
+      await s.open(first);
+      expect(s.peer.calls.at(-1)?.params).toMatchObject({ config: { limits: { unattendedTurns: 9007199254740991 } } });
+      expect(s.sync.routineAdmission.available).toBe(true);
+      await s.sync.initialize({ capabilities: negotiated });
+      expect(s.sync.routineAdmission.available).toBe(false);
+      await s.open(second);
+      expect(s.peer.calls.at(-1)?.params.config).not.toHaveProperty("limits");
+      expect(s.sync.routineAdmission.available).toBe(true);
+      await expect(s.open(10)).rejects.toMatchObject({ code: "invalid_config" });
+    } finally { await s.persistence.close(); }
+  }
+});
+
+test("guard config rejects nonpositive unsafe numbers and wrong string spellings before RPC", async () => {
+  const s = await startup();
+  try {
+    await s.sync.initialize({ capabilities: negotiated });
+    for (const input of [0, -1, NaN, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1, "Unlimited", "10", null, true]) {
+      await expect(s.open(input as Parameters<typeof s.open>[0])).rejects.toMatchObject({
+        code: "invalid_config", message: 'unattendedTurns must be a positive safe integer or "unlimited"',
+      });
+    }
+    expect(s.peer.calls).toEqual([]);
   } finally { await s.persistence.close(); }
 });
