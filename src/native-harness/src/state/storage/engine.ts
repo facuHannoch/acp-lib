@@ -48,6 +48,8 @@ export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], item
  * rule of the storage contract; a backend only stores rows and makes
  * `transaction` atomic (all writes of a throwing callback are undone). */
 export interface Tables extends ContextRows {
+  /** SQLite attachment metadata, absent in adapters without managed bytes. */
+  attachments?: Pick<ReturnType<typeof import("./attachment-tables.ts").sqliteAttachmentTables>, "baseFormat" | "advanceBaseFormat" | "hasRetained">;
   reminders: ReminderTables;
   retrievalCandidates(terms: readonly string[], channel: string | undefined, limit: number): Array<{ seq: number; bytes: number }>;
   retrievalEntry(seq: number): TimelineEntry | undefined;
@@ -175,7 +177,7 @@ function checkMessage(message: unknown): Stored {
 }
 
 function session(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
+  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 9 ? 9 : meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
     lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
 
@@ -249,7 +251,8 @@ export function bindUnattendedGuard(tables: Tables, requested: number | undefine
   if (requested === undefined || tables.reminders.guardLimit() !== undefined) return;
   tables.reminders.bindGuard(requested);
   const meta = tables.getMeta();
-  tables.setMeta({ ...meta, formatVersion: 8, revision: meta.revision + 1 });
+  if (meta.formatVersion === 9) tables.attachments?.advanceBaseFormat(8);
+  tables.setMeta({ ...meta, formatVersion: Math.max(meta.formatVersion, 8), revision: meta.revision + 1 });
 }
 
 type ReminderDeliveryEvent = { channel: string; event: ReminderChannelEvent };
@@ -546,9 +549,10 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
   };
   const reminders = tables.reminders;
   const activateReminders = (meta: Meta) => {
-    if (meta.formatVersion < 7) {
+    if (meta.formatVersion < 7 || (meta.formatVersion === 9 && (tables.attachments?.baseFormat() ?? 0) < 7)) {
       reminders.activate();
-      meta.formatVersion = 7;
+      if (meta.formatVersion === 9) tables.attachments?.advanceBaseFormat(7);
+      else meta.formatVersion = 7;
     }
   };
   const putReminder = (meta: Meta, reminder: Reminder, defaultedExpiry?: boolean, original?: string) => {
@@ -677,7 +681,10 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         },
         saveReceipt(receipt) {
           activateReminders(meta);
-          if (routineSchedule) meta.formatVersion = 8;
+          if (routineSchedule) {
+            if (meta.formatVersion === 9) tables.attachments?.advanceBaseFormat(8);
+            else meta.formatVersion = 8;
+          }
           reminders.saveReceipt(receipt);
           seq(meta);
         },
@@ -1186,8 +1193,17 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         && !snapshot.channels.some(channel => channel.lifecycle === "suspending")
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: meta.formatVersion >= 8 ? 7 : meta.formatVersion === 7 ? 6 : 5, exportedAt: now(), snapshot,
-        ...(meta.formatVersion >= 7 ? { reminderState: reminders.archive() } : {}),
+      let archiveFormat = meta.formatVersion;
+      if (archiveFormat === 9) {
+        const attachments = tables.attachments;
+        if (!attachments || attachments.hasRetained()) throw new Fail("invalid_archive", "Attachment-bearing export is unavailable");
+        const base = attachments.baseFormat();
+        if (base !== 6 && base !== 7 && base !== 8) throw new Fail("invalid_archive", "Invalid attachment base format");
+        archiveFormat = base;
+        snapshot.session.formatVersion = base;
+      }
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: archiveFormat >= 8 ? 7 : archiveFormat === 7 ? 6 : 5, exportedAt: now(), snapshot,
+        ...(archiveFormat >= 7 ? { reminderState: reminders.archive() } : {}),
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };
       return archive;
     }),

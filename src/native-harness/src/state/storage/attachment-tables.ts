@@ -26,12 +26,25 @@ export function sqliteAttachmentTables(db: Database) {
     const row = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key='formatVersion'").get();
     const format = Number(row?.value);
     if (!Number.isSafeInteger(format) || format < 6 || format > 9) throw new Error("Unsupported session format");
-    if (format < 9) db.query("UPDATE meta SET value='9' WHERE key='formatVersion'").run();
+    if (format < 9) {
+      db.query("INSERT INTO meta (key,value) VALUES ('attachmentBaseFormat', ?)").run(String(format));
+      db.query("UPDATE meta SET value='9' WHERE key='formatVersion'").run();
+    }
   };
   type Row = { id: string; channel: string; filename: string; media_type: string; bytes: number; sha256: string; ready_at: string };
   const project = (row: Row) => ({ metadata: { id: row.id, channel: row.channel, filename: row.filename,
     mediaType: row.media_type, bytes: row.bytes, sha256: row.sha256 }, readyAt: row.ready_at });
   return {
+    baseFormat(): number | undefined {
+      const row = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key='attachmentBaseFormat'").get();
+      return row ? Number(row.value) : undefined;
+    },
+    advanceBaseFormat(format: number) {
+      db.query("UPDATE meta SET value=? WHERE key='attachmentBaseFormat' AND CAST(value AS INTEGER) < ?").run(String(format), format);
+    },
+    hasRetained() {
+      return present() && !!db.query<{ yes: number }, []>("SELECT 1 AS yes FROM attachment_items LIMIT 1").get();
+    },
     /** Caller executes inside its owner transaction after flushing file bytes. */
     publish(metadata: AttachmentMetadata, readyAt: string) {
       activate();

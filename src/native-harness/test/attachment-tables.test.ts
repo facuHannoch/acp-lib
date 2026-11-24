@@ -50,7 +50,7 @@ describe("attachment metadata tables", () => {
       const names = db.query<{ name: string }, []>("SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'reminder%' ORDER BY name").all().map(row => row.name);
       expect(names.length).toBeGreaterThan(0);
       const contents = () => names.map(name => ({ name, rows: db.query(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all() }));
-      const meta = () => db.query("SELECT * FROM meta WHERE key != 'formatVersion' ORDER BY key").all();
+      const meta = () => db.query("SELECT * FROM meta WHERE key NOT IN ('formatVersion', 'attachmentBaseFormat') ORDER BY key").all();
       const before = contents();
       const beforeMeta = meta();
       expect(format(db)).toBe("8");

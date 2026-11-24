@@ -1,5 +1,6 @@
 import { bindUnattendedGuard, checkUnattendedGuard } from "./engine.ts";
 import { sqliteReminderTables } from "./sqlite-reminders.ts";
+import { sqliteAttachmentTables } from "./attachment-tables.ts";
 import { historicalCandidate, historicalRetrievalProjection, encodedTimelineToken, retrievalMessage, timelineBytes, timelineIndexText } from "../../util/timeline-text.ts";
 import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import { entryOverhead, type ContextRow } from "./inference.ts";
@@ -352,6 +353,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     }
   };
   return {
+    attachments: sqliteAttachmentTables(db),
     reminders: sqliteReminderTables(db),
     contextTurnStart: (channelId, turnId) => s.contextTurnStart.get(turnId, channelId)?.started_seq,
     contextTrigger(turnId) {
@@ -574,8 +576,14 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         try {
           try { meta = inspect.getMeta(); }
           catch { throw new Fail("incompatible", "File is not a readable harness session"); }
-          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7 && meta.formatVersion !== 8) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
-          if (meta.formatVersion >= 7 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
+          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7 && meta.formatVersion !== 8 && meta.formatVersion !== 9) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
+          const attachmentBase = inspect.attachments?.baseFormat();
+          if (meta.formatVersion === 9 && attachmentBase !== 6 && attachmentBase !== 7 && attachmentBase !== 8)
+            throw new Fail("incompatible", "Format 9 is missing its base format");
+          if (meta.formatVersion === 9 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
+              WHERE type = 'table' AND name IN ('attachment_files','attachment_items','attachment_item_parts')`).get()?.count !== 3)
+            throw new Fail("incompatible", "Format 9 is missing attachment storage");
+          if ((meta.formatVersion === 9 ? attachmentBase! : meta.formatVersion) >= 7 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
               WHERE type = 'table' AND name IN ('reminder_rows','reminder_receipts','reminder_creates','reminder_metadata')`).get()?.count !== 4)
             throw new Fail("incompatible", "Format 7 is missing reminder storage");
           if (meta.sessionId !== identity.sessionId) throw new Fail("incompatible", "File holds a different session");
