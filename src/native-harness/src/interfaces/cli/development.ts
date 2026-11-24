@@ -48,6 +48,8 @@ export interface DevelopmentOptions {
   managedConfig?: ManagedConfig;
   /** Provider injection and environment are useful for offline tests and hosts. */
   providerFactory?: (apiKey: string, model: string, onRequest?: (body: string) => void) => Model;
+  /** Trusted offline test assembly; unavailable through managed config. */
+  webTransport?: import("../../capabilities/tools/web/exa.ts").ExaTransport;
   /** Expose safe diagnostic tools for this process. */
   debugTools?: boolean;
   timelineTools?: boolean;
@@ -109,7 +111,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const mediaRoot = options.database ? options.mediaRoot ?? `${options.database}.media` : join(tempMedia!, "media");
   if (!sqlite) adapter = createMemoryStorageAdapter({ mediaRoot });
   const makeWebTools = () => {
-    const result = createWebRegistry(managedConfig ?? {}, environment, { exa: exaHttpsTransport, http: directWebFetch });
+    const result = createWebRegistry(managedConfig ?? {}, environment, { exa: options.webTransport ?? exaHttpsTransport, http: directWebFetch });
     if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
     return result.value;
   };
@@ -134,9 +136,11 @@ export async function openDevelopment(options: DevelopmentOptions) {
     if (!saved.ok && saved.error.code !== "incompatible") { attachments?.close(); storage.close(); if (tempMedia) rmSync(tempMedia, { recursive: true, force: true }); throw new Error(`Cannot save config: ${saved.error.message}`); }
   }
 
-  const inspection = createInspection(systemPrompt, tools, storage, options.database ?? "memory");
+  let session: PersistentSession;
+  const inspection = createInspection(systemPrompt, [...tools, ...(webTools ?? []).map(value => value.definition)], storage, options.database ?? "memory",
+    turnId => session.tools?.invocations(turnId) ?? []);
   const captureScript = (options.environment ?? process.env).HARNESS_CAPTURE_SCRIPT_REQUESTS === "1";
-  const session: PersistentSession = createSession({
+  session = createSession({
     systemPrompt, storage, config: managedConfig, imageInput, webTools, captureContext: (!script || captureScript) ? inspection.capture : undefined,
     observeModelCall: inspection.modelCall,
     configureTurn(turn) {

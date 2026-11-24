@@ -67,6 +67,7 @@ export interface ScriptedServerOptions {
   providerEndpoint?: string;
   /** Test assembly injection; never selected through managed configuration. */
   webTransport?: import("./capabilities/tools/web/exa.ts").ExaTransport;
+  webHttp?: import("./capabilities/tools/web/registry.ts").DirectFetch;
   /** Offline stdio fixture endpoint, restricted to literal loopback. */
   webEndpoint?: string;
   environment?: Record<string, string | undefined>;
@@ -146,7 +147,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         [...BUILTINS, notifyChannelDefinition].map(tool => tool.name), ...(config.model.protocol !== "openai-compatible" && config.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
     if (mode === "create" && paths) mkdirSync(paths.directory, { recursive: true });
     const makeWebTools = () => {
-      const result = createWebRegistry(config, environment, { exa: options.webTransport ?? webFixture ?? exaHttpsTransport, http: directWebFetch });
+      const result = createWebRegistry(config, environment, { exa: options.webTransport ?? webFixture ?? exaHttpsTransport, http: options.webHttp ?? directWebFetch });
       if (!result.ok) throw new SessionOpenError("invalid_config", result.error.message);
       return result.value;
     };

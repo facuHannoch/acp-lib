@@ -1,5 +1,5 @@
 import { ExaResponseLimit } from "./exa-transport.ts";
-import { BlockList, isIP } from "node:net";
+import { directUrl } from "./direct-address.ts";
 import { fetchPreview, searchPreview, type WebHit } from "./preview.ts";
 
 import type { WebToolError as WebError, WebResultUsage as WebUsage, WebToolResponse as WebResponse } from "../../../contracts/web.ts";
@@ -14,23 +14,11 @@ const usageOf = (value: Record<string, unknown> | undefined): WebUsage => {
   if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) usage.usd = cost;
   return usage;
 };
-const blocked = new BlockList();
-for (const [address, prefix] of [["0.0.0.0",8],["10.0.0.0",8],["100.64.0.0",10],["127.0.0.0",8],["169.254.0.0",16],["172.16.0.0",12],["192.0.0.0",24],["192.0.2.0",24],["192.88.99.0",24],["192.168.0.0",16],["198.18.0.0",15],["198.51.100.0",24],["203.0.113.0",24],["224.0.0.0",4],["240.0.0.0",4]] as const) blocked.addSubnet(address, prefix, "ipv4");
-for (const [address, prefix] of [["::",128],["::1",128],["::ffff:0:0",96],["64:ff9b:1::",48],["100::",64],["2001::",23],["2001:db8::",32],["2002::",16],["fc00::",7],["fe80::",10],["ff00::",8]] as const) blocked.addSubnet(address, prefix, "ipv6");
-/** URL validation rejects local literals; direct transport additionally pins DNS. */
+/** Share strict public URL syntax and literal checks with the direct adapter;
+ * actual DNS binding remains the direct transport's responsibility. */
 export function normalizedWebUrl(value: unknown): string | undefined {
-  if (typeof value !== "string" || !value || Buffer.byteLength(value) > 2048 || /[\s\\\u0000-\u001f\u007f#]/u.test(value) || !/^https?:\/\//i.test(value)) return;
-  try {
-    const url = new URL(value); if (!url.hostname || url.username || url.password || !["http:", "https:"].includes(url.protocol)) return;
-    const rawAuthority = value.match(/^https?:\/\/([^/?]+)/i)?.[1] ?? "";
-    const rawHost = rawAuthority.startsWith("[") ? rawAuthority.slice(0, rawAuthority.indexOf("]") + 1) : rawAuthority.split(":")[0] ?? "";
-    const host = url.hostname.replace(/^\[|\]$/g, "");
-    if (/^(localhost|.*\.localhost|.*\.local)$/i.test(host)) return;
-    const family = isIP(host);
-    if (family && (blocked.check(host, family === 4 ? "ipv4" : "ipv6") || rawHost.toLowerCase() !== url.hostname.toLowerCase())) return;
-    if (family === 6 && !/^[23]/i.test(host)) return;
-    return Buffer.byteLength(url.href) <= 2048 ? url.href : undefined;
-  } catch { return; }
+  if (typeof value !== "string") return;
+  try { const result = directUrl(value).href; return Buffer.byteLength(result) <= 2048 ? result : undefined; } catch { return; }
 }
 export function webArgumentsProblem(name: "web_search" | "web_fetch", value: unknown): string | undefined {
   const input = record(value), field = name === "web_search" ? "query" : "url";

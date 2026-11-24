@@ -44,7 +44,7 @@ test("serialized preview budgets escaping, scalar boundaries, and required metad
 });
 
 test("URL and arguments reject local, ambiguous and malformed destinations", () => {
-  for (const url of ["http://127.0.0.1/", "http://2130706433/", "https://localhost/", "http://10.0.0.1/", "http://[::1]/", "https://user:pass@example.com/", "https://example.com/#x"]) expect(normalizedWebUrl(url)).toBeUndefined();
+  for (const url of ["http://127.0.0.1/", "http://2130706433/", "https://localhost/", "https://localhost./", "https://host.internal/", "http://10.0.0.1/", "http://[::1]/", "https://user:pass@example.com/", "https://example.com/#x"]) expect(normalizedWebUrl(url)).toBeUndefined();
   expect(normalizedWebUrl("https://Example.com/path")).toBe("https://example.com/path");
   expect(webArgumentsProblem("web_search", { query: " " })).toBeDefined();
   expect(webArgumentsProblem("web_search", { query: "ok", extra: 1 })).toBeDefined();
