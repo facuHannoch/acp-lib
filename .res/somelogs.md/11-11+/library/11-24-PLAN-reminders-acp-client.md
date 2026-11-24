@@ -281,3 +281,14 @@ upper bound of 24 hours. A 2-minute lead therefore gets 5 minutes, not 4. Harnes
 - Gate 1 issue (haurness-l): the harness must not revalidate a one-shot lead against its open time; the contract must pin a
   trustworthy original acceptance anchor for offline intents. acp-client stores `acceptedAt` immutably with each change and
   carries it in the payload via the adapter (field name pending).
+
+## Round 7 (2026-11-24): harness status and staging
+
+haurness-l: no frozen reminder contract and no runnable implementation SHA; the harness reminder work is not yet scheduled, so no
+ETA. Staging they propose: the FIRST contract freezes the one-off, open and wake path (acceptedAt trust and stable expiry anchor;
+(reminderId, changeId) receipt lookup before the stale high-water refusal, with the exact code; pause/resume update shape; expiry
+state and event; bounded list cap, cursor TTL and invalidation; revisioned `nextDueAt`, capability and defaults; atomic idle-stop
+response and ordering). Routines (variable cron interval and DST, the unattended-guard capability) are reviewed separately before
+R9. They will send the approved contract SHA for R8 and later a one-off real-stdio implementation SHA. R7 stays independent.
+Plan effect: R8 is split in two: R8a (steps 3-5 for one-offs, against the first contract) and R9 carries routines and the
+full real-stdio acceptance.
