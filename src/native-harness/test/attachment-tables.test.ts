@@ -37,8 +37,21 @@ describe("attachment metadata tables", () => {
       expect(tables.isRetained("file")).toBe(true);
       expect(tables.isTimelineVisible("file")).toBe(false);
       expect(tables.unreferencedBefore("2027-01-01T00:00:00.000Z")).toHaveLength(0);
+      expect(db.transaction(() => tables.reclaim("file", "2027-01-01T00:00:00.000Z"))()).toBe(false);
+      expect(tables.readyIds()).toEqual(["file"]);
       db.exec("UPDATE items SET entry_seq=1 WHERE item_id='i'");
       expect(tables.isTimelineVisible("file")).toBe(true);
+    } finally { db.close(); }
+  });
+  test("cleanup removes only old unreferenced metadata", () => {
+    const db = database();
+    try {
+      const tables = sqliteAttachmentTables(db);
+      db.transaction(() => tables.publish(metadata, "2026-01-01T00:00:00.000Z"))();
+      expect(db.transaction(() => tables.reclaim("file", "2025-01-01T00:00:00.000Z"))()).toBe(false);
+      expect(db.transaction(() => tables.reclaim("file", "2027-01-01T00:00:00.000Z"))()).toBe(true);
+      expect(tables.get("file")).toBeUndefined();
+      expect(format(db)).toBe("9");
     } finally { db.close(); }
   });
   test("activation preserves R-H4 fixture tables in the same database", () => {

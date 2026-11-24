@@ -45,6 +45,9 @@ export function sqliteAttachmentTables(db: Database) {
     hasRetained() {
       return present() && !!db.query<{ yes: number }, []>("SELECT 1 AS yes FROM attachment_items LIMIT 1").get();
     },
+    readyIds(): string[] {
+      return present() ? db.query<{ id: string }, []>("SELECT id FROM attachment_files ORDER BY id").all().map(row => row.id) : [];
+    },
     /** Caller executes inside its owner transaction after flushing file bytes. */
     publish(metadata: AttachmentMetadata, readyAt: string) {
       activate();
@@ -86,6 +89,15 @@ export function sqliteAttachmentTables(db: Database) {
       if (!present()) return [];
       return db.query<Row, [string]>(`SELECT f.* FROM attachment_files f WHERE f.ready_at <= ?
         AND NOT EXISTS (SELECT 1 FROM attachment_items a WHERE a.attachment_id=f.id) ORDER BY f.id`).all(readyAt).map(project);
+    },
+    /** Within the owner transaction, compete with acceptance on the same
+     * database. Once metadata is removed, a crash before unlink leaves only an
+     * orphan that the next owner can reclaim. */
+    reclaim(id: string, readyAt: string): boolean {
+      if (!present()) return false;
+      const result = db.query(`DELETE FROM attachment_files WHERE id=? AND ready_at <= ?
+        AND NOT EXISTS (SELECT 1 FROM attachment_items WHERE attachment_id=?)`).run(id, readyAt, id);
+      return result.changes === 1;
     },
   };
 }
