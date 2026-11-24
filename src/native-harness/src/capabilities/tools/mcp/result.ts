@@ -2,10 +2,10 @@
 export function projectMcpResult(result: {
   content: readonly { type: string; text?: string }[];
   structuredContent?: unknown;
-}): string {
+}, redactText: (text: string) => string = text => text): string {
   const textBlocks = result.content.filter(block => block.type === "text" && typeof block.text === "string");
   const output = {
-    text: textBlocks.map(block => block.text).join("\n"),
+    text: redactText(textBlocks.map(block => block.text).join("\n")),
     structuredContent: result.structuredContent ?? null,
     omittedContentBlocks: result.content.length - textBlocks.length,
     truncated: false,

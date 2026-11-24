@@ -55,12 +55,9 @@ export async function connectMcpStdio(name: string, child: McpStdioProcess, dead
               if (!Array.isArray(result.content)) return fail("mcp_protocol_error");
               try {
                 return { content: projectMcpResult({
-                  content: result.content.map(block => {
-                    if (block.type !== "text" || !("text" in block) || typeof block.text !== "string") return { type: "omitted" };
-                    return { type: "text", text: redact.text(block.text) };
-                  }),
+                  content: result.content,
                   structuredContent: redact.tree(result.structuredContent),
-                }) };
+                }, redact.text) };
               } catch { return fail("mcp_protocol_error"); }
             } catch (error) {
               if (signal.aborted) return fail("tool_interrupted");

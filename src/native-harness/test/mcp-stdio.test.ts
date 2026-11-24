@@ -88,6 +88,11 @@ test("MCP redaction refuses schema changes and ambiguous secret-bearing object k
   const { mcpSecrets } = await import("../src/capabilities/tools/mcp/secrets.ts");
   const credential = crypto.randomUUID();
   const redactor = mcpSecrets([credential]);
+  const { projectMcpResult } = await import("../src/capabilities/tools/mcp/result.ts");
+  const parts = ["secret prefix", "secret suffix"];
+  const joined = mcpSecrets([parts.join("\n")]);
+  const result = projectMcpResult({ content: parts.map(text => ({ type: "text", text })) }, joined.text);
+  expect(JSON.parse(result).text).toBe("[redacted]");
   expect(redactor.text(`prefix ${credential} suffix`)).toBe("prefix [redacted] suffix");
   expect(() => redactor.tree({ nested: [{ [credential]: true }] })).toThrow();
   expect(() => redactor.tree({ type: "string", enum: [credential] }, true)).toThrow();
