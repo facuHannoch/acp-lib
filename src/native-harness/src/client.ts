@@ -15,4 +15,4 @@ export type { Reminder, ReminderChange, ReminderChangeResult, ReminderList, Remi
 
 export type { InitializeResult } from "./contracts/protocol.ts";
 export type { OpenResult } from "./contracts/operator-controls.ts";
-export type { ReminderSchedule, RoutineSchedule, IntervalRoutineSchedule, CalendarRoutineSchedule, RoutineEnd, RoutineDeliveryOptions, RoutineTimezoneMigration, ReminderLimits, ReminderChannelEvent } from "./contracts/reminders.ts";
+export type { ReminderBlockReason, OneOffSchedule, ReminderSchedule, RoutineSchedule, IntervalRoutineSchedule, CalendarRoutineSchedule, RoutineEnd, RoutineDeliveryOptions, RoutineTimezoneMigration, ReminderLimits, ReminderChannelEvent } from "./contracts/reminders.ts";

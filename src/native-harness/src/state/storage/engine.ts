@@ -1,6 +1,6 @@
 import { normalizeReminderSchedule, resolveAgentReminder } from "../../util/reminder-schedule.ts";
 import { applyReminderChange } from "./reminder-change.ts";
-import type { Reminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
+import type { OneOffReminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
 import type { ReminderTables } from "./reminder-tables.ts";
 import { searchTimeline, readMessageWindow } from "./retrieval.ts";
 import type { InspectionEntry } from "../../contracts/inspection.ts";
@@ -460,7 +460,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       meta.formatVersion = 7;
     }
   };
-  const putReminder = (meta: Meta, reminder: Reminder, defaultedExpiry?: boolean, original?: string) => {
+  const putReminder = (meta: Meta, reminder: OneOffReminder, defaultedExpiry?: boolean, original?: string) => {
     activateReminders(meta);
     const existing = reminders.get(reminder.id);
     const revision = seq(meta);
@@ -469,14 +469,14 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
   const validReminderPolicies = (names: readonly string[]) =>
     names.every(name => name !== legacy && Object.hasOwn(activeConfig.policies, name));
   function unblockReminders(meta: Meta, channelId?: string) {
-    const unblocked: Reminder[] = [];
+    const unblocked: OneOffReminder[] = [];
     let after = 0;
     for (;;) {
       const batch = reminders.blocked(channelId, after, 100);
       for (const { reminder } of batch) {
         if (tables.channel(reminder.channel)?.lifecycle !== "open" || !validReminderPolicies(reminder.policyNames)) continue;
         const { blockedReason: _block, ...fields } = reminder;
-        const active: Reminder = { ...fields, state: "active", nextRunAt: reminder.schedule.at };
+        const active: OneOffReminder = { ...fields, state: "active", nextRunAt: reminder.schedule.at };
         putReminder(meta, active);
         unblocked.push(active);
       }
@@ -587,7 +587,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const policyNames = [...new Set(inherited.filter(name => name !== legacy))].sort();
       if (!validReminderPolicies(policyNames)) return fail("invalid_policy", "Unknown reminder policy");
       const creatorId = tables.itemsOfTurn(turnId).find(item => item.kind === "participant_message")?.senderId;
-      const reminder: Reminder = { ...timing, id, channel: turn.channelId, createdBy: "agent",
+      const reminder: OneOffReminder = { ...timing, id, channel: turn.channelId, createdBy: "agent",
         ...(creatorId === undefined ? {} : { creatorId }), policyNames, text: body, state: "active", nextRunAt: timing.schedule.at };
       putReminder(meta, reminder, grace === undefined);
       return { reminder, created: true };
@@ -632,7 +632,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
           continue;
         }
         if (!validReminderPolicies(reminder.policyNames)) {
-          const blocked: Reminder = { ...reminder, state: "blocked", nextRunAt: null, blockedReason: "invalid_policy" };
+          const blocked: OneOffReminder = { ...reminder, state: "blocked", nextRunAt: null, blockedReason: "invalid_policy" };
           putReminder(meta, blocked);
           events.push({ channel, event: { type: "reminder_changed", reminder: blocked } });
           continue;

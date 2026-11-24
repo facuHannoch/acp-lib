@@ -1,11 +1,11 @@
 import type { Database } from "bun:sqlite";
-import type { Reminder, ReminderWake } from "../../contracts/reminders.ts";
+import type { OneOffReminder, ReminderWake } from "../../contracts/reminders.ts";
 import type { ReminderReceipt } from "./reminder-change.ts";
 import type { ReminderRow, ReminderTables } from "./reminder-tables.ts";
 
 type Saved = { creation_seq: number; json: string; original: string | null; defaulted_expiry: number };
 const decode = (row: Saved): ReminderRow => ({
-  sequence: row.creation_seq, defaultedExpiry: row.defaulted_expiry === 1, reminder: JSON.parse(row.json) as Reminder,
+  sequence: row.creation_seq, defaultedExpiry: row.defaulted_expiry === 1, reminder: JSON.parse(row.json) as OneOffReminder,
   ...(row.original === null ? {} : { original: row.original }),
 });
 

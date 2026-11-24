@@ -1,4 +1,4 @@
-import type { Reminder, ReminderArchiveState } from "../../contracts/reminders.ts";
+import type { OneOffReminder, ReminderArchiveState } from "../../contracts/reminders.ts";
 import type { StorageSnapshot } from "../../contracts/storage.ts";
 import { normalizeReminderSchedule, reminderInstant } from "../../util/reminder-schedule.ts";
 import { Fail } from "./engine.ts";
@@ -16,7 +16,7 @@ export function validateReminderArchive(state: ReminderArchiveState | undefined,
   const channels = new Map(snapshot.channels.map(channel => [channel.channelId, channel.lifecycle]));
   const items = new Map(snapshot.items.map(item => [item.itemId, item]));
   const ids = new Set<string>(), receipts = new Set<string>();
-  const validRow = (row: Reminder): boolean => {
+  const validRow = (row: OneOffReminder): boolean => {
     if (!row || !text(row.id) || !channels.has(row.channel) || !text(row.text) ||
       (row.createdBy !== "host" && row.createdBy !== "agent") || !Array.isArray(row.policyNames) ||
       !row.policyNames.every(text) || new Set(row.policyNames).size !== row.policyNames.length ||
