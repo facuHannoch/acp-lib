@@ -181,7 +181,8 @@ test("durable publication activates format 9 through the owning session and surv
       expect(turn?.entries[0]?.message).toMatchObject({ parts: input.parts });
       expect(turn?.items[1]?.parts).toEqual(only.parts);
       expect(take(reopened.readManagedAttachment(metadata.id))?.timelineVisible).toBe(true);
-      take(reopened.appendMessage(turn!.turn.turnId, { role: "assistant", content: "first response", calls: [] }));
+      take(reopened.appendMessage(turn!.turn.turnId, { role: "assistant", content: null, calls: [{ id: "tool", name: "echo", arguments: "{}" }] }));
+      take(reopened.appendMessage(turn!.turn.turnId, { role: "tool", callId: "tool", content: "result" }));
       const context = take(reopened.readInferenceContext({ channelId: "a", turnId: turn!.turn.turnId, limits: CONTEXT_LIMITS }));
       expect(context).not.toHaveProperty("code");
       if ("code" in context) throw Error("Unexpected context limit");
@@ -190,6 +191,15 @@ test("durable publication activates format 9 through the owning session and surv
       expect(Buffer.from(readAttachment({ root, channel: "a", id: metadata.id, offset: 0, lookup }).data, "base64")).toEqual(data);
       expect(reopened.exportArchive()).toMatchObject({ ok: false, error: { code: "busy" } });
       expect(take(reopened.readSession()).formatVersion).toBe(9);
+      take(reopened.beginSuspend()); take(reopened.checkpointTurn(turn!.turn.turnId)); take(reopened.completeSuspend());
+      take(reopened.close());
+      const resumed = take(adapter.open({ mode: "open", identity, config }));
+      try {
+        take(resumed.resume());
+        const afterResume = take(resumed.readInferenceContext({ channelId: "a", turnId: turn!.turn.turnId, limits: CONTEXT_LIMITS }));
+        if ("code" in afterResume) throw Error("Unexpected context limit after resume");
+        expect(afterResume.required.map(entry => entry.itemId)).toContain("file-only");
+      } finally { take(resumed.close()); }
     } finally { take(reopened.close()); }
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
