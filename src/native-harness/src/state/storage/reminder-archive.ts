@@ -47,7 +47,7 @@ export function validateReminderArchive(state: ReminderArchiveState | undefined,
     if (snapshot.session.lifecycle === "running" && channels.get(row.channel) === "open" && row.nextRunAt !== null &&
       (nextDueAt === null || row.nextRunAt < nextDueAt)) nextDueAt = row.nextRunAt;
   }
-  if ((!state.rows.length && !state.receipts.length) || state.listingRevision < state.rows.length ||
+  if ((!state.rows.length && !state.receipts.length && !state.guard) || state.listingRevision < state.rows.length ||
     state.wake.nextDueAt !== nextDueAt || (nextDueAt !== null && !state.wake.reminderRevision)) return bad();
   for (const receipt of state.receipts) {
     const result = receipt?.result;

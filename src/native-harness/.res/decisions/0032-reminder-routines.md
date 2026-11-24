@@ -264,3 +264,16 @@ later entries and due work, and exact retry through the same session. Pin
 the event order and authoritative migration row, same-target reopen
 idempotency, normalized startAt, inclusive until equality, and replacement
 fence alignment.
+
+Guard confirmation is connection-local. An executable open on the current
+connection must confirm it before held activations may be sent, even when a
+reconnect reports the same sessionId. A saved guard confirmation cannot stand
+in for that response.
+
+A held create followed by pause on the same ID is sent in that order after
+guard confirmation. The create keeps its existing shape. A due occurrence
+may commit between the requests and the pause then governs future work.
+An owed startup pause or cancel on an existing row runs before startup due
+processing, subject to the same-ID order above. A held schedule replacement
+takes effect when sent live, so an old-calendar occurrence may commit during
+open. Held activation alone supplies no stopped-session wake or launch.

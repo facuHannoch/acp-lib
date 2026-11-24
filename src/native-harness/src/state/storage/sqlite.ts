@@ -1,3 +1,4 @@
+import { bindUnattendedGuard, checkUnattendedGuard } from "./engine.ts";
 import { sqliteReminderTables } from "./sqlite-reminders.ts";
 import { historicalCandidate, historicalRetrievalProjection, encodedTimelineToken, retrievalMessage, timelineBytes, timelineIndexText } from "../../util/timeline-text.ts";
 import type { ModelCallSummary } from "../../contracts/model-execution.ts";
@@ -570,8 +571,8 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         try {
           try { meta = inspect.getMeta(); }
           catch { throw new Fail("incompatible", "File is not a readable harness session"); }
-          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
-          if (meta.formatVersion === 7 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
+          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7 && meta.formatVersion !== 8) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
+          if (meta.formatVersion >= 7 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
               WHERE type = 'table' AND name IN ('reminder_rows','reminder_receipts','reminder_creates','reminder_metadata')`).get()?.count !== 4)
             throw new Fail("incompatible", "Format 7 is missing reminder storage");
           if (meta.sessionId !== identity.sessionId) throw new Fail("incompatible", "File holds a different session");
@@ -593,12 +594,14 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         }
         const tables = sqliteTables(db), owner = db;
         tables.transaction(() => {
+          checkUnattendedGuard(tables, config?.limits?.unattendedTurns);
           refreshReplyIds(owner);
           refreshModelCalls(owner);
           const compatible = meta.formatVersion < 4 || referencesCompatible(tables, config);
           if (meta.formatVersion >= 4 && meta.formatVersion < 6 && compatible) addExternalSource(owner);
           if (compatible)
             recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); addExternalSource(owner); } : undefined);
+          if (compatible) bindUnattendedGuard(tables, config?.limits?.unattendedTurns);
           if (tables.getMeta().formatVersion >= 6) installContextPolicyIndex(owner);
           refreshRetrieval(owner, tables.entries);
         });

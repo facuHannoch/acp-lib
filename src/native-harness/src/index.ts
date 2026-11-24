@@ -295,6 +295,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
     ...(tools ? { tools } : {}),
     reminders: {
       readReminder: id => store.readReminder(id), listReminders: params => store.listReminders(params),
+      unattendedGuard: () => store.unattendedGuard(),
       reminderWake: () => store.reminderWake(), change: change => reminderRuntime.change(change),
       executable: reminderExecutable, processStartup, releaseTimer: reminderRuntime.stop, subscribeWake: reminderWakeEvents.subscribe,
       conditionalStop(windowMs) {

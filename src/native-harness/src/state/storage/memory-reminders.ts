@@ -3,6 +3,8 @@ import type { ReminderReceipt } from "./reminder-change.ts";
 import type { ReminderRow, ReminderTables } from "./reminder-tables.ts";
 
 export interface MemoryReminderState {
+  guardLimit?: number;
+  guardCounters: Map<string, number>;
   rows: Map<string, ReminderRow>;
   creates: Map<string, ReminderReceipt>;
   receipts: Map<string, Map<number, ReminderReceipt>>;
@@ -12,7 +14,7 @@ export interface MemoryReminderState {
 }
 
 export const emptyMemoryReminders = (): MemoryReminderState => ({
-  rows: new Map(), creates: new Map(), receipts: new Map(), highWater: new Map(), listingRevision: 0,
+  guardCounters: new Map(), rows: new Map(), creates: new Map(), receipts: new Map(), highWater: new Map(), listingRevision: 0,
   wake: { nextDueAt: null, reminderRevision: 0 },
 });
 
@@ -27,11 +29,25 @@ export function memoryReminderTables(
 
   return {
     activate() {},
+    guardLimit: () => state.guardLimit,
+    bindGuard(limit) {
+      const previous = state.guardLimit;
+      log(() => { state.guardLimit = previous; });
+      state.guardLimit = limit;
+    },
+    guardSpent: channel => state.guardCounters.get(channel) ?? 0,
+    setGuardSpent: (channel, spent) => put(state.guardCounters, channel, spent),
     archive() {
       return structuredClone({ rows: [...state.rows.values()], receipts: [...state.receipts.values()].flatMap(rows => [...rows.values()]),
+        ...(state.guardLimit === undefined ? {} : { guard: { limit: state.guardLimit,
+          counters: [...state.guardCounters].map(([channel, spent]) => ({ channel, spent })) } }),
         listingRevision: state.listingRevision, wake: state.wake });
     },
     restore(saved) {
+      if (saved.guard) {
+        this.bindGuard(saved.guard.limit);
+        for (const { channel, spent } of saved.guard.counters) this.setGuardSpent(channel, spent);
+      }
       for (const row of saved.rows) this.put(row);
       for (const receipt of saved.receipts) this.saveReceipt(receipt);
       this.setWake(saved.wake);

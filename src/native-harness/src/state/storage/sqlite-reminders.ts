@@ -48,8 +48,28 @@ export function sqliteReminderTables(db: Database): ReminderTables {
         INSERT INTO reminder_metadata VALUES (1, 0, 0, NULL);
       `);
     },
+    guardLimit() {
+      if (!active() || !execute("SELECT 1 FROM sqlite_schema WHERE name = 'routine_guard'", [], "get")) return;
+      return execute<{ max_turns: number }>("SELECT max_turns FROM routine_guard", [], "get").max_turns;
+    },
+    bindGuard(limit) {
+      this.activate();
+      db.exec(`CREATE TABLE routine_guard (max_turns INTEGER NOT NULL);
+        CREATE TABLE routine_guard_channels (channel TEXT PRIMARY KEY, spent INTEGER NOT NULL) WITHOUT ROWID`);
+      execute("INSERT INTO routine_guard VALUES (?)", [limit], "run");
+    },
+    guardSpent(channel) {
+      return execute<{ spent: number } | null>("SELECT spent FROM routine_guard_channels WHERE channel = ?", [channel], "get")?.spent ?? 0;
+    },
+    setGuardSpent(channel, spent) {
+      execute(`INSERT INTO routine_guard_channels VALUES (?, ?)
+        ON CONFLICT(channel) DO UPDATE SET spent = excluded.spent`, [channel, spent], "run");
+    },
     archive() {
+      const limit = this.guardLimit();
       return {
+        ...(limit === undefined ? {} : { guard: { limit,
+          counters: execute<Array<{ channel: string; spent: number }>>("SELECT channel, spent FROM routine_guard_channels ORDER BY channel", [], "all") } }),
         rows: execute<Saved[]>("SELECT creation_seq, json, original, defaulted_expiry FROM reminder_rows ORDER BY creation_seq", [], "all").map(decode),
         receipts: execute<Array<{ json: string }>>("SELECT json FROM reminder_receipts ORDER BY reminder_id, change_id", [], "all")
           .map(row => JSON.parse(row.json) as ReminderReceipt),
@@ -58,6 +78,10 @@ export function sqliteReminderTables(db: Database): ReminderTables {
     },
     restore(saved) {
       this.activate();
+      if (saved.guard) {
+        this.bindGuard(saved.guard.limit);
+        for (const { channel, spent } of saved.guard.counters) this.setGuardSpent(channel, spent);
+      }
       for (const row of saved.rows) this.put(row);
       for (const receipt of saved.receipts) this.saveReceipt(receipt);
       this.setWake(saved.wake);

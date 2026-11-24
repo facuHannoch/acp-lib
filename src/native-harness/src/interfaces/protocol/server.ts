@@ -192,8 +192,10 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const reminders = session.reminders;
     if (!reminders) return {};
     const page = readValue(reminders.listReminders({})).value;
+    const guard = reminders.executable() ? readValue(reminders.unattendedGuard()).value : undefined;
     return { reminderChanges: results, reminders: page.reminders, ...(page.next ? { remindersNext: page.next } : {}),
-      ...(reminders.executable() ? readValue(reminders.reminderWake()).value : {}) };
+      ...(reminders.executable() ? readValue(reminders.reminderWake()).value : {}),
+      ...(guard === undefined ? {} : { unattendedTurnGuard: { maxConsecutiveTurns: guard } }) };
   }
 
   function prepareReminders(session: PersistentSession, batch: ReminderChange[]) {
@@ -321,7 +323,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
       else return bad("Import source must be a path or a transfer");
       const payload = decodeArchive(bytes, limits.maxBytes) as SessionFilePayload<SessionArchive>;
-      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6].includes(payload.archive?.archiveVersion))
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6, 7].includes(payload.archive?.archiveVersion))
         throw new Fault("invalid_archive", "Invalid session file payload");
       try { validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { throw new Fault("invalid_archive", String(error)); }
       const sessionId = p.sessionId ?? payload.archive?.snapshot?.session?.sessionId;

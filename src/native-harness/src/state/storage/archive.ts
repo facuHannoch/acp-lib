@@ -15,7 +15,7 @@ const CHANNEL_STATES = ["open", "suspended", "retired"];
 export function validateSessionPayload(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "archive,config") bad("Invalid session file payload");
   const payload = value as { archive: SessionArchive; config: unknown };
-  if (![2, 3, 4, 5, 6].includes((payload.archive as { archiveVersion?: number })?.archiveVersion ?? 0)) bad("Invalid session file archive version");
+  if (![2, 3, 4, 5, 6, 7].includes((payload.archive as { archiveVersion?: number })?.archiveVersion ?? 0)) bad("Invalid session file archive version");
   const archive = validateArchive(payload.archive);
   let config: ReturnType<typeof validateConfig>;
   try { config = validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { return bad(String(error)); }
@@ -31,7 +31,7 @@ export function validateSessionPayload(value: unknown) {
 export function validateArchive(value: unknown): SessionArchive {
   if (!isJson(value) || !value || typeof value !== "object") bad("Archive is not JSON data");
   const raw = value as any;
-  if (raw.format !== "harness-session" || ![1, 2, 3, 4, 5, 6].includes(raw.archiveVersion)) bad("Unsupported archive format or version");
+  if (raw.format !== "harness-session" || ![1, 2, 3, 4, 5, 6, 7].includes(raw.archiveVersion)) bad("Unsupported archive format or version");
   const v1 = raw.archiveVersion === 1;
   const legacy = raw.archiveVersion < 3;
   if (!raw.snapshot || !raw.allocation || !raw.snapshot.session || !Array.isArray(raw.snapshot.channels)) bad("Archive is missing its snapshot or allocation state");
@@ -48,14 +48,14 @@ export function validateArchive(value: unknown): SessionArchive {
   const positions: Record<string, number> = {};
   if (old && Array.isArray(policyArchive.snapshot.timeline)) for (const entry of policyArchive.snapshot.timeline)
     if (entry.message?.role === "assistant") Object.defineProperty(positions, entry.channelId, { value: (Object.hasOwn(positions, entry.channelId) ? positions[entry.channelId]! : 0) + 1, writable: true, configurable: true, enumerable: true });
-  const previousFormat = [0, 2, 3, 4, 5, 6, 7][raw.archiveVersion];
+  const previousFormat = [0, 2, 3, 4, 5, 6, 7, 8][raw.archiveVersion];
   if (raw.snapshot.session.formatVersion !== previousFormat) bad("Unsupported session format");
-  const archive: SessionArchive = { ...policyArchive, archiveVersion: raw.archiveVersion === 6 ? 6 : 5, snapshot: { ...policyArchive.snapshot,
-    session: { ...policyArchive.snapshot.session, formatVersion: raw.archiveVersion === 6 ? 7 : 6 },
+  const archive: SessionArchive = { ...policyArchive, archiveVersion: raw.archiveVersion >= 7 ? 7 : raw.archiveVersion === 6 ? 6 : 5, snapshot: { ...policyArchive.snapshot,
+    session: { ...policyArchive.snapshot.session, formatVersion: raw.archiveVersion >= 7 ? 8 : raw.archiveVersion === 6 ? 7 : 6 },
     ...(old ? { modelCalls: [], scriptPositions: positions } : {}) } };
   const snapshot = archive.snapshot, allocation = archive.allocation;
   const { session, revision } = snapshot;
-  if ((session.formatVersion !== 6 && session.formatVersion !== 7) || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
+  if ((session.formatVersion !== 6 && session.formatVersion !== 7 && session.formatVersion !== 8) || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
     bad("Unsupported session format");
   if (session.lifecycle !== "running" && session.lifecycle !== "suspended") bad("Archive was not exported from an idle or suspended session");
   if (!Number.isSafeInteger(revision) || revision < 0 || allocation.nextSeq !== revision + 1 || !int(allocation.nextTurnId) || !int(allocation.nextItemNumber))
@@ -205,7 +205,21 @@ export function validateArchive(value: unknown): SessionArchive {
     if (entry.kind === "external_notice" && !externalEntries.has(entry.seq)) bad("External timeline entry has no inbox item");
   for (const turn of snapshot.turns)
     if (JSON.stringify(turn.itemIds) !== JSON.stringify(turns.get(turn.turnId)!.itemIds)) bad(`Turn ${turn.turnId} does not match its items`);
-  if (archive.archiveVersion === 6) validateReminderArchive(archive.reminderState, snapshot);
+  if (archive.archiveVersion >= 6) {
+    validateReminderArchive(archive.reminderState, snapshot);
+    const guard = archive.reminderState?.guard;
+    if (archive.archiveVersion === 7) {
+      if (!guard || !Number.isSafeInteger(guard.limit) || guard.limit < 1 || !Array.isArray(guard.counters))
+        bad("Invalid archived unattended guard");
+      const seen = new Set<string>();
+      for (const counter of guard!.counters) {
+        if (!counter || !snapshot.channels.some(channel => channel.channelId === counter.channel)
+          || seen.has(counter.channel) || !Number.isSafeInteger(counter.spent) || counter.spent < 0 || counter.spent > guard!.limit)
+          bad("Invalid archived unattended turn counter");
+        seen.add(counter.channel);
+      }
+    } else if (guard !== undefined) bad("Unattended guard requires archive version 7");
+  }
   else if (raw.reminderState !== undefined) bad("Reminder state requires archive version 6");
   return archive;
 }
@@ -235,5 +249,5 @@ export function restoreArchive(tables: Tables, archive: SessionArchive): void {
 }
 
 export function storedSession(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
+  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }

@@ -1,3 +1,4 @@
+import { unattendedAdmission } from "../../capabilities/reminders/unattended.ts";
 import { normalizeReminderSchedule, resolveAgentReminder } from "../../util/reminder-schedule.ts";
 import { applyReminderChange } from "./reminder-change.ts";
 import type { Reminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
@@ -167,7 +168,7 @@ function checkMessage(message: unknown): Stored {
 }
 
 function session(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
+  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
     lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
 
@@ -203,10 +204,24 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
  * keeps all. A `suspending` channel never committed and returns to `open`. A
  * clean state with nothing to change is left unwritten. */
 function refreshReminderWake(tables: Tables, meta: Meta) {
-  if (meta.formatVersion !== 7) return;
+  if (meta.formatVersion < 7) return;
   const wake = tables.reminders.wake();
   const nextDueAt = meta.lifecycle === "running" ? tables.reminders.eligible(null, 1)[0]?.reminder.nextRunAt ?? null : null;
   if (nextDueAt !== wake.nextDueAt) tables.reminders.setWake({ nextDueAt, reminderRevision: wake.reminderRevision + 1 });
+}
+
+/** Called under the adapter's owner transaction before recovery writes. */
+export function checkUnattendedGuard(tables: Tables, requested: number | undefined) {
+  const bound = tables.reminders.guardLimit();
+  if (bound !== undefined && requested !== undefined && requested !== bound)
+    fail("invalid_config", "Unattended turn limit differs from the saved limit");
+}
+
+export function bindUnattendedGuard(tables: Tables, requested: number | undefined) {
+  if (requested === undefined || tables.reminders.guardLimit() !== undefined) return;
+  tables.reminders.bindGuard(requested);
+  const meta = tables.getMeta();
+  tables.setMeta({ ...meta, formatVersion: 8, revision: meta.revision + 1 });
 }
 
 export function recover(tables: Tables, upgrade?: () => void): void {
@@ -654,6 +669,13 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (tables.liveTurn(channel.channelId)) return null;
       const pending = boundaryPending(channelId, intake);
       if (!pending.length) return null;
+      const limit = meta.formatVersion >= 8 ? reminders.guardLimit() : undefined;
+      if (limit !== undefined) {
+        const spent = reminders.guardSpent(channelId);
+        const admission = unattendedAdmission(limit, spent, pending.some(item => item.kind === "participant_message"));
+        if (!admission.eligible) return null;
+        if (admission.nextSpent !== spent) reminders.setGuardSpent(channelId, admission.nextSpent);
+      }
       const turn: TurnRow = { turnId: meta.nextTurnId++, channelId, startedSeq: seq(meta), startedAt: now(),
         compatibilityKey: ownerKey, state: { status: "running" } };
       tables.putTurn(turn);
@@ -888,6 +910,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }),
 
     ownerConfig: () => run(() => ownerSnapshot, true),
+    unattendedGuard: () => run(meta => meta.formatVersion >= 8 ? reminders.guardLimit() : undefined, true),
     executionCompatible: () => run(() => !incompatibleViewOnly && referencesCompatible(tables, activeConfig), true),
     importedConfig: () => run(() => tables.getConfig(), true),
     saveConfig: value => run(() => {
@@ -905,8 +928,14 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return { revision: meta.revision, session: session(meta), channels, turns,
         items: channels.flatMap(channel => tables.pendingItems(channel.channelId)) };
     }, true),
-    readReadyChannels: () => run(meta => ({ lifecycle: meta.lifecycle,
-      channels: tables.channels().filter(channel => channel.lifecycle === "open" && tables.pendingCount(channel.channelId) > 0).map(channel => channel.channelId) }), true),
+    readReadyChannels: intake => run(meta => {
+      const limit = meta.formatVersion >= 8 ? reminders.guardLimit() : undefined;
+      return { lifecycle: meta.lifecycle, channels: tables.channels()
+        .filter(({ lifecycle, channelId }) => lifecycle === "open" && tables.pendingCount(channelId) > 0 &&
+          (limit === undefined || reminders.guardSpent(channelId) < limit ||
+            boundaryPending(channelId, intake).some(item => item.kind === "participant_message")))
+        .map(channel => channel.channelId) };
+    }, true),
     readRevokedTools: () => run(() => tables.getRevokedTools() ?? [], true),
     readSession: () => run(meta => session(meta), true),
     readChannel: channelId => run(() => {
@@ -995,8 +1024,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         && !snapshot.channels.some(channel => channel.lifecycle === "suspending")
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: meta.formatVersion === 7 ? 6 : 5, exportedAt: now(), snapshot,
-        ...(meta.formatVersion === 7 ? { reminderState: reminders.archive() } : {}),
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: meta.formatVersion >= 8 ? 7 : meta.formatVersion === 7 ? 6 : 5, exportedAt: now(), snapshot,
+        ...(meta.formatVersion >= 7 ? { reminderState: reminders.archive() } : {}),
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };
       return archive;
     }),

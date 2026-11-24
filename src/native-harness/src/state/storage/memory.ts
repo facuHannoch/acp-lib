@@ -1,3 +1,4 @@
+import { bindUnattendedGuard, checkUnattendedGuard } from "./engine.ts";
 import { emptyMemoryReminders, memoryReminderTables, type MemoryReminderState } from "./memory-reminders.ts";
 import { historicalCandidate, historicalRetrievalProjection, retrievalMessage, timelineTokens, timelineBytes } from "../../util/timeline-text.ts";
 import { byteLength, entryOverhead, type ContextRow } from "./inference.ts";
@@ -320,7 +321,13 @@ export function createMemoryStorageAdapter(): SessionStorageAdapter {
           checkScriptIdentity(data.meta.compatibilityKey, options.requiredScriptDigest);
         }
         const tables = memoryTables(data);
-        if (referencesCompatible(tables, config)) recover(tables);
+        tables.transaction(() => {
+          checkUnattendedGuard(tables, config?.limits?.unattendedTurns);
+          if (referencesCompatible(tables, config)) {
+            recover(tables);
+            bindUnattendedGuard(tables, config?.limits?.unattendedTurns);
+          }
+        });
         owned = true;
         return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { owned = false; }, config), revision: data.meta.revision };
       } catch (error) { return failure(error); }

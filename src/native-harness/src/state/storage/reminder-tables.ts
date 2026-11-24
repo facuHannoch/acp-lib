@@ -10,6 +10,10 @@ export interface ReminderRow {
 
 export interface ReminderTables {
   activate(): void;
+  guardLimit(): number | undefined;
+  bindGuard(limit: number): void;
+  guardSpent(channel: string): number;
+  setGuardSpent(channel: string, spent: number): void;
   archive(): ReminderArchiveState;
   restore(state: ReminderArchiveState): void;
   get(id: string): ReminderRow | undefined;

@@ -16,7 +16,7 @@ import type { Message } from "./loop.ts";
 /** Expected failures never require callers to inspect SQLite or exception text. */
 export type StorageErrorCode =
   | "already_exists" | "not_found" | "owner_conflict" | "incompatible"
-  | "invalid_input" | "invalid_state" | "invalid_policy" | "closed"
+  | "invalid_input" | "invalid_config" | "invalid_state" | "invalid_policy" | "closed"
   /** The item ID was accepted earlier with a different payload signature. */
   | "item_conflict"
   /** The session lifecycle does not admit this work (suspending/suspended). */
@@ -79,7 +79,7 @@ export interface StoredSession {
   sessionId: string;
   /** Storage contract/data format revision, distinct from RPC and archive versions.
    * Revision 5 stores model calls and script reservations. Formats 2–4 upgrade on open. */
-  formatVersion: 6 | 7;
+  formatVersion: 6 | 7 | 8;
   createdAt: string;
   lifecycle: SessionLifecycle;
   /** The key supplied at create. Immutable; open never rewrites it. */
@@ -229,7 +229,7 @@ export interface StorageSnapshot {
  * Version 5 adds external notices. */
 export interface SessionArchive {
   format: "harness-session";
-  archiveVersion: 5 | 6;
+  archiveVersion: 5 | 6 | 7;
   reminderState?: import("./reminders.ts").ReminderArchiveState;
   exportedAt: string;
   snapshot: StorageSnapshot;
@@ -304,7 +304,7 @@ export interface ReminderStorage {
 export interface SessionStorage extends ModelCallStore, ReminderStorage, TimelineRetrievalReads, OperatorStorageReads, InferenceStorageReads, InspectionStorageReads {
   readSession(): StorageResult<StoredSession>;
   readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
-  readReadyChannels(): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
+  readReadyChannels(intake?: IntakeLimit): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
   readRevokedTools(): StorageResult<string[]>;
   /** Validated config supplied to this open, copied at bind time; undefined for
    * legacy allow-only opens. Returns a defensive copy. It is independent of
@@ -317,6 +317,7 @@ export interface SessionStorage extends ModelCallStore, ReminderStorage, Timelin
    * result commits. This evidence is never an approval grant. */
   markToolDispatched(turnId: number, callId: string): StorageResult<void>;
   /** False when stored policy references cannot be resolved by this owner. */
+  unattendedGuard(): StorageResult<number | undefined>;
   executionCompatible(): StorageResult<boolean>;
   /** Imported configuration, or undefined for sessions not imported from a file. */
   importedConfig(): StorageResult<import("./session-file.ts").PortableSessionConfig | undefined>;
