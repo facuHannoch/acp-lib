@@ -26,3 +26,20 @@ test("lost paid dispatch retains original attribution after restart with direct 
     } finally { await second.close(); }
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 15000);
+
+test("stdio refuses disabled and malformed web tools before approval", async () => {
+  const home = mkdtempSync(join(tmpdir(), "web-refuse-stdio-")), script = join(home, "scenario.jsonl");
+  writeFileSync(script, [{ type: "scenario", version: 1, name: "web-refuse" }, { type: "model", content: null, calls: [
+    { id: "bad", name: "web_search", arguments: { query: " " } }, { id: "disabled", name: "web_fetch", arguments: { url: "https://example.com/" } },
+  ] }, { type: "model", content: "done" }].map(x => JSON.stringify(x)).join("\n") + "\n");
+  const server = spawnHarness({ home, exaKey: "key" }); let approvals = 0;
+  try {
+    server.client.onChannelEvent(({ event }) => { if (event.type === "approval_requested") approvals++; });
+    await server.client.initialize({ protocolVersion: 1, host: { name: "test", version: "0" }, callbacks: [], approval: true, subscription: { text: "final", tools: "full" } });
+    await server.client.createSession({ sessionId: "s", participants: [], channels: {}, config: { version: 1, system: "test", model: { protocol: "scripted", script }, defaultPolicy: "ask", policies: { ask: { fallback: "ask", tools: {} } }, webSearch: { backend: "exa" } } });
+    await server.client.push({ channel: "a", item: { id: "m", kind: "user_message", sender: "p", content: [{ type: "text", text: "go" }] } });
+    const deadline = Date.now() + 5000; while (!(await server.client.idle()).idle && Date.now() < deadline) await Bun.sleep(10);
+    expect(approvals).toBe(0);
+    expect((await server.client.toolInvocations("1")).invocations).toMatchObject([{ state: "skipped", code: "invalid_arguments", webUsage: { cost: { kind: "none" } } }, { state: "skipped", code: "tool_unavailable", webUsage: { cost: { kind: "none" } } }]);
+  } finally { await server.close(); rmSync(home, { recursive: true, force: true }); }
+}, 15000);

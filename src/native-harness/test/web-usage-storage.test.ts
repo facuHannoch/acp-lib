@@ -29,6 +29,10 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: paid web dispat
     const archive = must(session.exportArchive());
     expect(archive.archiveVersion).toBe(9);
     expect(archive.webState).toEqual({ baseFormat: 6 });
+    const malformed = structuredClone(archive);
+    malformed.snapshot.webDispatches![0]!.evidence = { backend: "http", operation: "web_fetch", paid: false };
+    const invalidDest = kind === "memory" ? createMemoryStorageAdapter() : createSqliteStorageAdapter(join(dir, "bad"));
+    expect(invalidDest.importArchive(malformed)).toMatchObject({ ok: false, error: { code: "invalid_archive" } });
     session.close();
     const destination = kind === "memory" ? createMemoryStorageAdapter() : createSqliteStorageAdapter(join(dir, "copy"));
     must(destination.importArchive(archive));

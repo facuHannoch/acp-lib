@@ -369,3 +369,30 @@ test("cumulative real stdio rehearsal dispatches web search and fetch with compl
     expect(JSON.stringify(captures)).not.toContain("fixture-secret");
   } finally { await run.close(); provider.stop(true); visionProvider.stop(true); await rm(directory, { recursive: true, force: true }); }
 }, 40000);
+
+test("cumulative real stdio direct-only fetch needs no Exa credential", async () => {
+  const { imageValidationAvailable } = await import("../../src/native-harness/src/capabilities/attachments/image-validation.ts");
+  if (!imageValidationAvailable()) return;
+  const { createHash } = await import("node:crypto");
+  const directory = await mkdtemp(join(tmpdir(), "direct-rehearsal-")), requests = join(directory, "requests.jsonl");
+  const run = await createRehearsal(new URL("./fixtures/rehearsal-cumulative-direct.jsonl", import.meta.url).pathname, {
+    deadlineMs: 30000, exactConsumption: true, timelineTools: true, imageInput: true, webFetch: { backend: "http" },
+    testEntrypoint: new URL("./fixtures/web-direct-stdio.ts", import.meta.url).pathname,
+    env: { HARNESS_TEST_REQUESTS: requests, HARNESS_TEST_ATTEMPTS: join(directory, "attempts.jsonl"), EXA_API_KEY: "" },
+  });
+  try {
+    await run.setup(); await run.schedule(async offset => { if (offset) await until(() => run.activity.filter(event => event.kind === "completed").length >= offset, "previous phase completed"); });
+    await until(() => run.activity.some(event => event.channel === "direct" && event.kind === "completed"), "direct phase completed");
+    const client = run.client(), bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAEElEQVR4nGP4y8AARAwQCgAfrgP19hgqWQAAAABJRU5ErkJggg==", "base64");
+    const upload = await client.beginAttachment({ channel: "vision", filename: "fixture.png", mediaType: "image/png", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+    await client.writeAttachment({ channel: "vision", uploadId: upload.uploadId, offset: 0, data: bytes.toString("base64") }); await client.finalizeAttachment({ channel: "vision", uploadId: upload.uploadId });
+    await client.push({ channel: "vision", item: { id: "image-phase", kind: "user_message", sender: "operator", content: [{ type: "attachment", id: upload.attachmentId }] } });
+    await until(() => run.activity.some(event => event.channel === "vision" && event.kind === "completed"), "vision phase completed");
+    const turn = run.activity.find(event => event.channel === "direct" && event.kind === "started")!.turnId;
+    expect((await client.toolInvocations(turn)).invocations).toMatchObject([{ webUsage: { backend: "http", cost: { kind: "none" } } }]);
+    const summary = await run.finish(); expect(Object.values(summary.unused).every(count => count === 0)).toBe(true);
+    const captures = readFileSync(requests, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(row => row.channel === "direct");
+    const result = captures[1].messages.find((message: any) => message.role === "tool" && message.callId === "direct-fetch");
+    expect(JSON.parse(result.content)).toMatchObject({ url: "https://www.public-site.com/source", text: "Direct fixture text", coverage: "full", truncated: false });
+  } finally { await run.close(); await rm(directory, { recursive: true, force: true }); }
+}, 40000);

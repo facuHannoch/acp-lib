@@ -754,3 +754,13 @@ A stopped harness needs a host to reopen it before any due work can run.
 
 Run `bun test test/reminder-stdio.test.ts` from this package to verify cold
 open, replay, process death and the idle-stop fence with a scripted model.
+
+Managed web tools are disabled until configured. `webSearch` accepts an Exa
+backend; `webFetch` independently accepts Exa or direct HTTP. Exa resolves the
+configured `apiKeyEnv` (default `EXA_API_KEY`) from the launching process at
+executable open; configuration and exports store the variable name, never its
+value. Direct HTTP needs no Exa credential. Both tools use the session's normal
+tool policy and produce bounded JSON previews; inspect per-invocation provider
+estimates separately from model token usage. See
+[decision 0035](.res/decisions/0035-web-search-fetch.md) for transport limits,
+address checks, cost recovery and defaults.

@@ -21,6 +21,8 @@ export interface ProtocolConfig {
   limits?: { unattendedTurns: number };
   system: string;
   model: import("./config-permissions.ts").ManagedModel;
+  webSearch?: import("./config-permissions.ts").ExaSearchConfig;
+  webFetch?: import("./config-permissions.ts").WebFetchConfig;
   defaultPolicy?: string;
   policies?: Record<string, import("./config-permissions.ts").ToolPolicy>;
 }

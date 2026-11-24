@@ -253,3 +253,14 @@ for (const scope of ["channel", "session"] as const) test(`reentrant stop while 
     expect(r.session.snapshot().turns[0]!.state).toMatchObject({ status: "interrupted", uncertainCallIds: [] });
   } finally { r.close(); }
 });
+
+test("policy is checked again at the dispatch boundary", async () => {
+  const { createApprovalService, dispatchWithPolicy } = await import("../src/governance/permissions/gate.ts");
+  let decisions = 0, invoked = false, marked = false, skipped = "";
+  const controller = new AbortController();
+  const result = await dispatchWithPolicy({ decide: () => ++decisions === 1 ? "allow" : "deny", channel: "a", turnId: 1,
+    call: { id: "c", name: "web_search", arguments: "{}" }, signal: controller.signal, suspension: controller.signal,
+    approvals: createApprovalService(() => {}), recordSkip: (_content, code) => { skipped = code; },
+    mark: () => { marked = true; }, started: () => {}, execute: async () => { invoked = true; return "x"; } });
+  expect(result.dispatched).toBe(false); expect(skipped).toBe("policy_denied"); expect(marked).toBe(false); expect(invoked).toBe(false);
+});

@@ -117,6 +117,13 @@ export async function dispatchWithPolicy(options: {
     if (request && !request.discard("tool_unavailable")) return { content: "", dispatched: false };
     return skip(late.code, late.detail);
   }
+  const currentRule = options.decide();
+  if (currentRule === "deny") {
+    if (request && !request.discard("tool_unavailable")) return { content: "", dispatched: false };
+    return skip("policy_denied");
+  }
+  // A rule that became ask cannot reuse an earlier allow without a grant.
+  if (rule === "allow" && currentRule === "ask") return dispatchWithPolicy(options);
   if (request && !request.consume()) return { content: "", dispatched: false };
   try { options.mark(); } catch (error) { request?.dispatchFailed(); throw error; }
   let result: ReturnType<typeof options.execute>;

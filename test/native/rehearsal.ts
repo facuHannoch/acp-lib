@@ -26,6 +26,8 @@ export interface RehearsalOptions {
   imageInput?: boolean;
   webSearch?: ProtocolConfig["webSearch"];
   webFetch?: ProtocolConfig["webFetch"];
+  /** Trusted offline test assembly entry point. */
+  testEntrypoint?: string;
 }
 
 export async function createRehearsal(path: string, options: RehearsalOptions) {
@@ -58,7 +60,7 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
       timelineTools: options.timelineTools, ...(options.webSearch ? { webSearch: options.webSearch } : {}), ...(options.webFetch ? { webFetch: options.webFetch } : {}), defaultPolicy: "rehearsal", policies: options.policies ?? { rehearsal: { fallback: "allow", tools: {} } } },
     requestTimeoutMs: 8000,
     async connect() {
-      const child = Bun.spawn([process.execPath, main, "serve", "--stdio", "--home", home], {
+      const child = Bun.spawn([process.execPath, options.testEntrypoint ?? main, "serve", "--stdio", "--home", home], {
         stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...process.env, OPENROUTER_API_KEY: undefined, HARNESS_TEST_REQUESTS: undefined, ...env },
       });
       children.push(child);

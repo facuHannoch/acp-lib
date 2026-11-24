@@ -57,6 +57,8 @@ test("disabled or malformed web calls do not prompt or dispatch under ask", asyn
     const { decodeSessionFile } = await import("../src/state/storage/session-file.ts");
     const data = decodeSessionFile(archive, 268435456) as any;
     expect(data.archive.archiveVersion).toBe(9);
+    const { validateSessionPayload } = await import("../src/state/storage/archive.ts");
+    expect(validateSessionPayload(data).archive.snapshot.webDispatches).toEqual([]);
   } finally { harness.close(); rmSync(home, { recursive: true, force: true }); }
 }, 10000);
 
@@ -91,5 +93,24 @@ test("direct-only session needs no Exa key and records no paid provider charge",
     const deadline = Date.now() + 5000; while (!(await harness.client.idle()).idle && Date.now() < deadline) await Bun.sleep(10);
     expect(directCalls).toBe(1);
     expect((await harness.client.toolInvocations("1")).invocations).toMatchObject([{ state: "succeeded", webUsage: { backend: "http", operation: "web_fetch", cost: { kind: "none" } } }]);
+  } finally { harness.close(); rmSync(home, { recursive: true, force: true }); }
+}, 10000);
+
+test("failed extraction retains reported zero and paid deadline remains unknown", async () => {
+  const home = mkdtempSync(join(tmpdir(), "web-usage-failure-")), path = join(home, "script.jsonl");
+  script(path, [{ id: "failed", name: "web_fetch", arguments: { url: "https://example.com/" } }, { id: "timeout", name: "web_search", arguments: { query: "timeout" } }]);
+  const transport: ExaTransport = request => request.path === "/contents"
+    ? Promise.resolve({ status: 200, body: { requestId: "failed-id", costDollars: { total: 0 }, statuses: [{ id: "https://example.com/", status: "error" }], results: [] } })
+    : new Promise((_resolve, reject) => request.signal.addEventListener("abort", () => reject(Error("aborted")), { once: true }));
+  const harness = createInProcessHarness({ home, environment: { EXA_API_KEY: "key" }, webTransport: transport });
+  try {
+    await harness.client.initialize(); const value = { ...config(path), webSearch: { backend: "exa" as const, deadlineMs: 1000 } };
+    await harness.client.createSession({ sessionId: "s", config: value, participants: [], channels: {} });
+    await harness.client.push({ channel: "a", item: { id: "m", kind: "user_message", sender: "p", content: [{ type: "text", text: "go" }] } });
+    const deadline = Date.now() + 5000; while (!(await harness.client.idle()).idle && Date.now() < deadline) await Bun.sleep(10);
+    expect((await harness.client.toolInvocations("1")).invocations).toMatchObject([
+      { state: "failed", code: "page_unavailable", webUsage: { requestId: "failed-id", cost: { kind: "provider_estimate", usd: 0 } } },
+      { state: "failed", code: "tool_timeout", webUsage: { cost: { kind: "unknown" } } },
+    ]);
   } finally { harness.close(); rmSync(home, { recursive: true, force: true }); }
 }, 10000);
