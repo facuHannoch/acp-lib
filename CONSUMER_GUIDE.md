@@ -1777,6 +1777,13 @@ negotiated transports and per-server state. Restart results include
 the same MCP status snapshot. A stopped host reports its last snapshot
 as stale.
 
+The npm package installs the MCP SDK and Undici as optional dependencies.
+If an install omits them, the configured MCP entries report
+`state: "unavailable"`, with `reason: "discovery"` for stdio or
+`reason: "connect"` for HTTPS. These statuses describe the failed stage
+without exposing credential values. Install the optional dependencies to
+use MCP. Other native features still work without them.
+
 ```ts
 import type { AgentHarnessConfig } from "@qlairoslabs/acp-client";
 
