@@ -20,6 +20,7 @@ export class RoutinePeer {
   readonly receipts = new Map<string, ReminderWireResult>();
   readonly sessions = new Set<string>();
   guard: number | null = null;
+  failBeforeCreate?: "transport_closed" | "timeout";
   failId?: string;
   failures = 0;
   blockActivation = false;
@@ -47,6 +48,11 @@ export class RoutinePeer {
     this.calls.push({ method, params: structuredClone(params) });
     if (method === "open" && !this.sessions.has(params.sessionId)) throw fail("not_found");
     if (method === "create" && this.sessions.has(params.sessionId)) throw fail("already_exists");
+    if (method === "create" && this.failBeforeCreate) {
+      const error = this.failBeforeCreate;
+      this.failBeforeCreate = undefined;
+      throw fail(error);
+    }
     const configured = params.config?.limits?.unattendedTurns;
     if (configured !== undefined && this.guard !== null && configured !== this.guard) throw fail("invalid_config");
     if (configured !== undefined) this.guard = configured;

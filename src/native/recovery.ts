@@ -87,7 +87,7 @@ export async function openOrCreate(
           create = false;
           continue;
         }
-        if (storageAttempts || frozen) throw error;
+        if (storageAttempts || (frozen && code !== "not_found")) throw error;
         if (code === "invalid_config") {
           await reminders?.restoreStaged(originals);
           if (create) await reminders?.setReplacementAttempted(undefined);
@@ -117,7 +117,9 @@ export async function openOrCreate(
   let result;
   try { result = await execute(false); }
   catch (error) {
-    if (storageAttempts || frozen || replacement || codeOf(error) !== "not_found") throw error;
+    // Confirmed absence means the prior create never published. A marker
+    // still fences a replacement if open finds it, but cannot veto creation.
+    if (storageAttempts || codeOf(error) !== "not_found" || (frozen && !replacement)) throw error;
     replacement = true;
     await reminders?.setReplacementAttempted(config.sessionId);
     admission.resetBinding();

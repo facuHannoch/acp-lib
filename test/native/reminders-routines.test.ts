@@ -393,3 +393,18 @@ test("live storage failure returns the same journaled identity on a consumer ret
     expect(changeCalls().at(-1)).toEqual(failedEdit);
   } finally { await s.persistence.close(); }
 });
+
+test("confirmed absence after an interrupted create permits a fresh create on the next start", async () => {
+  for (const code of ["transport_closed", "timeout"] as const) {
+    const s = await startup();
+    try {
+      await s.sync.initialize({ capabilities: negotiated });
+      s.peer.failBeforeCreate = code;
+      await expect(s.open(3)).rejects.toMatchObject({ code });
+      expect((await s.repo.wake()).replacementAttempted).toBe(s.peer.sessionId);
+      await s.open(3);
+      expect(s.peer.calls.map(call => call.method)).toEqual(["open", "create", "open", "create"]);
+      expect((await s.repo.wake()).replacementAttempted).toBeUndefined();
+    } finally { await s.persistence.close(); }
+  }
+});
