@@ -34,8 +34,13 @@ session). Keep the processed-through instant, consumed count and notice links.
 Only recompute unprocessed instants strictly after that fence. If the new
 rules, including canonical zone resolution, cannot prove the schedule, keep
 its old version and move it to blocked/invalid_schedule, with a durable
-invalid_schedule disposition carrying reminderId and old/new data versions
-and no occurrence or count consumption. Publish it after commit. An explicit
+invalid_schedule disposition carrying reminderId, old/new data versions
+and cause `invalid_schedule | proof_budget`, with no occurrence or count
+consumption. A migration budget hit uses proof_budget, retains the saved
+version and removes the routine from wake eligibility. Other routines
+and the open/import proceed. Reopening with the same target version
+reuses the saved disposition and does not retry; an explicit schedule
+update or a different target version triggers a new proof. Publish it after commit. An explicit
 schedule update can repair it. Refuse a newer version at open or import into
 an older reader before any mutation. Inspection-only open makes no changes. A gap skips the nonexistent local time and consumes no count.
 A fold uses only the earlier UTC instant and consumes one count.
@@ -52,9 +57,11 @@ queries around transitions, with work proportional to transition dates and
 the bounded allowed daily times, without enumerating the recurrence. Cap
 one admission proof at 250 ms measured by a monotonic clock, with checks
 between bounded calculation steps. A budget hit refuses the command with a
-retryable request-level error (storage_failure), without a durable receipt or
-partial mutation; during migration it rolls back the open/import. An explicit
-proof failure remains invalid_schedule. This may reject some safe calendars
+retryable request-level error (storage_failure) on create or edit, without a
+durable receipt or partial mutation. Migration instead commits the
+proof_budget disposition described above. An explicit proof failure remains
+invalid_schedule. Test the migration budget path on open and import,
+including unchanged count, no wake contribution and idempotent reopen. This may reject some safe calendars
 under the conservative daily check. Never accept based on a rolling sample.
 
 Routine creates and edits may set `missedRuns: "coalesce" | "skip" | "each"`
