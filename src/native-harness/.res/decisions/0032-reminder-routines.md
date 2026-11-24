@@ -24,11 +24,20 @@ count. Original channel and origin policy remain immutable as in 0031.
 
 Cron has five numeric fields (minute, hour, day, month, weekday with Sunday
 0), wildcards, lists, inclusive ranges and positive steps on a wildcard or
-range. Both day fields must match. No seconds, names, macros or extensions.
+range. Both day fields must match (AND, including when both are restricted). State
+this in the tool schema descriptions and protocol documentation. No seconds, names, macros or extensions.
 Use bundled versioned IANA data, accept zone names and aliases from that
-bundle only, and persist the chosen canonical zone and data version. Reopen
-and import must retain those rules or refuse execution without reinterpreting
-the schedule. A gap skips the nonexistent local time and consumes no count.
+bundle only, and persist the chosen canonical zone and data version. Compare versions using the bundled IANA release order. On upgrade, repeat
+the admission proof for existing routines against the new bundle inside the
+executable open/recovery transaction (on import, before publishing the imported
+session). Keep the processed-through instant, consumed count and notice links.
+Only recompute unprocessed instants strictly after that fence. If the new
+rules, including canonical zone resolution, cannot prove the schedule, keep
+its old version and move it to blocked/invalid_schedule, with a durable
+invalid_schedule disposition carrying reminderId and old/new data versions
+and no occurrence or count consumption. Publish it after commit. An explicit
+schedule update can repair it. Refuse a newer version at open or import into
+an older reader before any mutation. Inspection-only open makes no changes. A gap skips the nonexistent local time and consumes no count.
 A fold uses only the earlier UTC instant and consumes one count.
 
 For intervals require every >= 600000. For cron, check the ordinary
@@ -38,7 +47,14 @@ matches straddling each transition, including the predecessor and successor
 outside the transition day. Check the explicit transition history and one
 complete Gregorian 400-year cycle of the recurring zone tail, with boundary
 pairs, or the constant-offset tail. Refuse when a zone tail cannot be proved
-or a pair is less than ten minutes apart. This may reject some safe calendars
+or a pair is less than ten minutes apart. Use indexed predecessor/successor
+queries around transitions, with work proportional to transition dates and
+the bounded allowed daily times, without enumerating the recurrence. Cap
+one admission proof at 250 ms measured by a monotonic clock, with checks
+between bounded calculation steps. A budget hit refuses the command with a
+retryable request-level error (storage_failure), without a durable receipt or
+partial mutation; during migration it rolls back the open/import. An explicit
+proof failure remains invalid_schedule. This may reject some safe calendars
 under the conservative daily check. Never accept based on a rolling sample.
 
 Routine creates and edits may set `missedRuns: "coalesce" | "skip" | "each"`
@@ -52,6 +68,14 @@ the *next calendar match*, ignoring count, until and disposition. Clamp to
 grace for a selected instant before enqueue and expire at equality. For a
 terminal row both next timing fields are null. One-off fields keep 0031
 semantics and receive no routine fields.
+
+Agent schedule_reminder accepts the same routine union, count/until,
+missedRuns and overlap, with the harness clock as the anchor and the
+existing invocation deduplication before resolving a schedule. Apply the
+same checked offer and policy admission, guard requirement, spacing proof,
+and active cap as for the host. List and cancel can address routines only
+in the caller's channel, with 0031 cursor and not_found rules. Agent
+arguments cannot supply origin names, creator, channel or acceptedAt.
 
 ## Occurrences and bounded delivery
 
@@ -98,6 +122,13 @@ Ordinary queued notices still emit 0031 reminder_fired.
 
 The owning host or standalone operator enables the guard through immutable
 session configuration `limits.unattendedTurns` (positive safe integer).
+Allow it at create or as a one-time enable on executable open of an existing
+session without a guard. On open, durably bind the setting and activate
+format 8 atomically before applying intents or starting work. Start the
+per-channel counters at zero. Later opens without the field use the saved
+value; an explicitly different value is invalid_config before any writes.
+Inspection opens cannot enable it. Persist the bound limit independently of
+subsequent managed config selection and carry it through archive export.
 Initialize advertises implementation support as
 `capabilities.unattendedTurnGuard: true` and `capabilities.routines: true`
 only once the guard is implemented. Advertise `minIntervalMs: 600000`,
@@ -142,3 +173,11 @@ archive 5/6 stay unchanged. Envelope stays 1 and retains older supported
 inputs. Verify parity, calendar boundary pairs, exact expiry, bounded long
 outages, both commit orders, rollback, restart, and real stdio with two
 occurrences plus a guarded or overlapping recovery case before releasing R9.
+
+## Pending product decision
+
+F4 is open. An exhausted channel with no runnable participant input could
+either retain routine wake deadlines and durably record unattended_limit on
+each due wake, or suppress that channel's deadline and resolve the gap by
+the ordinary missed-run and expiry policies when eligibility returns.
+Haurness owns the choice. Runtime and R9 remain gated pending resolution.
