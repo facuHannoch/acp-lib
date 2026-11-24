@@ -41,13 +41,12 @@ interface ReminderFields {
 }
 
 /** Returned interval routines always carry their resolved startAt. */
-export type Reminder = ReminderFields & (
-  | { schedule: OneOffSchedule; missedRuns?: never; overlap?: never; remainingCount?: never; timezoneVersion?: never; timezoneMigration?: never }
-  | (Required<RoutineDeliveryOptions> & { remainingCount?: number } & (
+export type OneOffReminder = ReminderFields & { schedule: OneOffSchedule; missedRuns?: never; overlap?: never;
+  remainingCount?: never; timezoneVersion?: never; timezoneMigration?: never };
+export type Reminder = OneOffReminder | (ReminderFields & Required<RoutineDeliveryOptions> & { remainingCount?: number } & (
     | { schedule: IntervalRoutineSchedule & { startAt: string }; timezoneVersion?: never; timezoneMigration?: never }
     | { schedule: CalendarRoutineSchedule; timezoneVersion: string; timezoneMigration?: RoutineTimezoneMigration }
-  ))
-);
+  ));
 
 type ReminderEdit = RoutineDeliveryOptions & {
   text?: string;
@@ -64,6 +63,16 @@ export type ReminderChange = ChangeIdentity & (
   | { op: "update"; payload: ReminderEdit }
   | { op: "cancel"; payload: Record<string, never> }
 );
+
+/** Internal 0031 parser and storage view until recurrence is enabled. */
+export type OneOffReminderChange = (ChangeIdentity & (
+  | { op: "create"; payload: Omit<Extract<ReminderChange, { op: "create" }>["payload"], "schedule"> & { schedule: OneOffSchedule } }
+  | { op: "update"; payload: Omit<ReminderEdit, "schedule" | "acceptedAt"> &
+      ({ schedule: OneOffSchedule; acceptedAt: string } | { schedule?: never; acceptedAt?: never }) }
+  | { op: "cancel"; payload: Record<string, never> }
+));
+export type OneOffReminderChangeResult = Exclude<ReminderChangeResult, { outcome: "applied" }>
+  | (ChangeIdentity & { outcome: "applied"; reminder: OneOffReminder; alreadyQueued?: boolean });
 
 export type ReminderChangeResult = ChangeIdentity & (
   | { outcome: "applied"; reminder: Reminder; alreadyQueued?: boolean }
@@ -117,8 +126,8 @@ export interface ReminderClock {
 /** Portable reminder state in logical archive 6. High water is derived from retained receipts. */
 export interface ReminderArchiveState {
   guard?: { limit: number; counters: Array<{ channel: string; spent: number }> };
-  rows: Array<{ sequence: number; reminder: Reminder; original?: string; defaultedExpiry: boolean }>;
-  receipts: Array<{ fingerprint: string; result: ReminderChangeResult }>;
+  rows: Array<{ sequence: number; reminder: OneOffReminder; original?: string; defaultedExpiry: boolean }>;
+  receipts: Array<{ fingerprint: string; result: OneOffReminderChangeResult }>;
   listingRevision: number;
   wake: ReminderWake;
 }

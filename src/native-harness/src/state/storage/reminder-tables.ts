@@ -1,9 +1,9 @@
-import type { Reminder, ReminderArchiveState, ReminderWake } from "../../contracts/reminders.ts";
+import type { OneOffReminder, ReminderArchiveState, ReminderWake } from "../../contracts/reminders.ts";
 import type { ReminderReceipt } from "./reminder-change.ts";
 
 export interface ReminderRow {
   sequence: number;
-  reminder: Reminder;
+  reminder: OneOffReminder;
   original?: string;
   defaultedExpiry: boolean;
 }

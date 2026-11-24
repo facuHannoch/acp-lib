@@ -1,5 +1,5 @@
 import { reminderInstant } from "../util/reminder-schedule.ts";
-import type { ReminderChange, ReminderListParams } from "../contracts/reminders.ts";
+import type { OneOffReminderChange, ReminderListParams } from "../contracts/reminders.ts";
 import { SESSION_INPUT_MAX_BYTES } from "../contracts/input-limits.ts";
 
 export class ReminderShapeError extends Error {}
@@ -49,7 +49,7 @@ function policyNames(value: unknown): string[] {
 }
 
 /** Validate both batch shape and individual live requests before any mutation. */
-export function parseReminderChange(value: unknown): ReminderChange {
+export function parseReminderChange(value: unknown): OneOffReminderChange {
   const input = record(value);
   keys(input, ["reminderId", "changeId", "op", "payload"]);
   const id = { reminderId: text(input.reminderId, "reminderId"), changeId: positive(input.changeId, "changeId") };
@@ -85,7 +85,7 @@ export function parseReminderChange(value: unknown): ReminderChange {
   }
 }
 
-export function parseReminderBatch(value: unknown): ReminderChange[] {
+export function parseReminderBatch(value: unknown): OneOffReminderChange[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 100) return bad("batch");
   return value.map(parseReminderChange);
