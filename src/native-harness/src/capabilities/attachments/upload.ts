@@ -46,7 +46,7 @@ export function createUploadManager(options: {
       expire();
       if (uploads.size >= ATTACHMENT_LIMITS.openUploads) throw new UploadError("transfer_limit", "Too many uploads");
       if (typeof input.channel !== "string" || !input.channel.trim() || typeof input.filename !== "string" ||
-        !input.filename || Buffer.byteLength(input.filename) > 255 || /[\u0000-\u001f\u007f-\u009f]/u.test(input.filename) ||
+        !input.filename || !input.filename.isWellFormed() || Buffer.byteLength(input.filename) > 255 || /[\u0000-\u001f\u007f-\u009f]/u.test(input.filename) ||
         typeof input.mediaType !== "string" || input.mediaType.length > 127 || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(input.mediaType) ||
         !Number.isSafeInteger(input.bytes) || input.bytes <= 0 || typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256))
         throw new UploadError("invalid_params", "Invalid upload metadata");

@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createUploadManager, UploadError } from "../src/capabilities/attachments/upload.ts";
+import { readAttachment, AttachmentReadError } from "../src/capabilities/attachments/read.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -21,9 +22,15 @@ describe("managed upload staging", () => {
     catch (error) { expect(error).toBeInstanceOf(UploadError); expect((error as UploadError).expectedOffset).toBe(5); }
     expect(uploads.status("a", uploadId).offset).toBe(5);
     uploads.write("a", uploadId, 5, data.subarray(5).toString("base64"));
-    expect(uploads.finalize("a", uploadId).id).toBe(attachmentId);
+    const metadata = uploads.finalize("a", uploadId);
+    expect(metadata.id).toBe(attachmentId);
     expect(uploads.finalize("a", uploadId).id).toBe(attachmentId);
     expect(published).toBe(1);
+    const lookup = () => ({ metadata, timelineVisible: false, timelineReadable: true });
+    expect(Buffer.from(readAttachment({ root, channel: "a", id: attachmentId, offset: 0, lookup }).data, "base64")).toEqual(data);
+    expect(() => readAttachment({ root, channel: "b", id: attachmentId, offset: 0, lookup })).toThrow(AttachmentReadError);
+    expect(Buffer.from(readAttachment({ root, channel: "b", id: attachmentId, offset: 0,
+      lookup: () => ({ metadata, timelineVisible: true, timelineReadable: true }) }).data, "base64")).toEqual(data);
     uploads.close();
   });
   test("refuses wrong channels and invalid digest before publication", () => {

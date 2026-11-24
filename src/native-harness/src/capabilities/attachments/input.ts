@@ -18,7 +18,7 @@ export function validateMixedParts(value: unknown): InputPart[] {
   const parts: InputPart[] = value.map((entry: unknown) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return bad("Invalid content part");
     const part = entry as Record<string, unknown>;
-    if (part.type === "text" && Object.keys(part).length === 2 && typeof part.text === "string" && part.text.trim().length > 0) {
+    if (part.type === "text" && Object.keys(part).length === 2 && typeof part.text === "string" && part.text.length > 0) {
       bytes += encoder.encode(part.text).length + encoder.encode("text").length;
       return { type: "text", text: part.text };
     }
