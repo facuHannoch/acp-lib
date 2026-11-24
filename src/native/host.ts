@@ -1,7 +1,7 @@
 import type { NativeConnection, NativeHarnessHostConfig } from "./host-config.ts";
 export type { NativeConnection, NativeHarnessHostConfig, NativeApprovalRequest, NativeApprovalResponder } from "./host-config.ts";
 import { idleMilliseconds, ReminderIdleSupervisor, type IdleStopResult } from "./reminders/idle.ts";
-import { reminderRpc } from "./reminders/wire.ts";
+import { reminderNotification, reminderRpc } from "./reminders/wire.ts";
 import type { ReminderWakeSupervisor } from "./reminders/supervisor.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
 import type { WireChange } from "./reminders/wire.ts";
@@ -301,8 +301,6 @@ export class NativeHarnessHost {
     }
   }
 
-  // --- process lifecycle ------------------------------------------------------------------------
-
   /** Starts the harness if it is not running. Concurrent callers share one start. */
   ensureStarted(): Promise<void> {
     if (this.#idling) return this.#idling.catch(() => {}).then(() => this.ensureStarted());
@@ -407,12 +405,17 @@ export class NativeHarnessHost {
     const earlyReminders: ReminderNotification[] = [];
     const reminderEvent = (event: ReminderNotification) =>
       this.reminderSync?.notification(event, (channel, payload) => this.#ports.get(channel)?.reminderEvent?.(payload));
-    connection.onReminderNotification?.(event => {
+    const notifyReminder = (event: ReminderNotification) => {
       if (!reminderOpen) earlyReminders.push(event);
       else if (this.#connection === connection) reminderEvent(event);
-    });
+    };
+    connection.onReminderNotification?.(notifyReminder);
+    client.onReminderWake?.(event => notifyReminder({ deadline: event }));
     this.#early = [];
-    client.onChannelEvent((event) => this.#route(connection, event));
+    client.onChannelEvent(event => {
+      const reminder = reminderNotification({ jsonrpc: "2.0", method: "channel/event", params: event });
+      if (reminder) notifyReminder(reminder); else this.#route(connection, event);
+    });
     client.onSessionEvent(event => {
       const status = this.#lastStatus;
       if (this.#connection !== connection || !status || status.revision > event.revision) return;

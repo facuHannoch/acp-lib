@@ -1,4 +1,4 @@
-import type { HarnessClient } from "../../native-harness/src/client.ts";
+import type { HarnessClient, ReminderChange as WireChange } from "../../native-harness/src/client.ts";
 import type { Reminder, ReminderChange } from "../../persistence/reminders.ts";
 import { defaultReminderLimits, type ReminderLimits } from "./limits.ts";
 import { ReminderError } from "./schedule.ts";
@@ -64,13 +64,13 @@ export function negotiatedLimits(value: unknown): ReminderLimits {
   };
 }
 
-export function reminderRequest(change: ReminderChange, limits = defaultReminderLimits) {
+export function reminderRequest(change: ReminderChange, limits = defaultReminderLimits): WireChange {
   const { id, conversationId, text, schedule, expiryPolicy, status, policyNames, scheduleAcceptedAt } = change.reminder;
   const includes = (field: NonNullable<ReminderChange["fields"]>[number]) =>
     change.op === "create" || (change.op === "update" && change.fields?.includes(field) === true);
   if (typeof id !== "string" || !id.trim() || !Number.isSafeInteger(change.changeId) || change.changeId < 1) throw new Error("Invalid reminder identity");
-  const identity = { reminderId: id, changeId: change.changeId, op: change.op };
-  if (change.op === "cancel") return { ...identity, payload: {} };
+  const identity = { reminderId: id, changeId: change.changeId };
+  if (change.op === "cancel") return { ...identity, op: "cancel", payload: {} };
   if (!("at" in schedule)) throw new ReminderError("routines_unavailable", "Routine reminders are unavailable");
   const anchor = scheduleAcceptedAt ?? change.acceptedAt;
   if (includes("schedule") && (!Number.isSafeInteger(anchor) || !Number.isSafeInteger(schedule.at)
@@ -87,18 +87,25 @@ export function reminderRequest(change: ReminderChange, limits = defaultReminder
     (!Number.isSafeInteger(expiresAfter) || expiresAfter < limits.minGraceMs || expiresAfter > limits.maxGraceMs)) {
     throw new Error("Invalid reminder grace");
   }
-  const payload = {
-    ...(change.op === "create" ? { channel: conversationId, ...(policyNames === undefined ? {} : { policyNames }) } : {}),
+  const schedulePatch = () => ({ schedule: { at: new Date(schedule.at).toISOString() }, acceptedAt: new Date(anchor).toISOString() });
+  const grace = includes("expiry") && expiresAfter !== undefined ? { expiresAfter } : {};
+  if (change.op === "create") {
+    return { ...identity, op: "create", payload: {
+      channel: conversationId, text, ...schedulePatch(), ...grace,
+      ...(policyNames === undefined ? {} : { policyNames: [...policyNames] }),
+    } };
+  }
+  const patch = {
     ...(includes("text") ? { text } : {}),
-    ...(includes("schedule") ? { schedule: { at: new Date(schedule.at).toISOString() }, acceptedAt: new Date(anchor).toISOString() } : {}),
-    ...(change.op === "update" && includes("status") ? { state: status } : {}),
-    ...(includes("expiry") && expiresAfter !== undefined ? { expiresAfter } : {}),
+    ...(includes("status") && (status === "active" || status === "paused") ? { state: status } : {}),
+    ...grace,
   };
-  if (Object.keys(payload).length === 0) throw new Error("Empty reminder update");
-  return { ...identity, payload };
+  if (includes("schedule")) return { ...identity, op: "update", payload: { ...patch, ...schedulePatch() } };
+  if (Object.keys(patch).length === 0) throw new Error("Empty reminder update");
+  return { ...identity, op: "update", payload: patch };
 }
 
-export type WireChange = ReturnType<typeof reminderRequest>;
+export type { WireChange };
 
 export function fromWireReminder(row: WireReminder, prior?: Reminder): Reminder {
   const { id, channel, text, state, policyNames, createdBy, creatorId, lastRunAt, lastOccurrenceId, noticeId, blockedReason } = row;
