@@ -1,3 +1,4 @@
+import type { WireReminderEvent } from "./native/reminders/wire.ts";
 import type { ReminderEvent } from "./native/reminders/service.ts";
 import type { ConversationPermissionEvent } from "./permissions/conversation.ts";
 import type { OperationActivity } from "./operations/contracts.ts";
@@ -209,6 +210,7 @@ export interface HandoffResult {
 /** Conversation-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
 export type AgentSessionEvent =
   | ReminderEvent
+  | WireReminderEvent
   | ConversationPermissionEvent
   | { kind: "provider_reconnected"; via: "loaded" | "recovered" | "fresh"; internalSessionId: string }
   | { kind: "operation_stage_changed"; activity: OperationActivity }

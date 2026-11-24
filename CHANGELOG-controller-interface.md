@@ -234,3 +234,10 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   It reports the session turn ID and the harness item IDs whose live `delivered`
   or `seen` milestone advanced. Update exhaustive switches to handle the new kind.
   Receipt events carry no historical replay or transcript record.
+
+The native conversation event union includes the local reminder journal events
+`reminder_intent_recorded`, `reminder_intent_confirmed`,
+`reminder_intent_blocked`, and `reminder_intent_discarded`. Harness events use
+`reminder_changed`, `reminder_fired`, `reminder_cancelled`, and
+`reminder_expired`. A fired event indicates that the harness queued the
+notice. Update exhaustive event switches to handle the new kinds.

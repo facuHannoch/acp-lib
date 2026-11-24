@@ -1,0 +1,232 @@
+import type { AgentConversationId } from "../../agent-ids.ts";
+import type { Logger } from "../../logger.ts";
+import type { HarnessClient } from "../../native-harness/src/client.ts";
+import type { PersistenceBackend, PersistenceScope } from "../../persistence/backend.ts";
+import type { ReminderChange, ReminderPersistence } from "../../persistence/reminders.ts";
+import { codeOf } from "../errors.ts";
+import { defaultReminderLimits } from "./limits.ts";
+import {
+  fromWireReminder, negotiatedLimits, reminderRequest, reminderRpc,
+  type ReminderNotification, type ReminderOpenResult, type ReminderPage, type WireChange, type WireReceipt, type WireReminder, type WireReminderEvent,
+} from "./wire.ts";
+
+const batchLimit = 100;
+const sweepAttempts = 3;
+
+export class ReminderSync {
+  supported?: boolean;
+  limits = defaultReminderLimits;
+  unreconciled = false;
+  private sessionId?: string;
+  private tail = Promise.resolve();
+  private sends = Promise.resolve();
+  private readonly fires = new Set<string>();
+
+  constructor(
+    private readonly persistence: PersistenceBackend,
+    private readonly repository: ReminderPersistence,
+    private readonly log: Logger,
+  ) {}
+
+  private transaction<T>(work: (repo: ReminderPersistence, scope: PersistenceScope) => Promise<T>): Promise<T> {
+    return this.persistence.reminders
+      ? this.persistence.transaction(scope => work(scope.reminders!, scope))
+      : work(this.repository, this.persistence);
+  }
+
+  private ordered<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.tail.then(work);
+    this.tail = next.then(() => {}, () => {});
+    return next;
+  }
+
+  settled(): Promise<void> { return this.tail; }
+
+  async initialize(description: unknown): Promise<void> {
+    const offered = description as { capabilities?: { reminders?: boolean }; reminderLimits?: unknown };
+    this.supported = offered.capabilities?.reminders === true;
+    this.limits = negotiatedLimits(offered.reminderLimits);
+    await this.repository.setSupported(this.supported);
+  }
+
+  async stage(): Promise<WireChange[]> {
+    if (!this.supported) return [];
+    return this.transaction(async repo => {
+      const entries = (await repo.list()).flatMap(row => row.changes)
+        .filter(change => change.state === "pending" || change.state === "maybe_sent")
+        .sort((a, b) => a.stagingOrder - b.stagingOrder);
+      const batch: WireChange[] = [];
+      let bytes = 0;
+      for (const change of entries) {
+        if (batch.length === batchLimit) break;
+        try {
+          const wire = change.frozenWire ?? reminderRequest(change, this.limits);
+          const size = Buffer.byteLength(JSON.stringify(wire)) + 1;
+          if (size > 900_000) throw new Error("Reminder entry exceeds startup frame budget");
+          if (bytes + size > 900_000) break;
+          if (await repo.markMaybeSent(wire.reminderId, wire.changeId, wire)) {
+            batch.push(wire);
+            bytes += size;
+          }
+        } catch (error) {
+          this.log.warn("reminder_entry_quarantined", { id: change.reminder.id, error: String(error) });
+          await repo.quarantine(change.reminder.id, change.changeId, "invalid_local_entry");
+        }
+      }
+      return batch;
+    });
+  }
+
+  async rejectedBatch(batch: WireChange[]): Promise<void> {
+    this.log.warn("reminder_batch_rejected", { count: batch.length });
+    await this.transaction(async repo => {
+      for (const entry of batch) await repo.quarantine(entry.reminderId, entry.changeId, "invalid_params");
+    });
+  }
+
+  async opened(client: HarnessClient, result: ReminderOpenResult & { sessionId?: string }, configuredId: string, fresh: boolean): Promise<void> {
+    if (!this.supported) return;
+    const sessionId = result.sessionId ?? configuredId;
+    const saved = (await this.repository.wake()).reported?.sessionId;
+    if (fresh || ((this.sessionId ?? saved) !== undefined && (this.sessionId ?? saved) !== sessionId)) {
+      this.fires.clear();
+      await this.repository.replaceSession(sessionId);
+      await this.transaction(async repo => {
+        for (const receipt of result.reminderChanges ?? []) await repo.markMaybeSent(receipt.reminderId, receipt.changeId);
+      });
+    }
+    this.sessionId = sessionId;
+    await this.ordered(async () => {
+      for (const receipt of result.reminderChanges ?? []) await this.recordReceipt(receipt);
+      if (result.reminderRevision !== undefined && result.nextDueAt !== undefined) {
+        await this.deadline(result.nextDueAt, result.reminderRevision);
+      }
+      if (result.reminders) await this.sweep(client, undefined, { reminders: result.reminders, next: result.remindersNext });
+    });
+  }
+
+  private async deadline(nextDueAt: string | null, revision: number) {
+    if (!this.sessionId) return;
+    const result = await this.repository.updateDeadline({
+      sessionId: this.sessionId, revision, nextDueAt: nextDueAt === null ? null : Date.parse(nextDueAt),
+    });
+    if (result === "mismatch") this.log.warn("reminders_due_revision_conflict", { revision, nextDueAt });
+  }
+
+  private async recordReceipt(receipt: WireReceipt) {
+    const { reminderId, changeId, reminder, reason } = receipt;
+    if (receipt.outcome === "blocked") {
+      if (reason === "stale" || reason === "conflict") this.log.warn("reminder_receipt_conflict", { reminderId, changeId, reason });
+      const blocked = { reason: reason ?? "invalid_state" };
+      await this.repository.acknowledge(reminderId, changeId, blocked);
+      return blocked;
+    }
+    if (!reminder) throw new Error("Applied reminder receipt has no row");
+    const journal = (await this.repository.list()).find(row => row.id === reminderId);
+    const prior = journal?.changes.find(change => change.changeId === changeId)?.reminder ?? journal?.confirmed;
+    const confirmed = fromWireReminder(reminder, prior);
+    await this.repository.acknowledge(reminderId, changeId, { confirmed });
+    return { confirmed: (await this.repository.list()).find(row => row.id === reminderId)?.confirmed ?? confirmed };
+  }
+
+  private async storeRows(rows: WireReminder[], seen: Set<string>): Promise<void> {
+    await this.transaction(async (repo, scope) => {
+      const known = await repo.list();
+      for (const row of rows) {
+        const conversation = await scope?.conversations.get(row.channel as AgentConversationId);
+        if (!conversation || conversation.deletedAt) continue;
+        seen.add(row.id);
+        const journal = known.find(item => item.id === row.id);
+        await repo.observe(fromWireReminder(row, journal?.confirmed ?? journal?.changes.at(-1)?.reminder));
+      }
+    });
+  }
+
+  private async sweep(client: HarnessClient, channel?: string, first?: ReminderPage): Promise<void> {
+    for (let attempt = 0; attempt < sweepAttempts; attempt++) {
+      const seen = new Set<string>();
+      try {
+        let page = attempt === 0 ? first : undefined;
+        let after: string | undefined;
+        do {
+          page ??= await reminderRpc<ReminderPage>(client, "reminder/list", { ...(channel ? { channel } : {}), ...(after ? { after } : {}) });
+          await this.storeRows(page.reminders, seen);
+          after = page.next;
+          page = undefined;
+        } while (after);
+        if (!channel) await this.repository.completeSweep(seen);
+        this.unreconciled = false;
+        return;
+      } catch (error) {
+        if (codeOf(error) !== "invalid_cursor") throw error;
+      }
+    }
+    this.unreconciled = true;
+    this.log.warn("reminder_sweep_unreconciled", { channel });
+  }
+
+  refresh(client: HarnessClient, channel?: string, id?: string): Promise<void> {
+    return this.ordered(async () => {
+      if (!this.supported) return;
+      if (!id) return this.sweep(client, channel);
+      try {
+        const { reminder } = await reminderRpc<{ reminder: WireReminder }>(client, "reminder/get", { id });
+        if (reminder.channel === channel) await this.storeRows([reminder], new Set());
+      } catch (error) {
+        if (codeOf(error) !== "not_found") throw error;
+      }
+    });
+  }
+
+  dispatch(client: HarnessClient, target?: WireChange) {
+    const result = this.sends.then(async () => {
+      let own: Awaited<ReturnType<ReminderSync["recordReceipt"]>> | undefined;
+      for (;;) {
+        const batch = await this.stage();
+        if (!batch.length) break;
+        for (const entry of batch) {
+          const receipt = await reminderRpc<WireReceipt>(client, "reminder/change", entry);
+          if (receipt.reminderId !== entry.reminderId || receipt.changeId !== entry.changeId) throw new Error("Mismatched reminder receipt");
+          const outcome = await this.ordered(() => this.recordReceipt(receipt));
+          if (entry.reminderId === target?.reminderId && entry.changeId === target.changeId) own = outcome;
+        }
+        if (own) break;
+      }
+      if (target && !own) {
+        const journal = (await this.repository.list()).find(row => row.id === target.reminderId);
+        const terminal = journal?.changes.find(change => change.changeId === target.changeId);
+        return terminal?.reason ? { reason: terminal.reason } : journal?.confirmed ? { confirmed: journal.confirmed } : { reason: "not_found" };
+      }
+      return own;
+    });
+    this.sends = result.then(() => {}, () => {});
+    return result;
+  }
+
+  notification(notification: ReminderNotification, emit: (channel: string, event: WireReminderEvent) => void) {
+    void this.ordered(async () => {
+      if ("deadline" in notification) return this.deadline(notification.deadline.nextDueAt, notification.deadline.revision);
+      const { channel, event } = notification;
+      if (event.kind === "reminder_fired" && (this.fires.has(event.occurrenceId) || this.fires.has(event.noticeId))) return;
+      const conversation = await this.persistence.conversations.get(channel as AgentConversationId);
+      if (!conversation || conversation.deletedAt) return;
+      if (event.kind === "reminder_changed" && event.reminder.channel === channel) await this.storeRows([event.reminder], new Set());
+      if (event.kind !== "reminder_changed") {
+        await this.transaction(async (repo, scope) => {
+          const row = await scope?.conversations.get(channel as AgentConversationId);
+          if (!row || row.deletedAt) return;
+          const confirmed = (await repo.list()).find(item => item.id === event.reminderId && item.conversationId === channel)?.confirmed;
+          if (!confirmed) return;
+          const status = event.kind === "reminder_fired" ? "completed" : event.kind === "reminder_expired" ? "expired" : "cancelled";
+          await repo.observe({ ...confirmed, status, nextRunAt: null, ...(event.kind === "reminder_fired"
+            ? { lastRunAt: Date.parse(event.firedAt), lastOccurrenceId: event.occurrenceId, noticeId: event.noticeId } : {}) });
+        });
+      }
+      if (event.kind === "reminder_fired") {
+        this.fires.add(event.occurrenceId);
+        this.fires.add(event.noticeId);
+      }
+      emit(channel, event);
+    }).catch(error => this.log.warn("reminder_event_failed", { error: String(error) }));
+  }
+}

@@ -55,9 +55,9 @@ test("exact lead survives a possibly sent create and retry", async () => {
 test("suspension removes local validation wakes and resuming restores them", async () => {
   const { database, repository, channel } = setup();
   try {
-    const item = await channel.create({ text: "cron", schedule: { cron: "0 * * * *", timezone: "UTC" } });
+    const item = await channel.create({ text: "once", schedule: { in: 180_000 } });
     const [row] = await repository.list();
-    expect(item.expiry).toEqual({ kind: "harness_default" });
+    expect(item.expiry).toEqual({ kind: "absolute", at: 1_540_000, graceMs: 360_000 });
     expect(reminderRequest(row!.changes[0]!).payload).not.toHaveProperty("expiresAfter");
     await repository.setConversationSuspended("channel", true);
     expect((await repository.wake()).effectiveAt).toBeNull();
@@ -201,9 +201,9 @@ test("never-sent edits coalesce and a cancelled create never reuses a version", 
 test("schedule edits preserve expiry policy and resume preserves an overdue schedule", async () => {
   const { database, channel, advance } = setup();
   try {
-    const item = await channel.create({ text: "check", schedule: { in: 120_000 }, expiresAfter: 60_000 });
+    const item = await channel.create({ text: "check", schedule: { in: 120_000 }, expiresAfter: 300_000 });
     const moved = await channel.update(item.id, { schedule: { in: 130_000 } });
-    expect(moved.expiry).toEqual({ kind: "absolute", at: 1_190_000, graceMs: 60_000 });
+    expect(moved.expiry).toEqual({ kind: "absolute", at: 1_430_000, graceMs: 300_000 });
     for (let step = 0; step < 15; step++) advance();
     await channel.pause(item.id);
     const resumed = await channel.resume(item.id);
@@ -222,18 +222,18 @@ test("blocked entries stay visible and correcting or discarding them preserves t
     await repository.acknowledge(item.id, 1, { reason: "invalid_policy" });
     expect(await channel.get(item.id)).toMatchObject({ state: "blocked", reason: "invalid_policy" });
     expect((await repository.wake()).effectiveAt).toBeNull();
-    await channel.update(item.id, { text: "corrected" });
-    expect((await repository.list())[0]?.changes.map(({ state, changeId }) => [state, changeId]))
-      .toEqual([["blocked", 1], ["pending", 2]]);
+    await expect(channel.update(item.id, { text: "corrected" })).rejects.toMatchObject({ code: "not_found" });
     await channel.discardBlocked(item.id);
-    expect((await repository.list())[0]?.highWater).toBe(2);
-    expect(await channel.get(item.id)).toMatchObject({ state: "pending", text: "corrected" });
+    expect((await repository.list())[0]?.highWater).toBe(1);
+    expect(await channel.get(item.id)).toBeUndefined();
+    const corrected = await channel.create({ text: "corrected", schedule: { in: 120_000 } });
+    expect(corrected.id).not.toBe(item.id);
   } finally {
     database.close();
   }
 });
 
-test("the cap and authorization are checked before journaling", async () => {
+test("authorization is checked before journaling and one-offs have no local cap", async () => {
   const { database, repository } = setup();
   try {
     const service = new ReminderService({
@@ -248,11 +248,11 @@ test("the cap and authorization are checked before journaling", async () => {
       .rejects.toMatchObject({ code: "reminders_unsupported" });
     const channel = service.conversation("channel", true, () => {});
     for (let i = 0; i < 20; i++) await channel.create(input);
-    await expect(channel.create(input)).rejects.toMatchObject({ code: "limit_exceeded" });
-    expect(await repository.list()).toHaveLength(20);
+    await channel.create(input);
+    expect(await repository.list()).toHaveLength(21);
     const first = await service.list({ limit: 13 });
     const second = await service.list({ after: first.nextCursor!, limit: 13 });
-    expect(new Set([...first.items, ...second.items].map(({ id }) => id)).size).toBe(20);
+    expect(new Set([...first.items, ...second.items].map(({ id }) => id)).size).toBe(21);
     expect(second.nextCursor).toBeNull();
   } finally {
     database.close();
@@ -319,7 +319,9 @@ test("explicit repeating anchors and expiry lengths enforce acceptance boundarie
   for (const duration of [-1, 0]) {
     expect(() => reminderExpiryPolicy(duration)).toThrow(expect.objectContaining({ code: "invalid_input" }));
   }
-  expect(reminderExpiryPolicy(1)).toEqual({ kind: "duration", milliseconds: 1 });
+  expect(() => reminderExpiryPolicy(299_999)).toThrow();
+  expect(reminderExpiryPolicy(300_000)).toEqual({ kind: "duration", milliseconds: 300_000 });
+  expect(() => reminderExpiryPolicy(86_400_001)).toThrow();
 });
 
 test("terminal reminders reject changes and accept a repeat cancel without writing", async () => {
@@ -451,12 +453,12 @@ test("reminder events reach observers after the journal commits", async () => {
     block = false;
     await channel.cancel(item.id);
     expect(events).toEqual([
-      { kind: "reminder_created", status: "active", stored: "maybe_sent" },
-      { kind: "reminder_confirmed", status: "active", stored: "active" },
-      { kind: "reminder_changed", status: "active", stored: "maybe_sent" },
-      { kind: "reminder_blocked", status: "active", stored: "blocked" },
-      { kind: "reminder_cancelled", status: "cancelled", stored: "maybe_sent" },
-      { kind: "reminder_confirmed", status: "cancelled", stored: "cancelled" },
+      { kind: "reminder_intent_recorded", status: "active", stored: "maybe_sent" },
+      { kind: "reminder_intent_confirmed", status: "active", stored: "active" },
+      { kind: "reminder_intent_recorded", status: "active", stored: "maybe_sent" },
+      { kind: "reminder_intent_blocked", status: "active", stored: "blocked" },
+      { kind: "reminder_intent_recorded", status: "cancelled", stored: "maybe_sent" },
+      { kind: "reminder_intent_confirmed", status: "cancelled", stored: "cancelled" },
     ]);
   });
 });
@@ -477,7 +479,7 @@ test("owned native and ACP conversations expose their reminder support and share
     const item = await native.reminders.create(input);
     expect(await native.reminders.get(item.id)).toEqual(item);
     expect((await agent.reminders.list()).items).toContainEqual(item);
-    expect(events).toContain("reminder_created");
+    expect(events).toContain("reminder_intent_recorded");
     expect(acp.conversationCapabilities.reminders).toBe(false);
     await expect(acp.reminders.create(input)).rejects.toMatchObject({ code: "reminders_unsupported" });
     expect(rig.launches).toEqual([]);

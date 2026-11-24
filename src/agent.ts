@@ -1,4 +1,4 @@
-import { ReminderService } from "./native/reminders/service.ts";
+import { createAgentReminderService, type ReminderService } from "./native/reminders/service.ts";
 import { resolveProviderStart } from "./conversation-startup.ts";
 import { withDelegationTools } from "./orchestrator/native-delegation.ts";
 import { AcpWorkerDelivery } from "./orchestrator/acp-delivery.ts";
@@ -173,7 +173,7 @@ export class Agent {
         ...(config.conversationDefaults?.logger ? { logger: config.conversationDefaults.logger } : {}),
       }, channels, persistence.workerDelivery)
       : null;
-    this.reminders = new ReminderService({ ...config.reminders, persistence, running: () => this.nativeHarness?.state === "running" });
+    this.reminders = createAgentReminderService(this.nativeHarness, persistence, config.reminders, config.conversationDefaults?.logger);
     this.audit = audit;
     const logger = config.conversationDefaults?.logger ?? noopLogger;
     this.eventBus = new CommittedRecordEventBus({

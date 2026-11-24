@@ -1,3 +1,4 @@
+import type { WireChange } from "../native/reminders/wire.ts";
 import type { ReminderExpiry, ReminderExpiryPolicy, ReminderSchedule } from "../native/reminders/schedule.ts";
 import { defaultReminderLimits } from "../native/reminders/limits.ts";
 import { compareReminderDeadline, deriveReminderWake, type ReminderDeadline, type ReminderDeadlineDecision } from "./reminder-wake.ts";
@@ -9,11 +10,19 @@ export interface Reminder {
   readonly schedule: ReminderSchedule;
   readonly expiryPolicy: ReminderExpiryPolicy;
   readonly expiry: ReminderExpiry;
-  readonly status: "active" | "paused" | "cancelled" | "completed" | "expired";
+  readonly status: "active" | "paused" | "cancelled" | "completed" | "expired" | "blocked";
   readonly policyNames?: readonly string[];
   readonly nextRunAt?: number | null;
   readonly lastRunAt?: number;
   readonly revision?: number;
+  readonly scheduleAcceptedAt?: number;
+  readonly createdBy?: "agent" | "host";
+  readonly creatorId?: string;
+  readonly lastOccurrenceId?: string;
+  readonly noticeId?: string;
+  readonly blockedReason?: string;
+  readonly unreconciled?: boolean;
+  readonly missing?: boolean;
 }
 
 export interface ReminderChangeInput {
@@ -25,6 +34,9 @@ export interface ReminderChangeInput {
 
 export interface ReminderChange extends ReminderChangeInput {
   readonly changeId: number;
+  readonly stagingOrder: number;
+  readonly observedAtSend?: number;
+  readonly frozenWire?: WireChange;
   readonly state: "pending" | "maybe_sent" | "applied" | "blocked";
   readonly reason?: string;
 }
@@ -34,15 +46,18 @@ export interface ReminderJournal {
   readonly conversationId: string;
   readonly highWater: number;
   readonly confirmed?: Reminder;
+  readonly observation?: number;
   readonly changes: readonly ReminderChange[];
 }
 
 export interface ReminderWakeIndex {
   readonly reported: ReminderDeadline | null;
   readonly effectiveAt: number | null;
+  readonly supported?: boolean;
 }
 
 export interface ReminderStorage {
+  nextOrder(): number;
   get(id: string): ReminderJournal | undefined;
   list(): ReminderJournal[];
   save(journal: ReminderJournal): void;
@@ -63,9 +78,14 @@ export interface ReminderPersistence {
   setConversationSuspended(conversationId: string, suspended: boolean): Promise<void>;
   deleteConversation(conversationId: string): Promise<void>;
   enqueue(change: ReminderChangeInput): Promise<ReminderChange | undefined>;
-  markMaybeSent(id: string, changeId: number): Promise<ReminderChange | undefined>;
+  markMaybeSent(id: string, changeId: number, wire?: WireChange): Promise<ReminderChange | undefined>;
   acknowledge(id: string, changeId: number, outcome: { confirmed: Reminder } | { reason: string }): Promise<boolean>;
   discardBlocked(id: string): Promise<void>;
+  observe(reminder: Reminder): Promise<void>;
+  quarantine(id: string, changeId: number, reason: string): Promise<void>;
+  setSupported(supported: boolean): Promise<void>;
+  replaceSession(sessionId: string): Promise<void>;
+  completeSweep(seen: ReadonlySet<string>): Promise<void>;
 }
 
 export class StoredReminderPersistence implements ReminderPersistence {
@@ -85,7 +105,8 @@ export class StoredReminderPersistence implements ReminderPersistence {
   }
 
   private recompute(reported = this.store.wake().reported): void {
-    const candidates = this.store.list().flatMap((journal) => journal.changes.map((change) => {
+    const supported = this.store.wake().supported;
+    const candidates = supported === false ? [] : this.store.list().flatMap((journal) => journal.changes.filter(change => "at" in change.reminder.schedule).map((change) => {
       const latest = journal.changes.at(-1)?.reminder ?? change.reminder;
       const { schedule } = change.reminder;
       return {
@@ -98,7 +119,8 @@ export class StoredReminderPersistence implements ReminderPersistence {
     }));
     this.store.saveWake({
       reported,
-      effectiveAt: deriveReminderWake(reported, candidates, defaultReminderLimits.oneShotLeadMs),
+      ...(supported === undefined ? {} : { supported }),
+      effectiveAt: supported === false ? null : deriveReminderWake(reported, candidates, defaultReminderLimits.oneShotLeadMs),
     });
   }
 
@@ -134,12 +156,14 @@ export class StoredReminderPersistence implements ReminderPersistence {
       const journal = this.store.get(id) ?? { id, conversationId, highWater: 0, changes: [] };
       if (journal.conversationId !== conversationId) throw new Error("Reminder belongs to another conversation");
       const latest = journal.changes.at(-1);
-      const coalesce = latest?.state === "pending";
-      const changes = coalesce ? journal.changes.slice(0, -1) : [...journal.changes];
+      const coalesce = latest?.state === "pending" && !latest.frozenWire && !(latest.op === "create" && change.reminder.status === "paused");
+      const dropCreate = change.op === "cancel" && journal.changes[0]?.op === "create"
+        && journal.changes.every(entry => entry.state === "pending");
+      const changes = dropCreate ? [] : coalesce ? journal.changes.slice(0, -1) : [...journal.changes];
       const changeId = journal.highWater + 1;
-      const next: ReminderChange | undefined = coalesce && latest.op === "create" && change.op === "cancel"
+      const next: ReminderChange | undefined = dropCreate
         ? undefined
-        : { ...change, op: coalesce && latest.op === "create" ? "create" : change.op, changeId, state: "pending" };
+        : { ...change, op: coalesce && latest.op === "create" ? "create" : change.op, changeId, stagingOrder: coalesce ? latest.stagingOrder : this.store.nextOrder(), state: "pending" };
       const queued = next && coalesce && latest.fields && next.fields && next.op === "update"
         ? { ...next, fields: [...new Set([...latest.fields, ...next.fields])] }
         : next;
@@ -150,12 +174,13 @@ export class StoredReminderPersistence implements ReminderPersistence {
     });
   }
 
-  markMaybeSent(id: string, changeId: number): Promise<ReminderChange | undefined> {
+  markMaybeSent(id: string, changeId: number, wire?: WireChange): Promise<ReminderChange | undefined> {
     return this.write(() => {
       const journal = this.store.get(id);
       const entry = journal?.changes.find((change) => change.changeId === changeId);
       if (!journal || !entry || (entry.state !== "pending" && entry.state !== "maybe_sent")) return;
-      const next: ReminderChange = { ...entry, state: "maybe_sent" };
+      if (entry.state === "maybe_sent" && (!wire || entry.frozenWire)) return structuredClone(entry);
+      const next: ReminderChange = { ...entry, state: "maybe_sent", observedAtSend: entry.observedAtSend ?? journal.observation ?? 0, frozenWire: wire ?? entry.frozenWire };
       this.store.save({ ...journal, changes: journal.changes.map((change) => change === entry ? next : change) });
       return structuredClone(next);
     });
@@ -181,7 +206,7 @@ export class StoredReminderPersistence implements ReminderPersistence {
         });
       } else {
         const confirmed = journal.confirmed;
-        const newer = !confirmed || (receipt.confirmed.revision ?? 0) >= (confirmed.revision ?? 0);
+        const newer = !confirmed || (journal.observation ?? 0) === entry.observedAtSend;
         this.store.save({
           ...journal,
           confirmed: newer ? receipt.confirmed : confirmed,
@@ -192,6 +217,55 @@ export class StoredReminderPersistence implements ReminderPersistence {
       }
       this.recompute();
       return true;
+    });
+  }
+
+  observe(reminder: Reminder): Promise<void> {
+    return this.write(() => {
+      const current = this.store.get(reminder.id) ?? {
+        id: reminder.id, conversationId: reminder.conversationId, highWater: 0, changes: [],
+      };
+      if (current.conversationId !== reminder.conversationId) return;
+      this.store.save({ ...current, observation: (current.observation ?? 0) + 1, confirmed: reminder });
+    });
+  }
+
+  quarantine(id: string, changeId: number, reason: string): Promise<void> {
+    return this.write(() => {
+      const journal = this.store.get(id);
+      if (!journal) return;
+      this.store.save({ ...journal, changes: journal.changes.map(change => change.changeId === changeId
+        ? { ...change, state: "blocked", reason } : change) });
+      this.recompute();
+    });
+  }
+
+  setSupported(supported: boolean): Promise<void> {
+    return this.write(() => {
+      this.store.saveWake({ ...this.store.wake(), supported });
+      this.recompute();
+    });
+  }
+
+  replaceSession(sessionId: string): Promise<void> {
+    return this.write(() => {
+      for (const row of this.store.list()) {
+        this.store.save({
+          ...row,
+          changes: row.changes.map(change => change.state === "maybe_sent" ? { ...change, state: "pending", observedAtSend: undefined } : change),
+          ...(row.confirmed ? { confirmed: { ...row.confirmed, unreconciled: true } } : {}),
+        });
+      }
+      this.recompute({ sessionId, revision: 0, nextDueAt: null });
+    });
+  }
+
+  completeSweep(seen: ReadonlySet<string>): Promise<void> {
+    return this.write(() => {
+      for (const row of this.store.list()) {
+        if (!row.confirmed || seen.has(row.id) || row.changes.some(change => change.state === "pending" || change.state === "maybe_sent")) continue;
+        this.store.save({ ...row, confirmed: { ...row.confirmed, unreconciled: false, missing: true } });
+      }
     });
   }
 
@@ -206,11 +280,13 @@ export class StoredReminderPersistence implements ReminderPersistence {
 }
 
 export function createMemoryReminderPersistence(): ReminderPersistence {
+  let order = 0;
   const journals = new Map<string, ReminderJournal>();
   const suspended = new Set<string>();
   let wake: ReminderWakeIndex = { reported: null, effectiveAt: null };
   const run: Runner = async (operation) => operation();
   return new StoredReminderPersistence(false, {
+    nextOrder: () => ++order,
     get: (id) => structuredClone(journals.get(id)),
     list: () => structuredClone([...journals.values()]),
     save: (journal) => { journals.set(journal.id, structuredClone(journal)); },

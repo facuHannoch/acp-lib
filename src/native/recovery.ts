@@ -1,3 +1,5 @@
+import type { ReminderSync } from "./reminders/sync.ts";
+import type { ReminderOpenResult } from "./reminders/wire.ts";
 import type { ResponseMessage } from "../types.ts";
 import { codeOf } from "./errors.ts";
 import type { HarnessClient, ItemStatus, PendingChannelChange, StoredMessage, TurnStatus } from "../native-harness/src/client.ts";
@@ -48,25 +50,44 @@ export async function readCompleteMessage(client: HarnessClient, messageId: stri
 /** The catalog and startup edits are installed before recovered work can start. */
 export async function openOrCreate(
   client: HarnessClient, config: Pick<Parameters<HarnessClient["openSession"]>[0], "sessionId" | "config">,
-  batch: PendingChannelChange[], tools: Parameters<HarnessClient["openSession"]>[0]["tools"], signal: AbortSignal,
+  batch: PendingChannelChange[], tools: Parameters<HarnessClient["openSession"]>[0]["tools"], signal: AbortSignal, reminders?: ReminderSync,
 ) {
   const changes = { ...(batch.length ? { channelChanges: batch } : {}), ...(tools ? { tools } : {}) };
-  const open = () => {
+  let staged = await reminders?.stage() ?? [];
+  const execute = async (fresh: boolean) => {
     signal.throwIfAborted();
-    return client.openSession({ sessionId: config.sessionId, config: config.config, ...changes });
-  };
-  try {
-    try { return await open(); }
-    catch (error) {
-      // An identical open on the same connection returns its original result.
-      if (codeOf(error) !== "timeout") throw error;
-      return await open();
+    const params = { sessionId: config.sessionId, config: config.config, ...changes,
+      ...(fresh ? { participants: [], channels: {} } : {}) };
+    type Result = Awaited<ReturnType<HarnessClient["openSession"]>> & ReminderOpenResult;
+    const request = (): Promise<Result> => {
+      const payload = { ...params, ...(staged.length ? { reminderChanges: staged } : {}) };
+      return fresh ? client.createSession({ ...payload, participants: [], channels: {} }) : client.openSession(payload);
+    };
+    let result: Result;
+    try {
+      try { result = await request(); }
+      catch (error) {
+        if (fresh || codeOf(error) !== "timeout") throw error;
+        result = await request();
+      }
+    } catch (error) {
+      if (!staged.length || codeOf(error) !== "invalid_params") throw error;
+      await reminders!.rejectedBatch(staged);
+      staged = [];
+      result = await request();
     }
-  } catch (error) {
+    return result;
+  };
+  let fresh = false;
+  let result;
+  try { result = await execute(false); }
+  catch (error) {
     if (codeOf(error) !== "not_found") throw error;
+    fresh = true;
+    result = await execute(true);
   }
-  signal.throwIfAborted();
-  return client.createSession({ sessionId: config.sessionId, config: config.config, participants: [], channels: {}, ...changes });
+  await reminders?.opened(client, result, config.sessionId, fresh);
+  return result;
 }
 
 /** Recover only the stopped turn, on one connection and within one shared deadline. */

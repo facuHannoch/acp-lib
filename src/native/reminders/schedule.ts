@@ -23,7 +23,7 @@ export type ReminderExpiry =
   | null;
 
 export type ReminderErrorCode =
-  | "reminders_unavailable" | "reminders_unsupported" | "invalid_schedule"
+  | "stale" | "invalid_state" | "routines_unavailable" | "reminders_unavailable" | "reminders_unsupported" | "invalid_schedule"
   | "invalid_input" | "invalid_policy" | "unauthorized" | "limit_exceeded"
   | "channel_missing" | "channel_retired" | "conflict" | "not_found";
 
@@ -60,10 +60,10 @@ export function normalizeReminderSchedule(
   return { at };
 }
 
-export function reminderExpiryPolicy(expiresAfter: number | null | undefined): ReminderExpiryPolicy {
+export function reminderExpiryPolicy(expiresAfter: number | null | undefined, limits = defaultReminderLimits): ReminderExpiryPolicy {
   if (expiresAfter === undefined) return { kind: "default" };
   if (expiresAfter === null) return { kind: "unlimited" };
-  if (!Number.isSafeInteger(expiresAfter) || expiresAfter <= 0) {
+  if (!Number.isSafeInteger(expiresAfter) || expiresAfter < limits.minGraceMs || expiresAfter > limits.maxGraceMs) {
     throw new ReminderError("invalid_input", "Invalid reminder expiry duration");
   }
   return { kind: "duration", milliseconds: expiresAfter };
@@ -83,7 +83,7 @@ export function resolveReminderExpiry(
   const lead = "every" in schedule ? schedule.every : dueAt - acceptedAt;
   const graceMs = policy.kind === "duration"
     ? policy.milliseconds
-    : Math.max(limits.minGraceMs, Math.min(limits.maxGraceMs, 2 * lead));
+    : Math.max(limits.minGraceMs, Math.min(limits.maxGraceMs, limits.expiryMultiplier * lead));
   const at = dueAt + graceMs;
   if (!Number.isSafeInteger(at)) throw new ReminderError("invalid_input", "Invalid reminder expiry instant");
   return { kind: "absolute", at, graceMs };

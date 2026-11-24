@@ -1,3 +1,4 @@
+import type { WireReminderEvent } from "../native/reminders/wire.ts";
 /**
  * Where a conversation's controller is created (controller-interface spec, Seams and files). A
  * conversation bound to a native harness channel gets a `NativeController`; every other conversation
@@ -15,6 +16,7 @@ export interface NativeControllerBinding {
   /** The conversation's stable id. */
   readonly channelId: string;
   readonly defaultSender?: string;
+  readonly onReminderEvent?: (event: WireReminderEvent) => void;
 }
 
 export function createController(config: AgentControllerConfig & { native?: NativeControllerBinding }): ConversationController {
@@ -23,6 +25,7 @@ export function createController(config: AgentControllerConfig & { native?: Nati
     return new NativeController({
       host: config.native.host,
       channelId: config.native.channelId,
+      onReminderEvent: config.native.onReminderEvent,
       ...(config.native.defaultSender ? { defaultSender: config.native.defaultSender } : {}),
       // A conversation that asked to load its provider session has history of its own.
       resumed: config.sessionId !== undefined,

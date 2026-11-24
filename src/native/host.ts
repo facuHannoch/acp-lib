@@ -1,3 +1,6 @@
+import type { ReminderSync } from "./reminders/sync.ts";
+import type { WireChange } from "./reminders/wire.ts";
+import type { ReminderNotification, WireReminderEvent } from "./reminders/wire.ts";
 import { deferred, launchNativeConnection, type Deferred } from "./connection.ts";
 import { NativeUsageLedger } from "../metering/native/ledger.ts";
 import { summarizeModelUsage } from "./usage.ts";
@@ -64,6 +67,7 @@ export interface ChannelView {
 /** What a conversation's controller implements to receive its channel. */
 export interface ChannelPort {
   event(event: ChannelEvent): void;
+  reminderEvent?(event: WireReminderEvent): void;
   /** After every open, before any live event of that connection is delivered. */
   reconcile(view: ChannelView): void;
   /** The connection was lost. Work stays pending: the next open reconciles it. */
@@ -78,6 +82,7 @@ export interface ChannelPort {
 /** What a live connection to a harness is, for the host. Tests substitute it; production spawns a process. */
 export interface NativeConnection {
   readonly client: HarnessClient;
+  onReminderNotification?(listener: (event: ReminderNotification) => void): void;
   /** Settles when the connection is gone (process exit, pipe closed, protocol failure). */
   readonly closed: Promise<void>;
   /** Ends the process. Graceful first (closing its input is a stop for the harness), then forced. */
@@ -129,6 +134,9 @@ export class NativeHarnessHost {
   readonly records: NativeHostRecords;
   readonly #config: NativeHarnessHostConfig;
   readonly #log: Logger;
+  reminderSync?: ReminderSync;
+  changeReminder(change: WireChange) { return this.reminderSync?.dispatch(this.#client(), change); }
+  refreshReminders(channel?: string, id?: string) { return this.reminderSync?.refresh(this.#client(), channel, id); }
   #state: NativeHostState = "stopped";
   #connection: NativeConnection | null = null;
   #starting: Promise<void> | null = null;
@@ -336,6 +344,7 @@ export class NativeHarnessHost {
           this.#replaySubmissions();
           this.#setState("running");
           void this.flushWorkerDelivery();
+          void this.reminderSync?.dispatch(live.client).catch(error => this.#log.warn("reminder_dispatch_failed", { error: String(error) }));
           void live.closed.then(async () => {
             // A loss at the open boundary must reopen after the old start has retired.
             await this.#starting?.catch(() => undefined);
@@ -367,6 +376,14 @@ export class NativeHarnessHost {
   /** Handlers first, then initialize, then load (or create) with the pending channel changes; then reconcile. */
   async #open(connection: NativeConnection, signal: AbortSignal): Promise<void> {
     const { client } = connection;
+    let reminderOpen = false;
+    const earlyReminders: ReminderNotification[] = [];
+    const reminderEvent = (event: ReminderNotification) =>
+      this.reminderSync?.notification(event, (channel, payload) => this.#ports.get(channel)?.reminderEvent?.(payload));
+    connection.onReminderNotification?.(event => {
+      if (!reminderOpen) earlyReminders.push(event);
+      else if (this.#connection === connection) reminderEvent(event);
+    });
     this.#early = [];
     client.onChannelEvent((event) => this.#route(connection, event));
     client.onSessionEvent(event => {
@@ -398,7 +415,10 @@ export class NativeHarnessHost {
     // The startup cutoff: what is pending now goes inside the open and is applied before any work
     // can run. An edit made after this line is sent through the live channel methods once open.
     const batch = await this.#changes.startupBatch(signal);
-    const opened = await openOrCreate(client, this.#config, batch, functions?.catalog(), signal);
+    await this.reminderSync?.initialize(initialized.description);
+    const opened = await openOrCreate(client, this.#config, batch, functions?.catalog(), signal, this.reminderSync);
+    for (const event of earlyReminders.splice(0)) reminderEvent(event);
+    await this.reminderSync?.settled();
     signal.throwIfAborted();
     await this.#changes.acknowledgeOpen(opened.channelChanges ?? [], signal);
     signal.throwIfAborted();
@@ -438,6 +458,8 @@ export class NativeHarnessHost {
     this.#channels.clear();
     for (const channel of view.status.channels) this.#channels.set(channel.channel, channel);
     this.#connection = connection;
+    reminderOpen = true;
+    for (const event of earlyReminders.splice(0)) reminderEvent(event);
     this.#reconcile(view, observed);
     for (const turn of view.turns) {
       if (turn.state !== "running" && turn.state !== "suspended") this.#approvals.end(turn.channel, turn.turnId);

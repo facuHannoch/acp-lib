@@ -1,3 +1,5 @@
+import { separateReminderNotifications } from "./reminders/notifications.ts";
+import type { ReminderNotification } from "./reminders/wire.ts";
 import { HarnessClient, createStdioTransport } from "../native-harness/src/client.ts";
 import { prepareNativeLaunch, onceDispose } from "../launcher.ts";
 import type { Logger } from "../logger.ts";
@@ -30,8 +32,9 @@ export async function launchNativeConnection(config: NativeHarnessHostConfig, lo
     const text = await new Response(child.stderr).text().catch(() => "");
     if (text.trim()) log.warn("native_harness_stderr", { text: text.slice(-4000) });
   })();
+  let notify: (event: ReminderNotification) => void = () => {};
   const transport = createStdioTransport({
-    readable: child.stdout,
+    readable: separateReminderNotifications(child.stdout, event => notify(event)),
     exited: child.exited,
     async write(bytes) { child.stdin.write(bytes); await child.stdin.flush(); },
     async end() { await child.stdin.end(); },
@@ -42,6 +45,7 @@ export async function launchNativeConnection(config: NativeHarnessHostConfig, lo
   const client = new HarnessClient(transport, config.requestTimeoutMs ?? 30_000);
   return {
     client,
+    onReminderNotification: listener => { notify = listener; },
     closed: closed.promise,
     async kill() {
       client.close(); // closes the harness's input: it stops, recording running turns interrupted

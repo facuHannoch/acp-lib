@@ -8,11 +8,12 @@ export const REMINDER_SCHEMA = `
   CREATE INDEX IF NOT EXISTS reminder_conversation ON reminder_journals(conversation_id, id);
   CREATE TABLE IF NOT EXISTS reminder_changes (
     id TEXT NOT NULL REFERENCES reminder_journals(id) ON DELETE CASCADE,
-    change_id INTEGER NOT NULL, value TEXT NOT NULL, PRIMARY KEY (id, change_id)
+    change_id INTEGER NOT NULL, staging_order INTEGER NOT NULL UNIQUE, value TEXT NOT NULL, PRIMARY KEY (id, change_id)
   );
   CREATE TABLE IF NOT EXISTS reminder_cache (
-    id TEXT PRIMARY KEY REFERENCES reminder_journals(id) ON DELETE CASCADE, value TEXT NOT NULL
+    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, observation INTEGER NOT NULL, value TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS reminder_staging_clock (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS reminder_suspensions (conversation_id TEXT PRIMARY KEY);
   CREATE TABLE IF NOT EXISTS reminder_wake_index (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1), value TEXT NOT NULL
@@ -25,7 +26,7 @@ type ValueRow = { value: string };
 
 export function createSqliteReminderPersistence(database: Database, write: Runner, read: Runner): ReminderPersistence {
   const journalFrom = (row: JournalRow): ReminderJournal => {
-    const cache = database.query<ValueRow, [string]>("SELECT value FROM reminder_cache WHERE id = ?").get(row.id);
+    const cache = database.query<ValueRow & { observation: number }, [string]>("SELECT value, observation FROM reminder_cache WHERE id = ?").get(row.id);
     const changes = database.query<ValueRow, [string]>(
       "SELECT value FROM reminder_changes WHERE id = ? ORDER BY change_id",
     ).all(row.id);
@@ -33,18 +34,20 @@ export function createSqliteReminderPersistence(database: Database, write: Runne
       id: row.id,
       conversationId: row.conversation_id,
       highWater: row.high_water,
-      ...(cache ? { confirmed: JSON.parse(cache.value) as Reminder } : {}),
+      ...(cache ? { confirmed: JSON.parse(cache.value) as Reminder, observation: cache.observation } : {}),
       changes: changes.map(({ value }) => JSON.parse(value) as ReminderChange),
     };
   };
   return new StoredReminderPersistence(true, {
+    nextOrder: () => database.query<{ value: number }, []>(`INSERT INTO reminder_staging_clock VALUES (1, 1)
+      ON CONFLICT(id) DO UPDATE SET value = value + 1 RETURNING value`).get()!.value,
     get(id) {
-      const row = database.query<JournalRow, [string]>("SELECT * FROM reminder_journals WHERE id = ?").get(id);
+      const row = database.query<JournalRow, [string]>("SELECT * FROM (         SELECT * FROM reminder_journals UNION ALL SELECT id, conversation_id, 0 FROM reminder_cache         WHERE id NOT IN (SELECT id FROM reminder_journals)       ) WHERE id = ?").get(id);
       return row ? journalFrom(row) : undefined;
     },
-    list: () => database.query<JournalRow, []>("SELECT * FROM reminder_journals ORDER BY id").all().map(journalFrom),
+    list: () => database.query<JournalRow, []>("SELECT * FROM reminder_journals UNION ALL SELECT id, conversation_id, 0 FROM reminder_cache WHERE id NOT IN (SELECT id FROM reminder_journals) ORDER BY id").all().map(journalFrom),
     save(journal) {
-      database.query(`INSERT INTO reminder_journals VALUES (?, ?, ?)
+      if (journal.highWater > 0) database.query(`INSERT INTO reminder_journals VALUES (?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET high_water = excluded.high_water`).run(journal.id, journal.conversationId, journal.highWater);
       const existing = database.query<{ change_id: number }, [string]>(
         "SELECT change_id FROM reminder_changes WHERE id = ?",
@@ -54,16 +57,16 @@ export function createSqliteReminderPersistence(database: Database, write: Runne
         if (!retained.has(change_id)) database.query("DELETE FROM reminder_changes WHERE id = ? AND change_id = ?").run(journal.id, change_id);
       }
       for (const change of journal.changes) {
-        database.query(`INSERT INTO reminder_changes VALUES (?, ?, ?)
+        database.query(`INSERT INTO reminder_changes VALUES (?, ?, ?, ?)
           ON CONFLICT(id, change_id) DO UPDATE SET value = excluded.value WHERE value <> excluded.value`
-        ).run(journal.id, change.changeId, JSON.stringify(change));
+        ).run(journal.id, change.changeId, change.stagingOrder, JSON.stringify(change));
       }
       if (journal.confirmed) {
-        database.query(`INSERT INTO reminder_cache VALUES (?, ?)
-          ON CONFLICT(id) DO UPDATE SET value = excluded.value`).run(journal.id, JSON.stringify(journal.confirmed));
+        database.query(`INSERT INTO reminder_cache VALUES (?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET value = excluded.value, observation = excluded.observation`).run(journal.id, journal.conversationId, journal.observation ?? 0, JSON.stringify(journal.confirmed));
       }
     },
-    remove: (id) => { database.query("DELETE FROM reminder_journals WHERE id = ?").run(id); },
+    remove: (id) => { database.query("DELETE FROM reminder_cache WHERE id = ?").run(id); database.query("DELETE FROM reminder_journals WHERE id = ?").run(id); },
     suspended: (id) => database.query("SELECT 1 FROM reminder_suspensions WHERE conversation_id = ?").get(id) !== null,
     setSuspended(id, suspended) {
       if (suspended) database.query("INSERT OR IGNORE INTO reminder_suspensions VALUES (?)").run(id);

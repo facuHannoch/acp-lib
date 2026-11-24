@@ -1,3 +1,4 @@
+import type { WireReminderEvent } from "./reminders/wire.ts";
 import { nativeConversationCapabilities } from "./capabilities.ts";
 import { advanceItemReceipts } from "./item-receipts.ts";
 import { terminalNativeTurns } from "./metering.ts";
@@ -57,6 +58,7 @@ export interface NativeControllerConfig {
   /** True when the conversation has existing history (acp-client's own records); reported as `resumed`. */
   readonly resumed?: boolean;
   readonly logger?: Logger;
+  readonly onReminderEvent?: (event: WireReminderEvent) => void;
 }
 
 type Outcome = { outcome: "completed" | "failed" | "interrupted"; error?: string; uncertainCalls?: readonly string[] };
@@ -209,14 +211,10 @@ export class NativeController implements ConversationController, ChannelPort {
   setConfig(id: string): Promise<void> {
     return Promise.reject(new UnsupportedError(`a native conversation has no config option ${id}`));
   }
-  /** Usage reports are not forwarded yet: the harness keeps them per model call (`session/model-calls`). */
   subscribeUsageUpdate(_listener: UsageListener): () => void { return () => undefined; }
   get currentSessionId(): string | null { return this.#host.sessionId; }
-  get conversationCapabilities(): ConversationCapabilities {
-    return nativeConversationCapabilities();
-  }
+  get conversationCapabilities(): ConversationCapabilities { return nativeConversationCapabilities(this.#host.reminderSync?.supported); }
 
-  /** The last confirmed delivery milestone of an input this conversation sent, if any. */
   receiptOf(messageId: string): "delivered" | "seen" | undefined { return this.#receipts.get(messageId); }
 
   /**
@@ -284,6 +282,7 @@ export class NativeController implements ConversationController, ChannelPort {
     return turn;
   }
 
+  reminderEvent(event: WireReminderEvent): void { this.#config.onReminderEvent?.(event); }
   event(event: ChannelEvent): void {
     const payload = event.event;
     if (payload.type === "channel_state") { this.#notifyConnection(); return; }
