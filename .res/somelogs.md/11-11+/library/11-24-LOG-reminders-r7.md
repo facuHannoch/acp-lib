@@ -35,3 +35,14 @@ while a cancel is pending/maybe_sent is refused with `conflict` (minor, non-bloc
   (`5e98d46`): clean textually, FAILS typecheck at `src/native/recovery.ts(64)`: our `reminderChanges` entry type is not
   discriminated by op like the harness `CreateParams`/`LoadResultOpenParams`. Fix and joint real-stdio acceptance assigned to cod2b-t.
 - R9 (routines) still needs a separate harness R-H4 contract review.
+
+- R8 reviews: clad2a `a003ab6` (not approved: D1 plus survivors), fix `f0e7420`, test-only `25f9d2d`; follow-up review `4de27e9`: APPROVE.
+  core-p clean-copy gate on `25f9d2d`: typecheck clean, plain `bun test` 2,124 / 219 files, 0 fail, 35 snapshots; host.ts 905/909;
+  `src/native-harness` diff empty. cod2b-t's own R8-only run of `25f9d2d` hit the pre-existing startup-channel flake twice
+  (approved harness d9f24b8 fixes that assertion); core-p's run did not.
+- Joint R-H3 (cod2b-t): `joint-r8-rh2` `b01c096` = R8 `25f9d2d` + approved harness `d9f24b8` + protocol fix `5fa49cd` + the real-stdio
+  acceptance file `reminders-joint.test.ts`. core-p clean-copy gate: typecheck clean, plain `bun test` 2,146 / 223 files, 0 fail,
+  35 snapshots; host.ts 908/909, native/controller.ts 591/599, others at baseline; no harness source change against `d9f24b8`.
+  cod2b-t: whole joint file 20/20 and each test 20/20; Clad1a independently confirmed the harness side at the same SHA
+  (40/0 on the five reminder files, 3 extra joint runs). clad2a independent review of the joint tests: in progress.
+- Non-blocking residuals (clad2a): G4b `isSafeInteger` guard in `isWakeSchedule` untested; D3b unknown-policy display expiry `null`.
