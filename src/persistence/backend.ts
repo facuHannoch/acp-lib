@@ -1,3 +1,4 @@
+import type { ReminderPersistence } from "./reminders.ts";
 import type { WorkerPersistence } from "./workers.ts";
 import type { WorkerDeliveryRepository } from "./worker-delivery-contract.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
@@ -790,6 +791,7 @@ export interface PersistenceCapabilities {
   readonly fullTextSearch: boolean;
   readonly identity: boolean;
   readonly channels: boolean;
+  readonly reminders?: boolean;
   readonly workerDelivery?: boolean;
   readonly workers?: boolean;
   readonly auditOutbox: boolean;
@@ -817,6 +819,7 @@ export interface PersistenceScope {
   readonly recoveryCheckpoints?: ConversationRecoveryCheckpointRepository;
   readonly identity?: IdentityPersistence;
   readonly channels?: ChannelPersistence;
+  readonly reminders?: ReminderPersistence;
   readonly workerDelivery?: WorkerDeliveryRepository;
   readonly workers?: WorkerPersistence;
   readonly identityDelivery?: IdentityDeliveryPersistence;

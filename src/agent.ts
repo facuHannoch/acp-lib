@@ -1,3 +1,4 @@
+import { remindersForAgent } from "./native/reminders/service.ts";
 import { resolveProviderStart } from "./conversation-startup.ts";
 import { withDelegationTools } from "./orchestrator/native-delegation.ts";
 import { AcpWorkerDelivery } from "./orchestrator/acp-delivery.ts";
@@ -12,7 +13,7 @@ import {
   type AgentSessionId,
 } from "./agent-ids.ts";
 import { NativeHarnessHost } from "./native/host.ts";
-import { protectPendingRetirement } from "./agent/native-channel-lifecycle.ts";
+import { protectedChannels } from "./agent/native-channel-lifecycle.ts";
 import {
   AgentAdapterRegistry,
   type AgentAdapterRegistration,
@@ -114,6 +115,7 @@ export class Agent {
    * for every native conversation of this Agent. Null otherwise.
    */
   readonly nativeHarness: NativeHarnessHost | null;
+  get reminders() { return remindersForAgent(this); }
   readonly conversations: AgentConversationManager;
   /** @internal Delegation routes use this pool. */
   readonly orchestrator?: Orchestrator;
@@ -158,10 +160,7 @@ export class Agent {
     if (config.orchestrator) validateOrchestrator(config.orchestrator, persistence, resolveConversationRecordCapture(config.capture).message);
     this.persistence = persistence;
     this.adapters = adapters;
-    const channels = persistence.capabilities.channels ? persistence.channels : undefined;
-    if (config.harness && persistence.capabilities.channels && !channels) {
-      throw new Error("The persistence backend advertises channel intents but provides no channels repository");
-    }
+    const channels = config.harness ? protectedChannels(persistence) : undefined;
     this.nativeHarness = config.harness
       ? new NativeHarnessHost({
         sessionId: id,
@@ -172,7 +171,7 @@ export class Agent {
           ? { launcher: config.harness.launcher ?? config.conversationDefaults!.launcher }
           : {}),
         ...(config.conversationDefaults?.logger ? { logger: config.conversationDefaults.logger } : {}),
-      }, channels && protectPendingRetirement(persistence, channels), persistence.workerDelivery)
+      }, channels, persistence.workerDelivery)
       : null;
     this.audit = audit;
     const logger = config.conversationDefaults?.logger ?? noopLogger;
