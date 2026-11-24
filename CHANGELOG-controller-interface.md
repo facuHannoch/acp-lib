@@ -1,5 +1,16 @@
 # Controller interface
 
+## Native one-off reminders
+
+- Agent-owned native conversations expose `conversation.reminders`, and
+  `agent.reminders.list()` pages reminder views. New events report local
+  intent outcomes and live harness changes. The current harness accepts
+  one-off schedules. Routines remain disabled.
+- SQLite schema 22 adds the offline intent journal, last-confirmed cache
+  and wake index. The file-backed SQLite owner can wake a stopped harness
+  while the Agent is running. Optional idle stop respects near-due work
+  through the harness's atomic stop check.
+
 ## ACP startup
 
 - An explicit stop or superseding ACP connection attempt rejects with `ConnectionCancelledError`

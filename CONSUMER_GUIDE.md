@@ -1274,6 +1274,133 @@ The default acp-client transcript remains available independently. Use
 totals, missing field counts, and completeness. Usage is an explicit scan
 of the model-call pages. For per-turn records, see [Native turn metering](#native-turn-metering).
 
+### One-off reminders (experimental)
+
+Use `conversation.reminders` on an Agent-owned native conversation. Check
+`conversation.conversationCapabilities.reminders` before offering controls.
+Native support is provisional before the harness connects. On initialize,
+the host checks the harness description for `capabilities.reminders` and
+reads its `reminderLimits`. ACP conversations and harnesses that lack support
+reject reminder operations with `ReminderError` code `reminders_unsupported`.
+
+```ts
+import type { Agent, AgentConversation } from "@qlairoslabs/acp-client";
+
+export async function scheduleFollowUp(conversation: AgentConversation) {
+  if (!conversation.conversationCapabilities.reminders) return;
+  const reminder = await conversation.reminders.create({
+    text: "Check whether the build has finished and report the result.",
+    schedule: { in: 5 * 60_000 },
+  });
+  if (reminder.state === "blocked") {
+    console.warn("Reminder blocked", reminder.id, reminder.reason);
+  }
+  return reminder;
+}
+
+export async function listReminderPages(agent: Agent) {
+  let after: string | undefined;
+  do {
+    const { items, nextCursor } = await agent.reminders.list({ after, limit: 50 });
+    for (const reminder of items) console.log(reminder.id, reminder.status, reminder.state);
+    after = nextCursor ?? undefined;
+  } while (after !== undefined);
+}
+```
+
+- **Schedule.** Use `{ at: epochMilliseconds }` or `{ in: delayMilliseconds }`.
+  The library converts relative time to an absolute time at acceptance and
+  keeps it across retries and restarts. The bundled harness requires at least
+  two minutes of lead time. It advertises `maxActiveRoutinesPerChannel: 0`.
+  `every` and `cron` requests fail with `routines_unavailable`; routines
+  need a separate harness release.
+- **Expiry.** Grace starts at the scheduled instant. Omit `expiresAfter`
+  for twice the lead time, clamped to five minutes through 24 hours with the
+  bundled limits. Supply an integer millisecond duration within those bounds
+  or `null` to allow late delivery without expiry. At the expiry instant
+  the reminder expires without queuing a notice. A schedule edit resolves
+  a new default grace from the new lead and preserves an earlier explicit
+  duration or `null` unless you supply a replacement. An expiry-only edit
+  uses the saved schedule anchor. Pause and resume do not extend the expiry
+  or move the scheduled time.
+- **Read or edit.** Use `get(id)` (returns `undefined` for a missing view)
+  or `list()` for the conversation. Use `update(id, patch)` for text, a new
+  schedule or expiry, and `pause(id)`, `resume(id)` or `cancel(id)` for
+  lifecycle changes. Cancelling a reminder cannot retract a notice already
+  queued. The Agent-wide list returns `{ items, nextCursor }`, defaulting to
+  50 items with a maximum of 100. Pass the cursor as `after` for the next page.
+- **Offline writes.** With a durable reminders repository, stopped writes are
+  journaled and applied on the next executable open before due work runs.
+  A stopped write does not directly start the harness. Eligible pending work
+  can arm a wake. Without a durable repository, mutations that need to write
+  offline reject with `reminders_unavailable`. In-flight changes retain their
+  identity and payload on retry. A blocked journal entry stays visible with
+  its reason. Use `discardBlocked(id)` to clear the local refusal. To correct
+  a blocked create, call `create()` again for a new ID.
+- **Read freshness.** `state` describes the local view (`pending`,
+  `maybe_sent`, `blocked` or `confirmed`), while `status` describes the
+  reminder lifecycle. Offline reads combine the last-confirmed cache and
+  local intents. The harness rows are authoritative. The host reconciles at
+  open and refreshes reads while connected, so re-read after reconnect for
+  current state.
+
+`AgentConfig.reminders.authorize(conversationId, operation)` can veto host
+changes. Operations are `create`, `update` and `cancel`. The `limits`
+option supplies local validation defaults before negotiation. Harness
+limits take precedence when available. A host create can include additional
+`policyNames`. The library does not copy the destination channel's policy
+onto that request, and updates cannot replace the original names.
+
+Subscribe on the conversation for live updates. Extend exhaustive
+`AgentSessionEvent` and `AgentConversationEvent` switches for these events.
+
+| Event | When it appears |
+| --- | --- |
+| `reminder_intent_recorded` | A local change was journaled. |
+| `reminder_intent_confirmed`, `reminder_intent_blocked` | A live mutation returned its outcome. Read the cache after startup to get outcomes of changes submitted offline. |
+| `reminder_intent_discarded` | A local blocked entry was discarded or cancellation removed an unsent create. |
+| `reminder_changed` | The harness reported a row change, including an agent-created reminder. |
+| `reminder_fired` | A notice was queued. Use its `noticeId` to relate it to inbox activity. This event does not indicate a completed turn. |
+| `reminder_cancelled`, `reminder_expired` | The harness cancelled or expired the reminder. |
+
+The harness tools `schedule_reminder`, `list_reminders` and
+`cancel_reminder` are scoped to the calling channel and subject to its
+tool policy. Historical events are not replayed. Read reminder rows and
+normal inbox or turn history after reconnect.
+
+#### Cold wake and idle stop
+
+Only an Agent holding the file-backed SQLite owner lock arms a cold wake.
+While running, the harness owns reminder scheduling. While stopped, the
+host uses the earliest eligible deadline, including any earlier validation
+wake from a pending change. Validation can launch the host early without
+moving the reminder's schedule. Paused or suspended work contributes no
+eligible deadline from the harness. Executable opens and deadline events
+share a revision fence for the same session. Older revisions and conflicting
+values at the same revision are ignored, and conflicts are logged. Only a
+replacement session starts a new fence.
+
+`agent.nativeHarness.stop()` keeps the wake armed. `agent.close()` clears the
+timer and retains the stored wake for the next Agent open. Each cold timer
+wait is capped at 60 seconds and the wall clock is checked again before
+launching. Wakes only run while acp-client is running. Starting the process
+and reopening its session adds delay. If acp-client dies after the harness
+commits a new deadline but before acp-client saves it, the next eligible
+open recovers it. The reminder can then run late or expire.
+
+Configure optional idle stop under `AgentConfig.harness`. A positive
+`idleStopMs` enables it. Omit it or set it to zero to leave it off.
+`idleStopWindowMs` defaults to zero, and an attached conversation can
+override it through its runtime settings. The host uses the largest window
+for channels with active confirmed reminders. The optional `reminderTimer`
+injects a clock and cancellable timer for wake and idle checks.
+
+Idle stop waits until local work is clear, then asks the harness to stop
+atomically with `session/stop { ifIdle: true, unlessDueWithinMs }`.
+The harness can refuse with `busy` or `next_due_soon`. A refusal leaves
+the session running. Work that arrives after a successful idle stop can
+start it again.
+
 ### Native turn metering
 
 Agent-owned native conversations meter turns by default (`best_effort`). The

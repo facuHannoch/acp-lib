@@ -4,7 +4,8 @@ For consumers of the published `@qlairoslabs/acp-client` 0.12.1, including
 `~agents` (`libs/agents/agents-core`). See the [consumer guide](CONSUMER_GUIDE.md)
 for complete examples.
 
-**Status.** This note covers `alpha` through `fb20ed6`. The package version
+**Status.** This note covers `alpha` through `fb20ed6` and the one-off
+reminders in `pre-alpha-r8` at `b53c9f2`. The package version
 remains 0.12.1 and 0.13 is unpublished. For a local trial, point a disposable
 consumer checkout at a local archive of the target code and use a copy of the
 database. For example, use a `file:/absolute/path/to/acp-client-archive`
@@ -14,23 +15,27 @@ archive's dependencies available before starting the consumer.
 ## Before you upgrade
 
 - **Back up the SQLite Agent databases before opening them with the new code.**
-  A 0.12.1 schema-16 database opens at schema 21. The migration is one way.
+  A 0.12.1 schema-16 database opens at schema 22 on the reminders build. The migration is one way.
   Older code refuses a migrated database. To roll back, restore the old database
   backup with the matching library version.
 - The upgrade adds the schema-17 durable channel intents and nullable
   `controller_kind`, schema-18 worker assignment and delivery storage, schema-19
   worker records, schema-20 assignment and delivery columns, and schema-21
-  native metering proof on the operation index. The upgrade also adds the worker
+  native metering proof on the operation index, and schema-22 reminder intents,
+  cache and wake state. The upgrade also adds the worker
   `role` to conversation rows where it is absent.
 - Separate persisted native harness data from the Agent database. If using
-  native conversations, retain the harness home across restarts.
+  native conversations, retain the harness home across restarts. The harness
+  has its own storage version. Its first durable reminder write activates
+  format 7, which older harness binaries refuse.
 
 ## Breaking changes for 0.12.1 consumers
 
 The package entry at `510e2a7` retained all 828 exports from 0.12.1 and
 had 913 exports. At `fb20ed6` it has 915, including the new
 `MessageStatus` and `MessageStatusEvent` types. The package exports map and
-dependencies are unchanged through `fb20ed6`.
+dependencies are unchanged through `fb20ed6`. The reminders candidate
+at `b53c9f2` has 924 exports, including nine new reminder names.
 `AgentController` remains a deprecated value and type alias of
 `HarnessController`.
 
@@ -47,6 +52,7 @@ dependencies are unchanged through `fb20ed6`.
 | ACP startup can be deferred or cancelled. | Handle `"deferred"` in reopen status switches and distinguish `ConnectionCancelledError` from an ordinary connection failure. |
 | `AgentConversationEvent` and `AgentSessionEvent` add permission events and `items_receipt`. `turn_started` now requires `cause`. | Update exhaustive switches and mocks that construct a turn-start event. |
 | `AgentSessionEvent` and `AgentConversationEvent` gain `message_status`; `ActivityEvent` gains `provider_notice`. | Update exhaustive event and activity switches. |
+| The reminders build adds local and wire reminder events to `AgentSessionEvent` and `AgentConversationEvent`. | Extend exhaustive switches even if reminders are disabled in your application. |
 | `AgentEvent` includes `WorkerEvent`. `AgentEventBus` gains required `subscribeWorkers`. | Update exhaustive switches and bus doubles. `AgentEventNotification` still defaults to committed-record notifications, so ordinary `subscribe` listeners retain their type. |
 | `MeteringProvenance.source` gains `"native_ledger"`. | Extend exhaustive provenance switches, even if the application currently uses ACP only. |
 
@@ -78,6 +84,38 @@ also recognizes the Codex ACP fallback shape. Raw activity callbacks can
 read optional `meta` on `session_info` and `usage` for unmodeled update
 metadata. Narrow the value before reading adapter-specific fields. See
 [Provider notices](CONSUMER_GUIDE.md#provider-notices-retries-warnings-and-failures).
+
+## Native one-off reminders
+
+Use `conversation.reminders` on Agent-owned native conversations and page
+all reminder views through `agent.reminders.list({ after, limit })`.
+Check `conversationCapabilities.reminders`. Native support is provisional
+until negotiation. A compatible harness advertises `capabilities.reminders`
+and `reminderLimits`. ACP has no reminder support. Repeating schedules are
+refused with `routines_unavailable`.
+
+Custom backends can optionally expose a `reminders` repository and the
+`capabilities.reminders` flag. SQLite supplies the repository. Without
+durable storage, stopped mutations that need to write return
+`reminders_unavailable` as the `ReminderError.code`. SQLite journals
+offline changes for the next executable open. Reads while stopped show
+last-confirmed cached rows and local intents. A refused intent stays visible
+as blocked. Use `discardBlocked` to remove it locally and create a new ID
+when correcting a blocked create. The harness remains authoritative.
+
+The local `reminder_intent_recorded`, `reminder_intent_confirmed`,
+`reminder_intent_blocked` and `reminder_intent_discarded` events track
+writes. The harness separately reports `reminder_changed`, `reminder_fired`,
+`reminder_cancelled` and `reminder_expired`. A fired event means a notice
+was queued. Historical events are not replayed.
+
+Only the file-backed SQLite owner schedules a cold wake, while the Agent
+is running. Explicit harness stop retains the wake. Closing the Agent
+clears the timer and the next Agent open rearms from storage. Idle stop
+is opt-in through `harness.idleStopMs`. See the
+[one-off reminders guide](CONSUMER_GUIDE.md#one-off-reminders-experimental)
+for scheduling, expiry, cache freshness, tools, wake limitations and
+configuration.
 
 ## Permissions
 
