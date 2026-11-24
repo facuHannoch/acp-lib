@@ -1351,6 +1351,31 @@ limits take precedence when available. A host create can include additional
 `policyNames`. The library does not copy the destination channel's policy
 onto that request, and updates cannot replace the original names.
 
+Local validation and availability errors reject with a `ReminderError`.
+A blocked harness change stays in the journal and appears on a
+`ReminderView` with `state: "blocked"` and a `reason`. Some code names
+are shared, so check whether the operation rejected or returned a blocked
+view.
+
+| Where | Code | Meaning |
+| --- | --- | --- |
+| Local | `invalid_schedule` | The time is invalid or does not meet the minimum lead. |
+| Local | `invalid_input` | Invalid text, expiry, update patch or page size. |
+| Local | `conflict` | The edit conflicts with a terminal reminder or a cancellation already in progress. |
+| Local | `not_found` | The mutation has no matching editable reminder in this conversation. |
+| Local | `unauthorized` | The configured authorization callback refused the change. |
+| Local | `reminders_unavailable` | The mutation needs a live reminder service or durable storage. Agent-owned storage and service setup are required for this API. |
+| Local | `reminders_unsupported` | The conversation or connected harness lacks reminder support. |
+| Local | `routines_unavailable` | Repeating schedules are disabled. |
+| Harness | `invalid_policy` | The reminder names a policy the harness does not accept. |
+| Harness | `channel_missing`, `channel_retired` | The destination channel is missing or retired. |
+| Harness | `invalid_schedule` | The harness refused the scheduled time, acceptance anchor or expiry. |
+| Harness | `limit_exceeded` | A harness reminder limit was exceeded. |
+| Harness | `conflict` | The change would reuse an identity with different content or collide with an existing reminder. |
+| Harness | `not_found` | The target reminder is missing. |
+| Harness | `stale` | An unseen change ID is at or below the recorded high-water mark for the reminder. |
+| Harness | `invalid_state` | The requested change is incompatible with the reminder's current state. |
+
 Subscribe on the conversation for live updates. Extend exhaustive
 `AgentSessionEvent` and `AgentConversationEvent` switches for these events.
 
@@ -1395,7 +1420,11 @@ Configure optional idle stop under `AgentConfig.harness`. A positive
 `idleStopWindowMs` defaults to zero, and an attached conversation can
 override it through its runtime settings. The host uses the largest window
 for channels with active confirmed reminders. The optional `reminderTimer`
-injects a clock and cancellable timer for wake and idle checks.
+injects a clock and cancellable timer for wake and idle checks. Its
+`ReminderTimer` shape is structural. Supply `now(): number` for the current
+epoch time in milliseconds and `set(delayMs, task)` to schedule `task` after
+that many milliseconds. Return a `() => void` cancellation function from
+`set`. Without an override, the host uses the wall clock and unref'ed timers.
 
 Idle stop waits until local work is clear, then asks the harness to stop
 atomically with `session/stop { ifIdle: true, unlessDueWithinMs }`.

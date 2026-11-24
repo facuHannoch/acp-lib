@@ -4,9 +4,8 @@ For consumers of the published `@qlairoslabs/acp-client` 0.12.1, including
 `~agents` (`libs/agents/agents-core`). See the [consumer guide](CONSUMER_GUIDE.md)
 for complete examples.
 
-**Status.** This note covers `alpha` through `fb20ed6` and the one-off
-reminders in `pre-alpha-r8` at `2fd28d4`. The package version
-remains 0.12.1 and 0.13 is unpublished. For a local trial, point a disposable
+**Status.** These changes are on `alpha`. The package version remains 0.12.1
+and 0.13 is unpublished. For a local trial, point a disposable
 consumer checkout at a local archive of the target code and use a copy of the
 database. For example, use a `file:/absolute/path/to/acp-client-archive`
 dependency in the trial checkout or replace its local package link. Make the
@@ -34,8 +33,8 @@ archive's dependencies available before starting the consumer.
 The package entry at `510e2a7` retained all 828 exports from 0.12.1 and
 had 913 exports. At `fb20ed6` it has 915, including the new
 `MessageStatus` and `MessageStatusEvent` types. The package exports map and
-dependencies are unchanged through `fb20ed6`. The reminders candidate
-at `2fd28d4` has 924 exports, including nine new reminder names.
+dependencies are unchanged through `fb20ed6`. With one-off reminders, the package
+entry has 924 exports, including nine new reminder names.
 `AgentController` remains a deprecated value and type alias of
 `HarnessController`.
 
@@ -96,8 +95,8 @@ refused with `routines_unavailable`.
 
 Custom backends can optionally expose a `reminders` repository and the
 `capabilities.reminders` flag. SQLite supplies the repository. Without
-durable storage, stopped mutations that need to write return
-`reminders_unavailable` as the `ReminderError.code`. SQLite journals
+durable storage, stopped mutations that need to write reject with `reminders_unavailable`
+as the `ReminderError.code`. SQLite journals
 offline changes for the next executable open. Reads while stopped show
 last-confirmed cached rows and local intents. A refused intent stays visible
 as blocked. Use `discardBlocked` to remove it locally and create a new ID
