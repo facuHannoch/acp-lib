@@ -77,7 +77,7 @@ export function applyReminderChange(store: ReminderChanges, change: ReminderChan
   const defaulted = fields.expiresAfter === undefined && store.defaultedExpiry(reminderId);
   const grace = fields.expiresAfter !== undefined ? fields.expiresAfter : defaulted ? undefined : row.expiresAfter;
   const schedule = fields.schedule !== undefined || fields.expiresAfter !== undefined
-    ? normalizeReminderSchedule(fields.schedule?.at ?? row.schedule.at, fields.acceptedAt ?? row.acceptedAt, grace, now)
+    ? normalizeReminderSchedule(fields.schedule?.at ?? row.schedule.at, fields.acceptedAt ?? row.acceptedAt, grace, fields.acceptedAt === undefined ? Math.max(now, Date.parse(row.acceptedAt)) : now)
     : row;
   if (!schedule) return persist(block("invalid_schedule"));
   const state = fields.state ?? (row.state === "blocked" ? "active" : row.state);

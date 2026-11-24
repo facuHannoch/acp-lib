@@ -31,6 +31,10 @@ export function validateReminderArchive(state: ReminderArchiveState | undefined,
     if (!entry || !integer(entry.sequence) || entry.sequence <= sequence || entry.sequence > snapshot.revision ||
       typeof entry.defaultedExpiry !== "boolean" || !validRow(entry.reminder) || ids.has(entry.reminder.id) || (entry.original !== undefined && !text(entry.original))) return bad();
     const row = entry.reminder;
+    if (entry.defaultedExpiry) {
+      const defaulted = normalizeReminderSchedule(row.schedule.at, row.acceptedAt, undefined, Date.parse(row.acceptedAt));
+      if (defaulted?.expiresAfter !== row.expiresAfter) return bad();
+    }
     sequence = entry.sequence;
     ids.add(row.id);
     if (row.state === "done") {

@@ -54,7 +54,6 @@ export function createChannelScheduler(
   // Channels that may have pending input. Only an optimization and an idle
   // signal: beginTurn remains the authority on whether a turn starts.
   const waiting = new Set<string>();
-  const deferredResumes = new Map<string, number>();
   let started = false, stopped = false;
   let lifecycle: SessionLifecycle = "running";
   let suspension: { promise: Promise<LifecycleResult>; settle(result: LifecycleResult): void } | undefined;
@@ -269,14 +268,13 @@ export function createChannelScheduler(
       if (stopped) return stoppedResult;
       const resumed = storage.resumeChannel(channelId);
       if (!resumed.ok) return failedWith(resumed.error);
-      // Startup can restore durable turn state before releasing inference.
+      // An explicit resume runs its checkpoint independently of session.start.
       if (before !== "open") emitState(channelId, resumed.revision);
       for (const reminder of resumed.value.unblockedReminders ?? [])
         emit({ channel: reminder.channel, revision: resumed.revision, event: { type: "reminder_changed", reminder } });
       if (resumed.value.turn) {
         emit({ channel: channelId, revision: resumed.revision, event: { type: "turn_resumed", turnId: String(resumed.value.turn.turnId) } });
-        if (started) run({ channelId, turnId: resumed.value.turn.turnId, resumed: true });
-        else deferredResumes.set(channelId, resumed.value.turn.turnId);
+        run({ channelId, turnId: resumed.value.turn.turnId, resumed: true });
       } else if (before !== "open") {
         rescan();
         pump(channelId);
@@ -308,7 +306,6 @@ export function createChannelScheduler(
       }, (outcome, revision) => {
         if (!outcome.interrupted) return outcome;
         // Commit first, then cancel: whatever the aborted work returns is already fenced.
-        deferredResumes.delete(channelId);
         const handle = live.get(channelId);
         if (handle?.turnId === turnId) { live.delete(channelId); handle.abort.abort(new Error(reason)); }
         ended(outcome.turn, revision);
@@ -338,8 +335,6 @@ export function createChannelScheduler(
     start() {
       if (started || stopped) return;
       started = true;
-      for (const [channelId, turnId] of deferredResumes) run({ channelId, turnId, resumed: true });
-      deferredResumes.clear();
       for (const channelId of [...waiting]) pump(channelId);
     },
     suspend() {
@@ -390,7 +385,6 @@ export function createChannelScheduler(
       for (const { abort } of live.values()) abort.abort(Object.assign(new Error(reason), { approvalCloseCode: "approval_cancelled_by_stop" }));
       const interrupted = storage.interruptActive(reason);
       live.clear();
-      deferredResumes.clear();
       if (interrupted.ok) {
         for (const turn of interrupted.value) ended(turn, interrupted.revision);
         if (lifecycle === "suspending") { lifecycle = "running"; emitSession({ type: "lifecycle", lifecycle, revision: interrupted.revision }); }

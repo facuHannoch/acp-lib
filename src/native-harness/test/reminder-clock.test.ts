@@ -1,3 +1,4 @@
+import { createSession } from "../src/index.ts";
 import { expect, test } from "bun:test";
 import { createReminderTimer } from "../src/runtime/reminder-timer.ts";
 import { normalizeReminderSchedule, resolveAgentReminder } from "../src/util/reminder-schedule.ts";
@@ -47,4 +48,14 @@ test("offline lead and expiry are derived from the original acceptance anchor", 
   expect(normalizeReminderSchedule("2026-11-31T12:02:00Z", accepted, undefined, anchor)).toBeUndefined();
   expect(resolveAgentReminder({ in: "2m" }, anchor)).toBe("2026-11-24T12:02:00.000Z");
   expect(resolveAgentReminder({ in: "0m" }, anchor)).toBeUndefined();
+});
+
+test("conditional stop refuses runnable work before the scheduler starts", () => {
+  const session = createSession({ systemPrompt: "test", configureTurn: () => {
+    throw new Error("The scheduler has not started");
+  } });
+  expect(session.agent.send({ channelId: "alice", participantId: "Rin", text: "Waiting" }).accepted).toBe(true);
+  expect(session.reminders!.conditionalStop(0)).toEqual({ stopped: false, reason: "busy" });
+  expect(session.status().execution).toBe("working");
+  session.stop("test complete");
 });

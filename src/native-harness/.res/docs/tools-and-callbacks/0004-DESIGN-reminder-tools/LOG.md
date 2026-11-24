@@ -34,3 +34,12 @@ channel can recheck its policy-blocked rows.
 The root conversation controller ignores reminder events without a turn ID.
 The acp-client supervisor, R8 consumer integration, and recurrence have
 separate gates.
+
+Clad's independent review of a55f107 found three deterministic failures
+(399 passed) because the startup fence also deferred direct checkpoint
+resumes. The fix restores immediate checkpoint execution under 0014,
+holds its open notifications at the protocol boundary, and keeps other
+channels and the live reminder timer behind the open response. The archive
+validator checks the stored default grace, and the conditional-stop test
+covers runnable input even before the scheduler starts. A grace-only edit
+uses the saved anchor even if the wall clock has moved back.

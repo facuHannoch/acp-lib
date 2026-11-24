@@ -74,6 +74,11 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: format activati
     const archive = value(store.exportArchive());
     expect(archive.archiveVersion).toBe(6);
     value(store.close());
+    if (archive.archiveVersion !== 6 || !archive.reminderState) throw new Error("Expected reminder archive");
+    const invalid = structuredClone(archive);
+    invalid.reminderState!.rows[0]!.reminder.expiresAfter = null;
+    invalid.reminderState!.rows[0]!.reminder.expiresAt = null;
+    expect(destination.importArchive(invalid)).toMatchObject({ ok: false, error: { code: "invalid_archive" } });
     value(destination.importArchive(archive));
     store = value(destination.open({ mode: "open", identity }));
     const next = new Date(instant + 600_000).toISOString();
@@ -81,6 +86,10 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: format activati
       schedule: { at: next }, acceptedAt: new Date(instant).toISOString(),
     } }, instant))).toMatchObject({ outcome: "applied", reminder: { expiresAfter: 1_200_000 } });
     expect(value(store.changeReminder(seeded, instant))).toEqual(original);
+    // A backwards wall-clock jump does not invalidate a saved acceptance anchor.
+    expect(value(store.changeReminder({ reminderId: "defaulted", changeId: 3, op: "update",
+      payload: { expiresAfter: 1_200_000 } }, instant - 60_000))).toMatchObject({ outcome: "applied", reminder: { expiresAfter: 1_200_000 } });
+
     value(store.beginChannelSuspend("alpha"));
     expect(value(store.fireDueReminders(instant + 600_000))).toEqual([]);
     expect(value(store.reminderWake()).nextDueAt).toBeNull();
