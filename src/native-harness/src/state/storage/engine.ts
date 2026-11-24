@@ -1,3 +1,6 @@
+import { applyReminderChange } from "./reminder-change.ts";
+import type { Reminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
+import type { ReminderTables } from "./reminder-tables.ts";
 import { searchTimeline, readMessageWindow } from "./retrieval.ts";
 import type { InspectionEntry } from "../../contracts/inspection.ts";
 import type { ContextTurnOutcome } from "../../contracts/context.ts";
@@ -37,6 +40,7 @@ export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], item
  * rule of the storage contract; a backend only stores rows and makes
  * `transaction` atomic (all writes of a throwing callback are undone). */
 export interface Tables extends ContextRows {
+  reminders: ReminderTables;
   retrievalCandidates(terms: readonly string[], channel: string | undefined, limit: number): Array<{ seq: number; bytes: number }>;
   retrievalEntry(seq: number): TimelineEntry | undefined;
   retrievalReplyId(id: string): number | undefined;
@@ -265,6 +269,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return tables.transaction(() => {
         const meta = tables.getMeta(), before = JSON.stringify(meta);
         const value = work(meta);
+        if (!readOnly && JSON.stringify(meta) !== before) refreshWake(meta);
         if (JSON.stringify(meta) !== before) tables.setMeta(meta);
         // Results never alias rows a backend may keep in memory.
         return { ok: true as const, value: structuredClone(value), revision: meta.revision };
@@ -367,6 +372,99 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }
     if (changed.length) tables.setModelState(state, changed);
   };
+  const accept = (meta: Meta, input: AcceptItem, maxInputBytes?: number) => {
+      const external = input?.kind === "external_notice";
+      if (!external) requireCompatible();
+      if (external && (!text(input.itemId) || !text(input.channelId) || !text(input.text)
+        || (input.externalSource !== undefined && !text(input.externalSource))
+        || !Array.isArray(input.inheritedPolicyNames) || !Array.from(input.inheritedPolicyNames).every(text)
+        || input.sourceChannelId !== undefined || input.sourceTurnId !== undefined || input.explicitPolicy !== undefined))
+        fail("invalid_input", "Invalid external notice");
+      const shaped = !!input && typeof input === "object"
+        && [input.kind, input.channelId, input.senderId, input.text].every(value => typeof value === "string")
+        && (input.sourceChannelId === undefined || typeof input.sourceChannelId === "string")
+        && (input.explicitPolicy === undefined || input.explicitPolicy === null || typeof input.explicitPolicy === "string");
+      if (shaped && typeof input.itemId === "string") {
+        const known = tables.item(input.itemId);
+        if (known) {
+          if (known.signature !== signatureOf(input)) fail("item_conflict", `Item ID ${input.itemId} already identifies different input`);
+          return { item: known, duplicate: true };
+        }
+      }
+      const notice = shaped && input.kind === "channel_notice";
+      if (!shaped || !(notice || external || input.kind === "participant_message") || ![input.channelId, input.senderId, input.text].every(text)
+        || (input.itemId !== undefined && !text(input.itemId))
+        || (notice ? !text(input.sourceChannelId) : input.sourceChannelId !== undefined))
+        fail("invalid_input", "Item needs kind, channelId, senderId and text; a notice also needs sourceChannelId");
+      if (maxInputBytes !== undefined && typeof input?.text === "string" && byteLength(input.text) > maxInputBytes)
+        fail("invalid_input", `Input exceeds the ${maxInputBytes}-byte UTF-8 limit`);
+      if (external) {
+        if (incompatibleViewOnly) fail("incompatible", "Stored policy is not available in the open configuration");
+        requireCompatible();
+        if (meta.lifecycle !== "running") fail("not_running", `Session is ${meta.lifecycle}; new work is not admitted`);
+        const channel = channelOf(input.channelId);
+        if (channel.lifecycle !== "open") fail("channel_suspended", `Channel ${channel.channelId} is ${channel.lifecycle}`);
+      }
+      const target = tables.channel(input.channelId);
+      if (notice && input.explicitPolicy != null) fail("invalid_input", "Notices cannot override policy");
+      if (notice && ownerSnapshot && input.sourceTurnId === undefined) fail("invalid_input", "A notice needs its executing source turn");
+      const resolved = resolve(input.explicitPolicy, target?.policy);
+      let inherited: string[] = external ? [...new Set(input.inheritedPolicyNames!)].sort() : [];
+      if (external) for (const name of inherited)
+        if (name === "__legacy_allow" || !Object.hasOwn(activeConfig.policies, name)) fail("invalid_policy", `Unknown or reserved policy: ${name}`);
+      if (notice && input.sourceTurnId !== undefined) {
+        const source = tables.turn(input.sourceTurnId);
+        if (!source || source.channelId !== input.sourceChannelId || source.state.status !== "running") fail("invalid_input", "Invalid notice source turn");
+        inherited = contributingPolicies(tables.itemsOfTurn(input.sourceTurnId).map(item => item.policy ?? { resolved: legacy, inherited: [] }));
+      }
+      if (notice && !target) fail("not_found", `Unknown channel: ${input.channelId}`);
+      if (target?.lifecycle === "retired") fail("channel_retired", `Channel ${input.channelId} is retired`);
+      if (meta.lifecycle === "suspended" || (meta.lifecycle === "suspending" && !notice))
+        fail("not_running", `Session is ${meta.lifecycle}; new work is not admitted`);
+      if (target && target.lifecycle !== "open") fail("channel_suspended", `Channel ${input.channelId} is ${target.lifecycle}; new work is not admitted`);
+      let itemId = input.itemId;
+      if (itemId === undefined) itemId = `auto:${meta.nextItemNumber++}`;
+      else {
+        const auto = AUTO.exec(itemId);
+        if (auto) {
+          const n = Number(auto[1]);
+          if (!Number.isSafeInteger(n + 1)) fail("invalid_input", "Reserved item ID is out of range");
+          if (n >= meta.nextItemNumber) meta.nextItemNumber = n + 1;
+        }
+      }
+      const item: StoredItem = { itemId, kind: input.kind, channelId: input.channelId, senderId: external ? input.externalSource ?? "host" : input.senderId,
+        ...(external ? { inheritedPolicyNames: inherited, ...(input.externalSource === undefined ? {} : { externalSource: input.externalSource }) } : {}),
+        ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), ...(input.explicitPolicy == null ? {} : { explicitPolicy: input.explicitPolicy }), text: input.text,
+        signature: signatureOf(input), policy: { ...(input.explicitPolicy == null ? {} : { explicit: input.explicitPolicy }), resolved, inherited },
+        acceptedSeq: seq(meta), acceptedAt: now(), milestone: "received" };
+      if (!notice && !external) {
+        if (!target) tables.putChannel({ channelId: item.channelId, lifecycle: "open" });
+        tables.addParticipant(item.senderId);
+      }
+      tables.putItem(item);
+      return { item, duplicate: false };
+  };
+  const reminders = tables.reminders;
+  const activateReminders = (meta: Meta) => {
+    if (meta.formatVersion < 7) {
+      reminders.activate();
+      meta.formatVersion = 7;
+    }
+  };
+  const putReminder = (meta: Meta, reminder: Reminder, original?: string) => {
+    activateReminders(meta);
+    const existing = reminders.get(reminder.id);
+    const revision = seq(meta);
+    reminders.put({ sequence: existing?.sequence ?? revision, reminder, original: existing?.original ?? original });
+  };
+  const validReminderPolicies = (names: readonly string[]) =>
+    names.every(name => name !== legacy && Object.hasOwn(activeConfig.policies, name));
+  const refreshWake = (meta: Meta) => {
+    if (meta.formatVersion !== 7) return;
+    const wake = reminders.wake();
+    const nextDueAt = meta.lifecycle === "running" ? reminders.eligible(null, 1)[0]?.reminder.nextRunAt ?? null : null;
+    if (nextDueAt !== wake.nextDueAt) reminders.setWake({ nextDueAt, reminderRevision: wake.reminderRevision + 1 });
+  };
   return {
     startCall: (turnId, itemIds) => run(meta => {
       if (!/^[1-9]\d*$/.test(turnId) || !Number.isSafeInteger(Number(turnId))) fail("invalid_input", "Invalid turn ID");
@@ -445,78 +543,62 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const calls = rows.slice(0, limit);
       return { calls, ...(rows.length > limit ? { next: calls.at(-1)!.callId } : {}) };
     }, true),
-    acceptItem: (input, maxInputBytes) => run(meta => {
-      const external = input?.kind === "external_notice";
-      if (!external) requireCompatible();
-      if (external && (!text(input.itemId) || !text(input.channelId) || !text(input.text)
-        || (input.externalSource !== undefined && !text(input.externalSource))
-        || !Array.isArray(input.inheritedPolicyNames) || !Array.from(input.inheritedPolicyNames).every(text)
-        || input.sourceChannelId !== undefined || input.sourceTurnId !== undefined || input.explicitPolicy !== undefined))
-        fail("invalid_input", "Invalid external notice");
-      const shaped = !!input && typeof input === "object"
-        && [input.kind, input.channelId, input.senderId, input.text].every(value => typeof value === "string")
-        && (input.sourceChannelId === undefined || typeof input.sourceChannelId === "string")
-        && (input.explicitPolicy === undefined || input.explicitPolicy === null || typeof input.explicitPolicy === "string");
-      if (shaped && typeof input.itemId === "string") {
-        const known = tables.item(input.itemId);
-        if (known) {
-          if (known.signature !== signatureOf(input)) fail("item_conflict", `Item ID ${input.itemId} already identifies different input`);
-          return { item: known, duplicate: true };
+    acceptItem: (input, maxInputBytes) => run(meta => accept(meta, input, maxInputBytes), input?.kind === "external_notice"),
+
+    changeReminder: (change, wallTime) => run(meta => {
+      requireCompatible();
+      return applyReminderChange({
+        receipt: reminders.receipt, highWater: reminders.highWater, original: id => reminders.get(id)?.original,
+        get: id => reminders.get(id)?.reminder, put: (reminder, original) => putReminder(meta, reminder, original),
+        saveReceipt(receipt) { activateReminders(meta); reminders.saveReceipt(receipt); seq(meta); },
+        channelStatus: channel => tables.channel(channel)?.lifecycle, validPolicies: validReminderPolicies,
+      }, change, wallTime);
+    }),
+    readReminder: id => run(() => reminders.get(id)?.reminder, true),
+    listReminders: ({ channel, after, limit = 50 }) => run(meta => {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail("invalid_input", "Invalid reminder list limit");
+      const revision = reminders.listingRevision();
+      const cursor = (position: number) => Buffer.from(JSON.stringify([meta.sessionId, channel ?? null, revision, position])).toString("base64url");
+      let position = 0;
+      if (after !== undefined) {
+        try {
+          const parsed = JSON.parse(Buffer.from(after, "base64url").toString());
+          position = parsed[3];
+          if (!Number.isSafeInteger(position) || position < 1 || cursor(position) !== after) fail("invalid_cursor", "Reminder listing cursor expired");
+        } catch { fail("invalid_cursor", "Invalid or stale reminder listing cursor"); }
+      }
+      const rows = reminders.list(channel, position, limit + 1);
+      const page = rows.slice(0, limit);
+      return { reminders: page.map(row => row.reminder), ...(rows.length > limit ? { next: cursor(page.at(-1)!.sequence) } : {}) };
+    }, true),
+    reminderWake: () => run(() => reminders.wake(), true),
+    fireDueReminders: wallTime => run(meta => {
+      requireCompatible();
+      const events: Array<{ channel: string; event: ReminderChannelEvent }> = [];
+      if (meta.lifecycle !== "running") return events;
+      const firedAt = new Date(wallTime).toISOString();
+      for (const { reminder } of reminders.eligible(firedAt, 100)) {
+        const { id, channel, schedule } = reminder;
+        const scheduledAt = schedule.at, occurrenceId = `reminder:${id}:${scheduledAt}`;
+        if (reminder.expiresAt !== null && reminder.expiresAt <= firedAt) {
+          putReminder(meta, { ...reminder, state: "expired", nextRunAt: null, lastOccurrenceId: occurrenceId });
+          events.push({ channel, event: { type: "reminder_expired", reminderId: id, occurrenceId, scheduledAt, expiredAt: firedAt } });
+          continue;
         }
-      }
-      const notice = shaped && input.kind === "channel_notice";
-      if (!shaped || !(notice || external || input.kind === "participant_message") || ![input.channelId, input.senderId, input.text].every(text)
-        || (input.itemId !== undefined && !text(input.itemId))
-        || (notice ? !text(input.sourceChannelId) : input.sourceChannelId !== undefined))
-        fail("invalid_input", "Item needs kind, channelId, senderId and text; a notice also needs sourceChannelId");
-      if (maxInputBytes !== undefined && typeof input?.text === "string" && byteLength(input.text) > maxInputBytes)
-        fail("invalid_input", `Input exceeds the ${maxInputBytes}-byte UTF-8 limit`);
-      if (external) {
-        if (incompatibleViewOnly) fail("incompatible", "Stored policy is not available in the open configuration");
-        requireCompatible();
-        if (meta.lifecycle !== "running") fail("not_running", `Session is ${meta.lifecycle}; new work is not admitted`);
-        const channel = channelOf(input.channelId);
-        if (channel.lifecycle !== "open") fail("channel_suspended", `Channel ${channel.channelId} is ${channel.lifecycle}`);
-      }
-      const target = tables.channel(input.channelId);
-      if (notice && input.explicitPolicy != null) fail("invalid_input", "Notices cannot override policy");
-      if (notice && ownerSnapshot && input.sourceTurnId === undefined) fail("invalid_input", "A notice needs its executing source turn");
-      const resolved = resolve(input.explicitPolicy, target?.policy);
-      let inherited: string[] = external ? [...new Set(input.inheritedPolicyNames!)].sort() : [];
-      if (external) for (const name of inherited)
-        if (name === "__legacy_allow" || !Object.hasOwn(activeConfig.policies, name)) fail("invalid_policy", `Unknown or reserved policy: ${name}`);
-      if (notice && input.sourceTurnId !== undefined) {
-        const source = tables.turn(input.sourceTurnId);
-        if (!source || source.channelId !== input.sourceChannelId || source.state.status !== "running") fail("invalid_input", "Invalid notice source turn");
-        inherited = contributingPolicies(tables.itemsOfTurn(input.sourceTurnId).map(item => item.policy ?? { resolved: legacy, inherited: [] }));
-      }
-      if (notice && !target) fail("not_found", `Unknown channel: ${input.channelId}`);
-      if (target?.lifecycle === "retired") fail("channel_retired", `Channel ${input.channelId} is retired`);
-      if (meta.lifecycle === "suspended" || (meta.lifecycle === "suspending" && !notice))
-        fail("not_running", `Session is ${meta.lifecycle}; new work is not admitted`);
-      if (target && target.lifecycle !== "open") fail("channel_suspended", `Channel ${input.channelId} is ${target.lifecycle}; new work is not admitted`);
-      let itemId = input.itemId;
-      if (itemId === undefined) itemId = `auto:${meta.nextItemNumber++}`;
-      else {
-        const auto = AUTO.exec(itemId);
-        if (auto) {
-          const n = Number(auto[1]);
-          if (!Number.isSafeInteger(n + 1)) fail("invalid_input", "Reserved item ID is out of range");
-          if (n >= meta.nextItemNumber) meta.nextItemNumber = n + 1;
+        if (!validReminderPolicies(reminder.policyNames)) {
+          const blocked: Reminder = { ...reminder, state: "blocked", nextRunAt: null, blockedReason: "invalid_policy" };
+          putReminder(meta, blocked);
+          events.push({ channel, event: { type: "reminder_changed", reminder: blocked } });
+          continue;
         }
+        const noticeId = `reminder-notice:${id}:${scheduledAt}`;
+        accept(meta, { kind: "external_notice", itemId: noticeId, channelId: channel, senderId: `reminder:${id}`,
+          externalSource: `reminder:${id}`, text: reminder.text, inheritedPolicyNames: reminder.policyNames });
+        putReminder(meta, { ...reminder, state: "done", nextRunAt: null, lastOccurrenceId: occurrenceId, lastRunAt: firedAt, noticeId });
+        events.push({ channel, event: { type: "reminder_fired", reminderId: id, occurrenceId, scheduledAt, firedAt, noticeId } });
       }
-      const item: StoredItem = { itemId, kind: input.kind, channelId: input.channelId, senderId: external ? input.externalSource ?? "host" : input.senderId,
-        ...(external ? { inheritedPolicyNames: inherited, ...(input.externalSource === undefined ? {} : { externalSource: input.externalSource }) } : {}),
-        ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), ...(input.explicitPolicy == null ? {} : { explicitPolicy: input.explicitPolicy }), text: input.text,
-        signature: signatureOf(input), policy: { ...(input.explicitPolicy == null ? {} : { explicit: input.explicitPolicy }), resolved, inherited },
-        acceptedSeq: seq(meta), acceptedAt: now(), milestone: "received" };
-      if (!notice && !external) {
-        if (!target) tables.putChannel({ channelId: item.channelId, lifecycle: "open" });
-        tables.addParticipant(item.senderId);
-      }
-      tables.putItem(item);
-      return { item, duplicate: false };
-    }, input?.kind === "external_notice"),
+      return events;
+    }),
 
     beginTurn: (channelId, intake) => run(meta => {
       requireCompatible();
@@ -840,7 +922,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return tables.contextPolicies(turnId, limits.maxReadRecords, limits.maxReadBytes)?.names ?? { code: "context_limit" as const };
     }, true),
     readInferenceContext: input => run(meta => {
-      if (meta.formatVersion !== 6) fail("incompatible", "Inference reads need a recovered session");
+      if (meta.formatVersion < 6) fail("incompatible", "Inference reads need a recovered session");
       if (!validReadLimits(input.limits)) fail("invalid_input", "Invalid inference read limits");
       const start = tables.contextTurnStart(input.channelId, input.turnId) ?? fail("not_found", "Turn not found on channel");
       return readInference(tables, input, start);

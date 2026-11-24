@@ -30,7 +30,7 @@ export type StorageErrorCode =
   /** Export refused: active or pending work exists and the session is not suspended. */
   | "busy"
   | "invalid_archive"
-  | "serialization_error" | "storage_failure" | "transfer_limit";
+  | "serialization_error" | "storage_failure" | "transfer_limit" | "invalid_cursor";
 
 /** A failed mutation leaves no partial domain changes. Do not retry blindly. */
 export interface StorageError { code: StorageErrorCode; message: string }
@@ -289,7 +289,15 @@ export interface TimelineRetrievalReads {
   readMessage(input: import("./timeline-retrieval.ts").TimelineWindow, maxResponseBytes?: number): StorageResult<import("./timeline-retrieval.ts").TimelineWindowResult>;
 }
 
-export interface SessionStorage extends ModelCallStore, TimelineRetrievalReads, OperatorStorageReads, InferenceStorageReads, InspectionStorageReads {
+export interface ReminderStorage {
+  changeReminder(change: import("./reminders.ts").ReminderChange, now: number): StorageResult<import("./reminders.ts").ReminderChangeResult>;
+  readReminder(id: string): StorageResult<import("./reminders.ts").Reminder | undefined>;
+  listReminders(input: import("./reminders.ts").ReminderListParams): StorageResult<import("./reminders.ts").ReminderList>;
+  reminderWake(): StorageResult<import("./reminders.ts").ReminderWake>;
+  fireDueReminders(now: number): StorageResult<Array<{ channel: string; event: import("./reminders.ts").ReminderChannelEvent }>>;
+}
+
+export interface SessionStorage extends ModelCallStore, ReminderStorage, TimelineRetrievalReads, OperatorStorageReads, InferenceStorageReads, InspectionStorageReads {
   readSession(): StorageResult<StoredSession>;
   readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
   readReadyChannels(): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;

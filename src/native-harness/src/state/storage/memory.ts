@@ -1,3 +1,4 @@
+import { emptyMemoryReminders, memoryReminderTables, type MemoryReminderState } from "./memory-reminders.ts";
 import { historicalCandidate, historicalRetrievalProjection, retrievalMessage, timelineTokens, timelineBytes } from "../../util/timeline-text.ts";
 import { byteLength, entryOverhead, type ContextRow } from "./inference.ts";
 import { checkScriptIdentity } from "./script-identity.ts";
@@ -9,6 +10,7 @@ import { validateManagedConfig } from "../../util/config.ts";
 type ContextEntry = ContextRow & { entry: TimelineEntry };
 
 interface Data {
+  reminders: MemoryReminderState;
   bySeq: Map<number, ContextEntry>;
   retrievalReplies: Map<string, number>;
   historicalCandidates: TimelineEntry[];
@@ -25,7 +27,7 @@ interface Data {
   channels: Map<string, ChannelRow>; participants: Set<string>;
   items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[]; conversation: Map<string, TimelineEntry[]>; replies: Map<number, TimelineEntry[]>;
 }
-const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), historicalCandidates: [], retrievalCalls: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
+const empty = (meta: Meta): Data => ({ meta, reminders: emptyMemoryReminders(), channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), historicalCandidates: [], retrievalCalls: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
 const copy = <T>(value: T): T => structuredClone(value);
 const live = (turn: TurnRow) => turn.state.status === "running" || turn.state.status === "suspended";
 
@@ -53,6 +55,7 @@ function memoryTables(data: Data): Tables {
       bytes: base.bytes - byteLength(JSON.stringify(row.entry.message)) + byteLength(JSON.stringify(projected)) };
   };
   return {
+    reminders: memoryReminderTables(data.reminders, log, channel => data.channels.get(channel)?.lifecycle === "open"),
     contextTurnStart(channelId, turnId) {
       const turn = data.turns.get(turnId);
       return turn?.channelId === channelId ? turn.startedSeq : undefined;
