@@ -305,9 +305,27 @@ test("a schedule edit of a reminder with unknown grace provenance leaves expiry 
     const prior = await s.reminders.get("tool");
     expect(prior?.expiryPolicy).toEqual({ kind: "unknown" });
     const pending = await s.reminders.update("tool", { schedule: { in: 240_000 } });
-    expect(pending.expiry).toBeNull();
+    expect(pending.expiry).toEqual({ kind: "harness_default" });
     const pendingWire = (await s.sync.stage()).find(entry => entry.reminderId === "tool");
     expect(pendingWire?.payload).not.toHaveProperty("expiresAfter");
     expect(item.id).not.toBe("tool");
+  } finally { await s.backend.close(); }
+});
+
+test("a malformed legacy reminder cannot erase a valid reminder wake", async () => {
+  const s = await setup();
+  try {
+    const valid = await s.reminders.create(input);
+    const repo = s.backend.reminders;
+    const expectedWake = 1_120_000;
+    expect((await repo.wake()).effectiveAt).toBe(expectedWake);
+    await repo.enqueue({ op: "create", acceptedAt: Number.NaN, reminder: {
+      ...valid, id: "legacy-missing-anchor",
+    } });
+    expect((await repo.wake()).effectiveAt).toBe(expectedWake);
+    await repo.enqueue({ op: "create", acceptedAt: 0, reminder: {
+      ...valid, id: "legacy-string-schedule", schedule: { at: "1970-01-01T00:05:00.000Z" } as never,
+    } });
+    expect((await repo.wake()).effectiveAt).toBe(expectedWake);
   } finally { await s.backend.close(); }
 });

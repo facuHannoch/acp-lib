@@ -77,6 +77,7 @@ export function resolveReminderExpiry(
   limits: ReminderLimits = defaultReminderLimits,
 ): ReminderExpiry {
   if (policy.kind === "unlimited") return null;
+  if (policy.kind === "unknown") return { kind: "harness_default" };
   if ("cron" in schedule) {
     return policy.kind === "duration" ? policy : { kind: "harness_default" };
   }

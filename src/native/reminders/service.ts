@@ -130,7 +130,7 @@ export class ReminderService {
           ? reminderExpiryPolicy(edit.expiresAfter, this.limits) : existing.expiryPolicy;
         const scheduleAcceptedAt = edit.schedule ? acceptedAt : existing?.scheduleAcceptedAt ?? acceptedAt;
         const expiry = edit.schedule || edit.expiresAfter !== undefined
-          ? expiryPolicy.kind === "unknown" ? null : resolveReminderExpiry(schedule, expiryPolicy, scheduleAcceptedAt, this.limits)
+          ? resolveReminderExpiry(schedule, expiryPolicy, scheduleAcceptedAt, this.limits)
           : existing!.expiry;
         const text = edit.text ?? existing!.text;
         if (!text.trim()) throw new ReminderError("invalid_input", "Reminder text is required");

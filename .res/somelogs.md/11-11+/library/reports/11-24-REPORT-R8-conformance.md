@@ -59,3 +59,15 @@ characterization snapshots. Part 2 gate is typecheck plus plain `bun test`
 on a clean `git archive` copy with `TMPDIR=/dev/shm`, and about 20 isolated
 runs of each new test. This report makes no code changes and claims no
 implementation test results. Part 2 awaits core-p's go.
+
+## Joint follow-up and deferred cleanup
+
+The joint branch retains the production notification filter and the approved
+harness client's notification subscriptions. The production launcher test
+checks raw delivery counts and the persisted cache observation counter, so a
+second delivery cannot be hidden by deadline fencing or fired-event deduplication.
+
+TODO before R9: replace the local copies of `WireReminder`, `WireReceipt`,
+`ReminderOpenResult`, `ReminderPage`, and the wire event types with the approved
+harness exports. Replace `reminderRpc`'s casts with typed client calls to
+`changeReminder`, `getReminder`, `listReminders`, and `stopIfIdle`.

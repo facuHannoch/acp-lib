@@ -40,6 +40,7 @@ export function deriveReminderWake(
     if (candidate.op === "cancel" || candidate.paused || candidate.suspended || candidate.retiring) continue;
     if (candidate.state !== "pending" && candidate.state !== "maybe_sent") continue;
     const validationAt = candidate.acceptedAt + validationDelayMs;
+    if (!Number.isFinite(candidate.acceptedAt) || !Number.isFinite(validationAt) || (candidate.dueAt !== null && !Number.isFinite(candidate.dueAt))) continue;
     // R8 must rate-limit an unresolved wake in the past through its restart budget.
     const wake = Math.min(validationAt, candidate.dueAt ?? validationAt);
     earliest = earliest === null ? wake : Math.min(earliest, wake);

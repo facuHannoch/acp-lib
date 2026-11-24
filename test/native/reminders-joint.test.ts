@@ -231,6 +231,7 @@ test("joint a superseded cold timer and the real harness wall timer yield one fi
     await until(() => s.clock.pending.size === 1);
     const staleWake = [...s.clock.pending.values()][0]!.task;
     await host.start();
+    expect(s.clock.delays).toEqual([]);
     const reported = (await agent.persistence.reminders!.wake()).reported;
     expect(reported).toMatchObject({ revision: 1, nextDueAt: due });
     const raced = new Promise<void>(resolve => setTimeout(() => {
@@ -398,4 +399,50 @@ test("joint default and explicit grace expire at the boundary while null still d
     const { items } = await s.peer.current!.client.reconcileChannel({ channel: channel.id, itemIds: ids });
     expect(items.map(item => item.id)).toEqual([ids[2]]);
   } finally { await s.clean(); }
+}, 15_000);
+
+test("joint production launcher delivers one fire, deadline update, cache change and notice", async () => {
+  const rig = await nativeRig();
+  const clock = new ReminderClock();
+  clock.time = Date.now();
+  rig.harness.reminderTimer = clock;
+  try {
+    const agent = await rig.open();
+    const channel = await agent.conversations.create({ title: "production notification path" });
+    const events = rig.watch(channel);
+    const repo = agent.persistence.reminders!;
+    const host = agent.nativeHarness!;
+    const id = "production-fire";
+    const due = Date.now() + 1_500;
+    const acceptedAt = due - 180_000;
+    await repo.enqueue({ op: "create", acceptedAt, reminder: {
+      id, conversationId: channel.id, text: "production reminder", status: "active",
+      schedule: { at: due }, scheduleAcceptedAt: acceptedAt, expiryPolicy: { kind: "default" }, expiry: null,
+    } });
+    await host.start();
+    expect(clock.delays).toEqual([]);
+    expect(rig.launches.map(launch => launch.kind)).toEqual(["native-harness"]);
+    expect((await repo.wake()).reported).toMatchObject({ revision: 1, nextDueAt: due });
+    const initialCache = (await repo.list()).find(row => row.id === id)!;
+    expect(initialCache.confirmed?.status).toBe("active");
+    const seen = { fire: 0, deadline: 0 };
+    const sync = host.reminderSync!;
+    const notify = sync.notification.bind(sync);
+    sync.notification = (notification, emit) => {
+      if ("deadline" in notification) seen.deadline++;
+      else if (notification.event.kind === "reminder_fired") seen.fire++;
+      notify(notification, emit);
+    };
+    await until(() => events.some(event => event.kind === "reminder_fired") && seen.deadline > 0, "production reminder fire and deadline");
+    const noticeId = notice(id, due);
+    const result = await host.reconcileChannel({ channel: channel.id, itemIds: [noticeId] });
+    await sync.settled();
+    expect(seen).toEqual({ fire: 1, deadline: 1 });
+    expect(events.filter(event => event.kind === "reminder_fired")).toHaveLength(1);
+    expect((await repo.wake()).reported).toMatchObject({ revision: 2, nextDueAt: null });
+    const cache = (await repo.list()).find(row => row.id === id)!;
+    expect(cache.observation).toBe(initialCache.observation! + 1);
+    expect(cache.confirmed).toMatchObject({ status: "completed", noticeId });
+    expect(result.items.map(item => item.id)).toEqual([noticeId]);
+  } finally { await rig.clean(); }
 }, 15_000);
