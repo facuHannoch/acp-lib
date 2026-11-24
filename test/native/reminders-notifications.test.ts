@@ -83,3 +83,16 @@ test("the pre-0032 transport shim routes routine events and discards malformed v
   expect(await new Response(separateReminderNotifications(stream, event => seen.push(event))).text()).toBe("");
   expect(seen.map(event => "event" in event ? event.event.kind : null)).toEqual(["routine_disposition", "routine_migration_blocked"]);
 });
+
+test("routine dispositions require the reminder and range string fields", () => {
+  const event = { type: "routine_disposition", reminderId: "r", firstScheduledAt: "first",
+    lastScheduledAt: "last", count: 2, reason: "expired" };
+  const parse = (value: Record<string, unknown>) =>
+    reminderNotification({ jsonrpc: "2.0", method: "channel/event", params: { channel: "one", event: value } });
+  expect(parse(event)).toMatchObject({ event: { kind: "routine_disposition" } });
+  for (const key of ["reminderId", "firstScheduledAt", "lastScheduledAt"] as const) {
+    const { [key]: _missing, ...rest } = event;
+    expect(parse(rest)).toBeUndefined();
+    expect(parse({ ...event, [key]: 9 })).toBeUndefined();
+  }
+});
