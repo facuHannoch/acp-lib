@@ -265,3 +265,19 @@ atomic stop check is authoritative.
 
 Default `expiresAfter` grace = 2x the lead (one-shot) or 2x the interval (routine), clamped to a lower bound of 5 minutes and an
 upper bound of 24 hours. A 2-minute lead therefore gets 5 minutes, not 4. Harness to confirm at contract review.
+
+## Round 6 (2026-11-24): R7 grounding review and fence pin
+
+- clad2a's grounding review (`reminders-r7-reviews` 02945d1) accepted: gate is plain `bun test` (2,070/214); wake includes
+  `maybe_sent`; client-allocated `reminderId` with surviving high-water; memory repo `durable` bit; delete leak test for a
+  reminders-only backend; offline cron stores a "harness default" expiry marker; a validation wake at acceptance + 2 min for any
+  pending create or edit (a host launch/retry deadline, never a schedule rewrite); schedule edits keep the prior expiry policy;
+  resume skips the lead check; a named `suspended` setter written in the channel suspend/resume transaction.
+- haurness-l's fence (pinned in their SPEC): the deadline revision is monotonic across restarts of the same session; equal
+  revision means equal `nextDueAt`; accept newer, ignore older, ignore and flag an equal-revision mismatch from the open or an
+  event; no reset on open or reconnect; only a replacement session starts a new fence (so the fence is keyed by session
+  identity). This replaces my provisional "open resets the fence".
+- Cron expiry on the wire: omit `expiresAfter` for the default; send a duration or `null` only when supplied.
+- Gate 1 issue (haurness-l): the harness must not revalidate a one-shot lead against its open time; the contract must pin a
+  trustworthy original acceptance anchor for offline intents. acp-client stores `acceptedAt` immutably with each change and
+  carries it in the payload via the adapter (field name pending).
