@@ -1,3 +1,4 @@
+import { routineBacklog } from "../src/capabilities/reminders/routine-backlog.ts";
 import { expect, test } from "bun:test";
 import { intervalCalendar } from "../src/capabilities/reminders/interval.ts";
 
@@ -28,4 +29,23 @@ test("an explicit first instant starts the calendar and count does not affect gr
   expect(calendar.at(0)).toBe(first);
   expect(calendar.at(1)).toBeUndefined();
   expect(calendar.nextCalendarMatch(first)).toBe(first + every);
+});
+
+test("catch-up selects at most ten live occurrences from an unlimited backlog", () => {
+  const calendar = intervalCalendar({ every }, anchor)!;
+  const now = anchor + 500_001 * every;
+  expect(routineBacklog(calendar, 0, now, null, "each")).toEqual({
+    expired: [], discarded: [{ first: 0, last: 499_989 }], coalesced: [],
+    queue: Array.from({ length: 10 }, (_, index) => 499_990 + index),
+  });
+  expect(routineBacklog(calendar, 0, now, null, "coalesce").coalesced).toEqual([{ first: 0, last: 499_999 }]);
+});
+
+test("expiry equality is discarded before missed-run policy selects a notice", () => {
+  const calendar = intervalCalendar({ every }, anchor)!;
+  const now = anchor + 500_000 * every;
+  expect(routineBacklog(calendar, 0, now, undefined, "coalesce")).toEqual({
+    expired: [{ first: 0, last: 499_997 }], discarded: [], queue: [],
+    coalesced: [{ first: 499_998, last: 499_998 }],
+  });
 });
