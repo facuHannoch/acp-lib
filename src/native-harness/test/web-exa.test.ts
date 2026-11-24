@@ -212,3 +212,17 @@ test("hosted production response pipeline rejects decoded and wire overflow", as
     expect(result).toMatchObject({ ok: false, code: "response_too_large", usage: {} });
   }
 });
+
+test("hosted production response stream is destroyed on deadline", async () => {
+  const { createExaHttpsTransport } = await import("../src/capabilities/tools/web/exa-transport.ts");
+  let response: Readable | undefined;
+  const send = ((_options: any, callback: (response: any) => void) => new Writable({
+    write(_chunk, _encoding, done) { done(); }, final(done) {
+      response = Object.assign(new Readable({ read() {} }), { statusCode: 200, headers: {} });
+      callback(response); done();
+    },
+  })) as unknown as typeof import("node:https").request;
+  const result = await runExa({ operation: "web_search", args: { query: "x" }, key: "key", deadlineMs: 10, transport: createExaHttpsTransport(send) });
+  expect(result).toMatchObject({ ok: false, code: "tool_timeout", usage: {} });
+  expect(response?.destroyed).toBe(true);
+});
