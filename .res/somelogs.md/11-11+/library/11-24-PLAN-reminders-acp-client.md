@@ -235,3 +235,16 @@ agent-created routines; the `expiresAfter` default durations; whether to schedul
   very short leads; whether the window is counted from the scheduled instant (assumed) or from creation.
 - **Minimum interval:** question raised whether the 15-minute consumer minimum covers agent-created routines, and whether the
   harness should provide it to acp-client. Recommendation recorded in the reply; pending the user's answer.
+
+## User decision, round 4 (2026-11-24): one set of minimums for everyone
+
+Supersedes the 5-minute harness and 15-minute consumer minimums (and the question whether the consumer minimum covers agent
+routines): the same limits apply to the agent tools and the consumer API.
+- **One-shot** (`at`, or `in` converted to `at`): the scheduled instant must be at least 2 minutes after acceptance.
+- **Repeating** (`every`, `cron`): the interval between consecutive runs must be at least 10 minutes.
+- The two are told apart by schedule shape. `every` is checked locally by acp-client (its interval). `cron` needs the gap between
+  consecutive fires, which acp-client does not compute (no schedule computation here), so the harness checks it and returns
+  `blocked: invalid_schedule` (a typed error on a live request). The harness advertises both numbers in `initialize` so acp-client
+  does not hardcode them; if the harness does not advertise them, acp-client does not check, and the harness refuses.
+- With the doubling `expiresAfter` default, a 2-minute lead gets a 4-minute grace.
+- Needs harness agreement: its draft proposes 5 minutes for repeating.
