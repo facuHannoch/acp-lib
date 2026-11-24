@@ -184,3 +184,38 @@ test("an older first receipt cannot replace a newer receipt while another change
     expect((await repo.list())[0]?.confirmed?.text).toBe("second");
   } finally { await s.fixture.clean(); }
 });
+
+test("idle stop waits for a delayed deadline write and disconnects ports without explicit-stop semantics", async () => {
+  const s = await setup();
+  const writing = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    const repository = s.agent.persistence.reminders!;
+    const update = repository.updateDeadline.bind(repository);
+    let disconnected = 0;
+    s.host.attach(createAgentConversationId(), {
+      event() {}, reconcile() {}, busy: () => false, failed() {}, disconnected() { disconnected++; },
+    });
+    await s.host.start();
+    repository.updateDeadline = async (...args) => {
+      writing.resolve();
+      await release.promise;
+      return update(...args);
+    };
+    const nextDue = s.peer.now + 8_000;
+    s.peer.beforeIdleStop = async () => {
+      s.peer.emit({ deadline: { nextDueAt: new Date(nextDue).toISOString(), revision: 1 } });
+    };
+    s.clock.tickAt(s.peer.now + 1_000);
+    await writing.promise;
+    await until(() => !s.peer.running);
+    await Bun.sleep(0);
+    expect(s.host.state).toBe("running");
+    expect(disconnected).toBe(0);
+    release.resolve();
+    await until(() => s.host.state === "stopped" && s.clock.delays.length === 1);
+    expect((await repository.wake()).effectiveAt).toBe(nextDue);
+    expect(s.host.explicitlyStopped).toBe(false);
+    expect(disconnected).toBe(1);
+  } finally { release.resolve(); await s.fixture.clean(); }
+});

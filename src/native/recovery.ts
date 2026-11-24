@@ -1,3 +1,4 @@
+import type { ReminderChange } from "../persistence/reminders.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
 import type { ReminderOpenResult } from "./reminders/wire.ts";
 import type { ResponseMessage } from "../types.ts";
@@ -53,7 +54,8 @@ export async function openOrCreate(
   batch: PendingChannelChange[], tools: Parameters<HarnessClient["openSession"]>[0]["tools"], signal: AbortSignal, reminders?: ReminderSync,
 ) {
   const changes = { ...(batch.length ? { channelChanges: batch } : {}), ...(tools ? { tools } : {}) };
-  let staged = await reminders?.stage() ?? [];
+  const originals: ReminderChange[] = [];
+  let staged = await reminders?.stage(originals) ?? [];
   const execute = async (fresh: boolean) => {
     signal.throwIfAborted();
     const params = { sessionId: config.sessionId, config: config.config, ...changes,
@@ -72,9 +74,15 @@ export async function openOrCreate(
       }
     } catch (error) {
       if (!staged.length || codeOf(error) !== "invalid_params") throw error;
-      await reminders!.rejectedBatch(staged);
+      const rejected = staged;
       staged = [];
-      result = await request();
+      try {
+        result = await request();
+      } catch (retryError) {
+        await reminders!.restoreStaged(originals);
+        throw retryError;
+      }
+      await reminders!.rejectedBatch(rejected);
     }
     return result;
   };

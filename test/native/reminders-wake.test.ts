@@ -128,10 +128,18 @@ test("overdue cold starts share manual startup and failed wakes exhaust the shar
     }
     await until(() => clock.delays.length === 1);
     clock.tickAt(4_000);
-    await until(() => host.state === "failed");
+    await until(() => host.failure !== null);
+    expect(host.state).toBe("stopped");
     expect(host.failure).toBeInstanceOf(HarnessUnavailableError);
     expect(attempts).toBe(3);
     expect(clock.delays).toEqual([]);
+    expect((await agent.persistence.reminders!.wake()).effectiveAt).toBe(0);
+    gate = Promise.withResolvers<never>();
+    const explicit = host.start();
+    await until(() => attempts === 4);
+    expect(host.failure).toBeNull();
+    gate.reject(new Error("manual launch attempted"));
+    await expect(explicit).rejects.toThrow("manual launch attempted");
   } finally { await fixture.clean(); }
 });
 
@@ -154,5 +162,27 @@ test("explicit stop retains an overdue wake and agent close leaves it for the ne
     await until(() => nextClock.delays.length === 1);
     expect(nextClock.delays).toEqual([1_000]);
     expect((await next.persistence.reminders!.wake()).effectiveAt).toBe(0);
+  } finally { await fixture.clean(); }
+});
+
+test("an exhausted reminder wake still fails outstanding conversation work", async () => {
+  const fixture = await nativeRig();
+  const clock = new ReminderClock();
+  fixture.harness.reminderTimer = clock;
+  fixture.harness.restart = { limit: 0, windowMs: 60_000 };
+  try {
+    const agent = await fixture.open();
+    const host = agent.nativeHarness!;
+    const errors: Error[] = [];
+    host.attach("held", {
+      busy: () => true, failed: error => errors.push(error), reconcile() {}, event() {}, disconnected() {},
+    });
+    await agent.persistence.reminders!.updateDeadline({ sessionId: "test", nextDueAt: 0, revision: 1 });
+    await until(() => clock.delays.length === 1);
+    clock.tickAt(1_000);
+    await until(() => host.state === "failed");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(HarnessUnavailableError);
+    expect(clock.delays).toEqual([]);
   } finally { await fixture.clean(); }
 });

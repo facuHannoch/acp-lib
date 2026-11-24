@@ -509,3 +509,11 @@ test("a native conversation without an owner rejects reminder access with a type
     await rig.clean();
   }
 });
+
+test("an unreleased R7 schema 22 fails fast with a migration diagnostic", () => {
+  using database = new Database(":memory:");
+  database.exec(`CREATE TABLE schema_migrations(version INTEGER); INSERT INTO schema_migrations VALUES (22);
+    CREATE TABLE reminder_changes(id TEXT, change_id INTEGER, value TEXT);
+    CREATE TABLE reminder_cache(id TEXT, value TEXT)`);
+  expect(() => migrateSqliteAgentSchema(database)).toThrow("unreleased R7 build");
+});

@@ -694,6 +694,14 @@ export function migrateSqliteAgentSchema(database: Database): void {
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
   }
+  if (existing === 22) {
+    const columns = (table: string) => database.query<{ name: string }, [string]>("SELECT name FROM pragma_table_info(?)").all(table)
+      .map(({ name }) => name);
+    if (!columns("reminder_changes").includes("staging_order") || !columns("reminder_cache").includes("receipt_version")
+      || !columns("reminder_staging_clock").includes("value")) {
+      throw new Error("SQLite schema 22 was created by an unreleased R7 build; recreate the database for R8");
+    }
+  }
   // Admitting a new record kind means rebuilding conversation_records: its kind CHECK is a
   // closed list SQLite cannot alter in place. Foreign keys must be off for that drop, or
   // the implicit delete would cascade into every detail table.

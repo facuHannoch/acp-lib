@@ -12,9 +12,16 @@ export function separateReminderNotifications(
   return readable.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       for (const line of decoder.push(chunk)) {
-        const notification = reminderNotification(JSON.parse(line));
-        if (notification) accept(notification);
-        else controller.enqueue(encoder.encode(line + "\n"));
+        const frame = JSON.parse(line);
+        const kind = frame?.method === "session/event" ? frame.params?.type
+          : frame?.method === "channel/event" ? frame.params?.event?.type : undefined;
+        if (typeof kind === "string" && /^reminders?_/.test(kind)) {
+          let notification: ReminderNotification | undefined;
+          try { notification = reminderNotification(frame); } catch { /* Drop malformed reminder notifications. */ }
+          if (notification) accept(notification);
+          continue;
+        }
+        controller.enqueue(encoder.encode(line + "\n"));
       }
     },
     flush() { decoder.finish(); },

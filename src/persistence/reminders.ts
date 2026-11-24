@@ -83,10 +83,15 @@ export interface ReminderPersistence {
   acknowledge(id: string, changeId: number, outcome: { confirmed: Reminder } | { reason: string }): Promise<boolean>;
   discardBlocked(id: string): Promise<void>;
   observe(reminder: Reminder): Promise<void>;
+  restoreStaged(change: ReminderChange): Promise<void>;
   quarantine(id: string, changeId: number, reason: string): Promise<void>;
   setSupported(supported: boolean): Promise<void>;
   replaceSession(sessionId: string): Promise<void>;
   completeSweep(seen: ReadonlySet<string>): Promise<void>;
+}
+
+function isWakeSchedule(schedule: ReminderSchedule): boolean {
+  return !!schedule && "at" in schedule && Number.isSafeInteger(schedule.at);
 }
 
 export class StoredReminderPersistence implements ReminderPersistence {
@@ -107,7 +112,7 @@ export class StoredReminderPersistence implements ReminderPersistence {
 
   private recompute(reported = this.store.wake().reported): void {
     const supported = this.store.wake().supported;
-    const candidates = supported === false ? [] : this.store.list().flatMap((journal) => journal.changes.filter(change => "at" in change.reminder.schedule).map((change) => {
+    const candidates = supported === false ? [] : this.store.list().flatMap((journal) => journal.changes.filter(change => isWakeSchedule(change.reminder.schedule)).map((change) => {
       const latest = journal.changes.at(-1)?.reminder ?? change.reminder;
       const { schedule } = change.reminder;
       return {
@@ -230,6 +235,19 @@ export class StoredReminderPersistence implements ReminderPersistence {
       };
       if (current.conversationId !== reminder.conversationId) return;
       this.store.save({ ...current, observation: (current.observation ?? 0) + 1, confirmed: reminder });
+    });
+  }
+
+  restoreStaged(original: ReminderChange): Promise<void> {
+    return this.write(() => {
+      const journal = this.store.get(original.reminder.id);
+      if (!journal) return;
+      this.store.save({
+        ...journal,
+        changes: journal.changes.map(change => change.changeId === original.changeId && change.state === "maybe_sent"
+          ? original : change),
+      });
+      this.recompute();
     });
   }
 
