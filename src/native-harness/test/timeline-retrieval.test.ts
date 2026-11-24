@@ -184,9 +184,9 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: mixed historica
   const adapter = kind === "memory" ? createMemoryStorageAdapter() : createSqliteStorageAdapter(join(dir, "s.db"));
   const storage = value(adapter.open({ mode: "create", identity }));
   try {
-    const take = (id: string) => {
-      value(storage.acceptItem({ itemId: id, channelId: "alpha", kind: "participant_message", senderId: "Rin", text: "message" }));
-      return value(storage.beginTurn("alpha"))!.turn.turnId;
+    const take = (id: string, channelId = "alpha") => {
+      value(storage.acceptItem({ itemId: id, channelId, kind: "participant_message", senderId: "Rin", text: "message" }));
+      return value(storage.beginTurn(channelId))!.turn.turnId;
     };
     const original = take("original");
     value(storage.appendMessage(original, { role: "assistant", content: "Text survives", calls: [
@@ -199,8 +199,9 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: mixed historica
     expect(JSON.stringify(active)).toContain("Retrieved material");
     value(storage.appendMessage(original, { role: "assistant", content: "Final", calls: [] }));
     value(storage.finishTurn(original, { status: "completed" }));
-    const next = take("next");
-    const historical = JSON.stringify(value(storage.readInferenceContext({ channelId: "alpha", turnId: next, limits: CONTEXT_LIMITS })));
+    const next = take("next", "beta");
+    const historical = JSON.stringify(value(storage.readInferenceContext({ channelId: "beta", turnId: next,
+      limits: { ...CONTEXT_LIMITS, maxSharedCandidates: 4 } })));
     expect(historical).toContain("Text survives");
     expect(historical).toContain("kept");
     expect(historical).not.toContain("discarded");
