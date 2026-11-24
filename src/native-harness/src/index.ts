@@ -80,6 +80,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   };
   const config = owner.value ?? { version: 1 as const, system: options.systemPrompt, model: { protocol: "scripted" as const, script: "legacy" },
     defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow" as const, tools: {} } } };
+  if (options.imageInput && config.model.imageInput !== true) throw new Error("Image input requires explicit model configuration");
   // ---- Tools, decision 0021. The catalog's definitions come from the open;
   // the revoked set mirrors storage; the executor belongs to the connection.
   const revoked = options.catalog ? store.readRevokedTools() : undefined;
@@ -232,7 +233,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       }
     }, services.executeTool).finally(() => { phases.delete(turn.turnId); });
   };
-  const scheduler = createChannelScheduler(store, options.wrapTurn?.(run) ?? run, emit, lifecycle.publish, CONTEXT_LIMITS);
+  const scheduler = createChannelScheduler(store, options.wrapTurn?.(run) ?? run, emit, lifecycle.publish, CONTEXT_LIMITS, options.imageInput === true);
   agent = scheduler.agent;
   /** Status with each running turn's phase, which only this process knows. */
   const status = () => {

@@ -2,8 +2,8 @@
  * Script files and credential environment variables are destination resources. */
 export type ToolDecision = "allow" | "ask" | "deny";
 export interface ToolPolicy { fallback: ToolDecision; tools: Record<string, ToolDecision> }
-export type ManagedModel = { protocol: "scripted"; script: string }
-  | { protocol: "openrouter"; model: string; apiKeyEnv: string }
+export type ManagedModel = { protocol: "scripted"; script: string; imageInput?: boolean }
+  | { protocol: "openrouter"; model: string; apiKeyEnv: string; imageInput?: boolean }
   | { protocol: "openai-compatible"; providerId: string; model: string; baseUrl: string; apiKeyEnv?: string };
 export interface ManagedConfig {
   version: 1;

@@ -48,7 +48,7 @@ export async function start(options: StartOptions = {}) {
     inspectorPort: Number(process.env.HARNESS_INSPECTOR_PORT ?? 3000), webChatPort: Number(process.env.HARNESS_CHAT_PORT ?? 3001) } : agentConfiguration();
   if (config.managedDirectory) await mkdir(config.managedDirectory, { recursive: true, mode: 0o700 });
   if (managed && create) await mkdir(managed.directory, { recursive: true, mode: 0o700 });
-  const development = await openDevelopment({ systemPrompt, database, sessionId, create, script, managedConfig, instructions,
+  const development = await openDevelopment({ systemPrompt, database, ...(managed ? { mediaRoot: join(managed.directory, "media") } : {}), sessionId, create, script, managedConfig, instructions,
     debugTools: options.debug || options.debugTools,
     timelineTools: options.timelineTools,
     debugInstructions: options.debug && instructions === undefined ? loadInstructions("agent-demo") : undefined,
@@ -70,7 +70,8 @@ export async function start(options: StartOptions = {}) {
     inspector = bindWebPort(port, "HARNESS_INSPECTOR_PORT", chosen => serveInspector(inspection, chosen));
     // Lifecycle control stays on the owner's Unix socket; the LAN chat gets messages only.
     const handleChat = createChannelHandler(local, outputs);
-    webChat = bindWebPort(config.webChatPort, "HARNESS_CHAT_PORT", chosen => serveWebChat(handleChat, chosen));
+    webChat = bindWebPort(config.webChatPort, "HARNESS_CHAT_PORT", chosen => serveWebChat(handleChat, chosen, undefined,
+      { attachments: development.attachments, ensureChannel(id) { const result = session.channels.create({ channelId: id }); if (!result.ok) throw new Error(result.error.message); } }));
   } catch (error) {
     // Startup is all-or-nothing: do not leave an agent listening if the inspector
     // could not bind its port and the command reports a startup failure.

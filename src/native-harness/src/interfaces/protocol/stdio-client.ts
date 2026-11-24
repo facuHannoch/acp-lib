@@ -49,6 +49,7 @@ function message(value: any): value is RpcResponse | RpcNotification | RpcSessio
         && typeof event.toolCallId === "string" && typeof event.tool === "string" && typeof event.arguments === "string";
       case "turn_ended": return ["completed", "failed", "interrupted"].includes(event.outcome)
         && (event.error === undefined || typeof event.error === "string")
+        && (event.attachmentFailure === undefined || (["unsupported_image", "attachment_unavailable", "transfer_limit"].includes(event.attachmentFailure?.code) && strings(event.attachmentFailure?.attachmentIds)))
         && (event.uncertainCalls === undefined || strings(event.uncertainCalls));
       case "text_delta": return typeof event.messageId === "string" && typeof event.text === "string";
       case "text_gap": return typeof event.messageId === "string";

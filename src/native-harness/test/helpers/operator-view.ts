@@ -17,7 +17,7 @@ export async function inspectOperatorView(client: HarnessClient, params: Paramet
       const page = await client.channelMessages(cursor ? { channel: channel.channel, cursor } : { channel: channel.channel });
       for (const message of page.messages) {
         turnIds.add(message.turnId);
-        if (message.itemId) {
+        if (message.itemId !== undefined) {
           itemIds.add(message.itemId);
           const [, , seq] = JSON.parse(Buffer.from(message.position, "base64url").toString()) as [string, string, number];
           takenOrder.set(message.itemId, seq);

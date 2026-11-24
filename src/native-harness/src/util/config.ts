@@ -23,15 +23,17 @@ export function validateManagedConfig(input: unknown, legacy = false): ManagedCo
   if (raw.version !== 1) fail("config.version", "expected version 1");
   if (typeof raw.system !== "string") fail("config.system", "expected a string");
   const model = record(raw.model, "config.model");
+  if (model.imageInput !== undefined && typeof model.imageInput !== "boolean") fail("config.model.imageInput", "expected a boolean");
+  const imageInput = model.imageInput === undefined ? {} : { imageInput: model.imageInput as boolean };
   let selectedModel: ManagedConfig["model"];
   if (model.protocol === "scripted") {
-    keys(model, ["protocol", "script"], "config.model");
-    selectedModel = { protocol: "scripted", script: name(model.script, "config.model.script") };
+    keys(model, ["protocol", "script", "imageInput"], "config.model");
+    selectedModel = { protocol: "scripted", script: name(model.script, "config.model.script"), ...imageInput };
   } else if (model.protocol === "openrouter") {
-    keys(model, ["protocol", "model", "apiKeyEnv"], "config.model");
+    keys(model, ["protocol", "model", "apiKeyEnv", "imageInput"], "config.model");
     const reference = model.apiKeyEnv === undefined ? "OPENROUTER_API_KEY" : name(model.apiKeyEnv, "config.model.apiKeyEnv");
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) fail("config.model.apiKeyEnv", "expected an environment variable name");
-    selectedModel = { protocol: "openrouter", model: model.model === undefined ? "deepseek/deepseek-v4.1-flash" : name(model.model, "config.model.model"), apiKeyEnv: reference };
+    selectedModel = { protocol: "openrouter", model: model.model === undefined ? "deepseek/deepseek-v4.1-flash" : name(model.model, "config.model.model"), apiKeyEnv: reference, ...imageInput };
   } else return fail("config.model.protocol", "expected scripted or openrouter");
   const isLegacy = legacy && raw.defaultPolicy === undefined && raw.policies === undefined;
   const defaultPolicy = isLegacy ? LEGACY_POLICY : name(raw.defaultPolicy, "config.defaultPolicy");

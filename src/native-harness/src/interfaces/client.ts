@@ -19,7 +19,7 @@ export type ResultReader = (read: ResultRead) => Promise<ResultPage> | ResultPag
 type Calls = Methods & DurableMethods;
 
 export class HarnessClientError extends Error {
-  constructor(public readonly code: string, message: string) { super(message); this.name = "HarnessClientError"; }
+  constructor(public readonly code: string, message: string, public readonly expectedOffset?: number) { super(message); this.name = "HarnessClientError"; }
 }
 
 /**
@@ -52,7 +52,7 @@ export class HarnessClient {
         if (message.id === null) return;
         const waiting = this.waiting.get(message.id);
         if (!waiting) return;
-        if ("error" in message) waiting.reject(new HarnessClientError(message.error.data.code, message.error.message));
+        if ("error" in message) waiting.reject(new HarnessClientError(message.error.data.code, message.error.message, message.error.data.expectedOffset));
         else waiting.resolve(message.result);
       }
     });
@@ -129,6 +129,12 @@ export class HarnessClient {
     return this.request("initialize", params);
   }
   createSession(params: CreateParams) { return this.request("session/create", params); }
+  beginAttachment(params: Calls["attachment/begin"]["params"]) { return this.request("attachment/begin", params); }
+  attachmentStatus(params: Calls["attachment/status"]["params"]) { return this.request("attachment/status", params); }
+  writeAttachment(params: Calls["attachment/write"]["params"]) { return this.request("attachment/write", params); }
+  finalizeAttachment(params: Calls["attachment/finalize"]["params"]) { return this.request("attachment/finalize", params); }
+  abortAttachment(params: Calls["attachment/abort"]["params"]) { return this.request("attachment/abort", params); }
+  readAttachment(params: Calls["attachment/read"]["params"]) { return this.request("attachment/read", params); }
   /** Decision 0021. Serve `functions/call` requests. Set before `initialize`
    * advertises handler names. One handler routes by `call.handler`. */
   serveFunctions(handler: FunctionHandler, reader?: ResultReader) { this.functionHandler = handler; this.resultReader = reader; }

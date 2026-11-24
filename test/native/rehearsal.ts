@@ -23,6 +23,7 @@ export interface RehearsalOptions {
   env?: Record<string, string>;
   exactConsumption?: boolean;
   timelineTools?: boolean;
+  imageInput?: boolean;
 }
 
 export async function createRehearsal(path: string, options: RehearsalOptions) {
@@ -34,6 +35,7 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
   const home = await mkdtemp(join(tmpdir(), "native-rehearsal-"));
   const env = { ...options.env };
   const children: ReturnType<typeof Bun.spawn<"pipe", "pipe", "pipe">>[] = [];
+  let currentClient: HarnessClient | undefined;
   const exits: number[] = [];
   const effects: { tool: string; channel: string; invocationId: string; outcome: "completed" | "failed" }[] = [];
   const functions = options.functions && { ...options.functions, tools: Object.fromEntries(Object.entries(options.functions.tools).map(([name, definition]) =>
@@ -50,7 +52,7 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
     } }])) };
   const host = new NativeHarnessHost({
     sessionId: "rehearsal", home, functions, approvalResponder: options.approvalResponder, text: "stream",
-    config: { version: 1, system: "Offline rehearsal", model: { protocol: "scripted", script: path },
+    config: { version: 1, system: "Offline rehearsal", model: { protocol: "scripted", script: path, ...(options.imageInput ? { imageInput: true } : {}) },
       timelineTools: options.timelineTools, defaultPolicy: "rehearsal", policies: options.policies ?? { rehearsal: { fallback: "allow", tools: {} } } },
     requestTimeoutMs: 8000,
     async connect() {
@@ -65,6 +67,7 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
         async end() { await child.stdin.end(); },
       });
       const client = new HarnessClient(transport, 8000);
+      currentClient = client;
       return { client, closed: child.exited.then(() => undefined), async kill() { client.close(); await child.exited; } };
     },
   });
@@ -296,5 +299,6 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
     } finally { clearTimeout(timer); await close(); }
   };
   return { host, env, children, exits, effects, sends, activity, scenario, setup, issue, schedule, finish, observe, unobserve, recover, close, run,
+    client: () => { if (!currentClient) throw new Error("Rehearsal has not started"); return currentClient; },
     crash: () => { const child = children.at(-1)!; child.kill("SIGKILL"); return child.exited; } };
 }

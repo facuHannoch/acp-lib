@@ -6,6 +6,9 @@ import { createRoutineEvaluator } from "../../capabilities/reminders/routine-sch
 import { isRoutine, prepareRoutineRow } from "./routine-row.ts";
 import { unattendedAdmission } from "../../capabilities/reminders/unattended.ts";
 import { normalizeReminderSchedule, resolveAgentReminder } from "../../util/reminder-schedule.ts";
+import { createHash } from "node:crypto";
+import { validateMixedParts, mixedPartsSignature } from "../../util/attachment-input.ts";
+import { encodeSessionFile, SessionFileError } from "./session-file.ts";
 import { applyReminderChange } from "./reminder-change.ts";
 import type { OneOffReminder, Reminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
 import type { ReminderTables } from "./reminder-tables.ts";
@@ -48,6 +51,8 @@ export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], item
  * rule of the storage contract; a backend only stores rows and makes
  * `transaction` atomic (all writes of a throwing callback are undone). */
 export interface Tables extends ContextRows {
+  /** SQLite attachment metadata, absent in adapters without managed bytes. */
+  attachments?: ReturnType<typeof import("./attachment-tables.ts").sqliteAttachmentTables>;
   reminders: ReminderTables;
   retrievalCandidates(terms: readonly string[], channel: string | undefined, limit: number): Array<{ seq: number; bytes: number }>;
   retrievalEntry(seq: number): TimelineEntry | undefined;
@@ -124,8 +129,9 @@ function cleanName(name: unknown): string {
 }
 
 /** The contract's exact signature; identical for both adapters and archives. */
-export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text" | "explicitPolicy" | "externalSource" | "inheritedPolicyNames">): string {
-  return item.kind === "external_notice" ? externalNoticeSignature(item.channelId, item.externalSource, item.text, item.inheritedPolicyNames ?? []) : policyItemSignature(item);
+export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text" | "explicitPolicy" | "externalSource" | "inheritedPolicyNames" | "parts">): string {
+  const legacy = item.kind === "external_notice" ? externalNoticeSignature(item.channelId, item.externalSource, item.text, item.inheritedPolicyNames ?? []) : policyItemSignature(item);
+  return item.parts === undefined ? legacy : createHash("sha256").update(JSON.stringify([legacy, mixedPartsSignature(item.parts)])).digest("hex");
 }
 
 /** Strict JSON data: what survives a JSON round trip unchanged. */
@@ -175,7 +181,7 @@ function checkMessage(message: unknown): Stored {
 }
 
 function session(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
+  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 9 ? 9 : meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
     lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
 
@@ -249,7 +255,8 @@ export function bindUnattendedGuard(tables: Tables, requested: number | undefine
   if (requested === undefined || tables.reminders.guardLimit() !== undefined) return;
   tables.reminders.bindGuard(requested);
   const meta = tables.getMeta();
-  tables.setMeta({ ...meta, formatVersion: 8, revision: meta.revision + 1 });
+  if (meta.formatVersion === 9) tables.attachments?.advanceBaseFormat(8);
+  tables.setMeta({ ...meta, formatVersion: Math.max(meta.formatVersion, 8), revision: meta.revision + 1 });
 }
 
 type ReminderDeliveryEvent = { channel: string; event: ReminderChannelEvent };
@@ -356,13 +363,14 @@ function uncertain(tables: Tables, turn: TurnRow): string[] {
 }
 
 /** The contract over any backend. `ownerKey` is the key passed to this open. */
-export function createEngine(tables: Tables, ownerKey: string, release: () => void, config?: ManagedConfig, incompatibleViewOnly = false, recoveredReminderEvents: ReminderDeliveryEvent[] = []): SessionStorage {
+export function createEngine(tables: Tables, ownerKey: string, release: () => void, config?: ManagedConfig, incompatibleViewOnly = false, recoveredReminderEvents: ReminderDeliveryEvent[] = [],
+  readFiles?: (records: ReturnType<NonNullable<Tables["attachments"]>["retained"]>, maxBytes: number) => NonNullable<SessionArchive["attachmentState"]>["files"]): SessionStorage {
   let closed = false;
   // This is the config validated at open, not the separately mutable saved copy.
   const ownerSnapshot = config === undefined ? undefined : structuredClone(config);
   const now = () => new Date().toISOString();
 
-  function run<T>(work: (meta: Meta) => T, readOnly = false): StorageResult<T> {
+  function run<T>(work: (meta: Meta) => T, readOnly = false, alreadyDetached = false): StorageResult<T> {
     if (closed) return failure(new Fail("closed", "Storage handle is closed"));
     if (incompatibleViewOnly && !readOnly) return failure(new Fail("incompatible", "Stored policy is not available in the open configuration"));
     try {
@@ -372,7 +380,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         if (!readOnly && JSON.stringify(meta) !== before) refreshReminderWake(tables, meta);
         if (JSON.stringify(meta) !== before) tables.setMeta(meta);
         // Results never alias rows a backend may keep in memory.
-        return { ok: true as const, value: structuredClone(value), revision: meta.revision };
+        return { ok: true as const, value: alreadyDetached ? value : structuredClone(value), revision: meta.revision };
       });
     } catch (error) { return failure(error); }
   }
@@ -383,14 +391,29 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     if (turn.state.status !== "running") fail("invalid_state", `Turn ${turnId} is ${turn.state.status}, not running`);
     return turn;
   }
+  function imageBytes(item: StoredItem): number {
+    let total = 0;
+    for (const part of item.parts ?? []) if (part.type === "attachment") {
+      const metadata = tables.attachments?.get(part.id)?.metadata;
+      if (!metadata) fail("storage_failure", `Attachment metadata unavailable: ${part.id}`);
+      if (metadata!.mediaType.startsWith("image/")) total += metadata!.bytes;
+    }
+    return total;
+  }
+  function turnImageBytes(turnId: number | undefined): number {
+    return turnId === undefined ? 0 : tables.itemsOfTurn(turnId).reduce((sum, item) => sum + imageBytes(item), 0);
+  }
   function boundaryPending(channelId: string, intake?: IntakeLimit, turnId?: number): StoredItem[] {
-    if (!intake) return tables.pendingItems(channelId);
-    const already = turnId === undefined ? [] : tables.contextInputs(turnId, tables.contextPreviousResponse(turnId), intake.maxTakenItems);
-    const slots = intake.maxTakenItems - already.length;
+    const already = !intake || turnId === undefined ? [] : tables.contextInputs(turnId, tables.contextPreviousResponse(turnId), intake.maxTakenItems);
+    const slots = intake ? intake.maxTakenItems - already.length : Number.MAX_SAFE_INTEGER;
     if (slots <= 0) return [];
-    let bytes = intake.maxTakenTextBytes - already.reduce((sum, row) => sum + (row.textBytes ?? 0), 0);
+    let bytes = intake ? intake.maxTakenTextBytes - already.reduce((sum, row) => sum + (row.textBytes ?? 0), 0) : Number.MAX_SAFE_INTEGER;
+    let activeImages = turnImageBytes(turnId);
     const selected: StoredItem[] = [];
     for (const item of tables.pendingItems(channelId, slots)) {
+      const images = imageBytes(item);
+      if (activeImages + images > 40 * 1024 * 1024) break;
+      activeImages += images;
       bytes -= byteLength(item.text);
       // A legacy oversized head advances alone and gets a typed build failure.
       if (bytes < 0 && (selected.length || already.length)) break;
@@ -406,7 +429,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         from: item.senderId, kind: item.kind, ...(item.sourceChannelId ? { sourceChannelId: item.sourceChannelId } : {}),
         ...(item.externalSource !== undefined ? { externalSource: item.externalSource } : {}),
         itemId: item.itemId, message: { role: "user", content: item.kind !== "participant_message" ? item.text
-          : `Participant: ${JSON.stringify(item.senderId)}\n\n${item.text}` } };
+          : `Participant: ${JSON.stringify(item.senderId)}\n\n${item.text}`, ...(item.parts ? { parts: item.parts } : {}) } };
       tables.addEntry(entry);
       const taken: StoredItem = { ...item, milestone: "taken", turnId: turn.turnId, entrySeq: entry.seq };
       tables.putItem(taken);
@@ -472,9 +495,16 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }
     if (changed.length) tables.setModelState(state, changed);
   };
-  const accept = (meta: Meta, input: AcceptItem, maxInputBytes?: number) => {
+  const accept = (meta: Meta, input: AcceptItem, maxInputBytes?: number, options?: { imageInput?: boolean }) => {
       const external = input?.kind === "external_notice";
-      if (!external) requireCompatible();
+      if (!external && input?.parts === undefined) requireCompatible();
+      if (input?.parts !== undefined) {
+        if (input.kind !== "participant_message") fail("invalid_input", "Only participant messages can carry attachments");
+        try { input = { ...input, parts: validateMixedParts(input.parts) }; }
+        catch (error) { fail((error as { code?: string }).code === "transfer_limit" ? "transfer_limit" : "invalid_input", String(error)); }
+        const textParts = input.parts!.filter(part => part.type === "text").map(part => (part as { text: string }).text).join("\n");
+        if (input.text !== textParts) fail("invalid_input", "Text projection does not match ordered parts");
+      }
       if (external && (!text(input.itemId) || !text(input.channelId) || !text(input.text)
         || (input.externalSource !== undefined && !text(input.externalSource))
         || !Array.isArray(input.inheritedPolicyNames) || !Array.from(input.inheritedPolicyNames).every(text)
@@ -491,8 +521,23 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
           return { item: known, duplicate: true };
         }
       }
+      if (!external && input?.parts !== undefined) requireCompatible();
+      if (input?.parts) {
+        const attachments = tables.attachments;
+        if (!attachments) fail("incompatible", "Managed attachments are unavailable in this store");
+        let imageBytes = 0;
+        for (const part of input.parts) if (part.type === "attachment") {
+          const metadata = attachments!.get(part.id)?.metadata;
+          if (!metadata || metadata.channel !== input.channelId) fail("not_found", "Unknown attachment");
+          if (metadata!.mediaType.startsWith("image/")) {
+            if (!options?.imageInput) fail("unsupported_image", "Image input is unsupported");
+            imageBytes += metadata!.bytes;
+          }
+        }
+        if (imageBytes > 40 * 1024 * 1024) fail("transfer_limit", "Input image budget exceeded");
+      }
       const notice = shaped && input.kind === "channel_notice";
-      if (!shaped || !(notice || external || input.kind === "participant_message") || ![input.channelId, input.senderId, input.text].every(text)
+      if (!shaped || !(notice || external || input.kind === "participant_message") || ![input.channelId, input.senderId].every(text) || (input.parts === undefined && !text(input.text))
         || (input.itemId !== undefined && !text(input.itemId))
         || (notice ? !text(input.sourceChannelId) : input.sourceChannelId !== undefined))
         fail("invalid_input", "Item needs kind, channelId, senderId and text; a notice also needs sourceChannelId");
@@ -534,7 +579,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       }
       const item: StoredItem = { itemId, kind: input.kind, channelId: input.channelId, senderId: external ? input.externalSource ?? "host" : input.senderId,
         ...(external ? { inheritedPolicyNames: inherited, ...(input.externalSource === undefined ? {} : { externalSource: input.externalSource }) } : {}),
-        ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), ...(input.explicitPolicy == null ? {} : { explicitPolicy: input.explicitPolicy }), text: input.text,
+        ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), ...(input.explicitPolicy == null ? {} : { explicitPolicy: input.explicitPolicy }), text: input.text, ...(input.parts ? { parts: input.parts } : {}),
         signature: signatureOf(input), policy: { ...(input.explicitPolicy == null ? {} : { explicit: input.explicitPolicy }), resolved, inherited },
         acceptedSeq: seq(meta), acceptedAt: now(), milestone: "received" };
       if (!notice && !external) {
@@ -542,13 +587,15 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         tables.addParticipant(item.senderId);
       }
       tables.putItem(item);
+      if (input.parts) tables.attachments!.saveParts(itemId, input.parts);
       return { item, duplicate: false };
   };
   const reminders = tables.reminders;
   const activateReminders = (meta: Meta) => {
-    if (meta.formatVersion < 7) {
+    if (meta.formatVersion < 7 || (meta.formatVersion === 9 && (tables.attachments?.baseFormat() ?? 0) < 7)) {
       reminders.activate();
-      meta.formatVersion = 7;
+      if (meta.formatVersion === 9) tables.attachments?.advanceBaseFormat(7);
+      else meta.formatVersion = 7;
     }
   };
   const putReminder = (meta: Meta, reminder: Reminder, defaultedExpiry?: boolean, original?: string) => {
@@ -577,6 +624,38 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }
   }
   return {
+    registerReadyAttachment: metadata => run(meta => {
+      if (!tables.attachments) fail("incompatible", "Managed attachments are unavailable in this store");
+      if (!metadata || typeof metadata.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(metadata.id)
+        || !text(metadata.channel) || typeof metadata.filename !== "string" || metadata.filename.length === 0 || !metadata.filename.isWellFormed()
+        || Buffer.byteLength(metadata.filename) > 255 || /[\u0000-\u001f\u007f-\u009f]/u.test(metadata.filename)
+        || typeof metadata.mediaType !== "string" || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(metadata.mediaType) || metadata.mediaType.length > 127
+        || !Number.isSafeInteger(metadata.bytes) || metadata.bytes <= 0 || metadata.bytes > 20 * 1024 * 1024
+        || !/^[a-f0-9]{64}$/.test(metadata.sha256)) fail("invalid_input", "Invalid attachment metadata");
+      channelOf(metadata.channel);
+      const attachments = tables.attachments!;
+      if (attachments.get(metadata.id)) fail("already_exists", "Attachment ID already exists");
+      attachments.publish(metadata, now());
+      meta.formatVersion = 9;
+      seq(meta);
+    }),
+    readManagedAttachment: id => run(() => {
+      const attachments = tables.attachments;
+      if (!attachments || !text(id)) return undefined;
+      const row = attachments.get(id);
+      return row ? { metadata: row.metadata, timelineVisible: attachments.isTimelineVisible(id) } : undefined;
+    }, true),
+    managedAttachmentIds: () => run(() => tables.attachments?.readyIds() ?? [], true),
+    unreferencedAttachments: readyBefore => run(() => {
+      if (!Number.isFinite(Date.parse(readyBefore))) fail("invalid_input", "Invalid cleanup deadline");
+      return tables.attachments?.unreferencedBefore(readyBefore).map(row => row.metadata) ?? [];
+    }, true),
+    reclaimAttachment: (id, readyBefore) => run(meta => {
+      if (!text(id) || !Number.isFinite(Date.parse(readyBefore))) fail("invalid_input", "Invalid cleanup request");
+      const removed = tables.attachments?.reclaim(id, readyBefore) ?? false;
+      if (removed) seq(meta);
+      return removed;
+    }),
     startCall: (turnId, itemIds) => run(meta => {
       if (!/^[1-9]\d*$/.test(turnId) || !Number.isSafeInteger(Number(turnId))) fail("invalid_input", "Invalid turn ID");
       const turn = running(Number(turnId));
@@ -654,7 +733,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const calls = rows.slice(0, limit);
       return { calls, ...(rows.length > limit ? { next: calls.at(-1)!.callId } : {}) };
     }, true),
-    acceptItem: (input, maxInputBytes) => run(meta => accept(meta, input, maxInputBytes), input?.kind === "external_notice"),
+    acceptItem: (input, maxInputBytes, options) => run(meta => accept(meta, input, maxInputBytes, options), input?.kind === "external_notice"),
 
     changeReminder: (change, wallTime) => run(meta => {
       requireCompatible();
@@ -677,7 +756,10 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         },
         saveReceipt(receipt) {
           activateReminders(meta);
-          if (routineSchedule) meta.formatVersion = 8;
+          if (routineSchedule) {
+            if (meta.formatVersion === 9) tables.attachments?.advanceBaseFormat(8);
+            else meta.formatVersion = 8;
+          }
           reminders.saveReceipt(receipt);
           seq(meta);
         },
@@ -898,7 +980,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         if (!last || last.role !== "assistant" || last.calls.length)
           fail("invalid_state", "Completion needs a final assistant response without tool calls");
         const pending = tables.pendingCount(turn.channelId);
-        if (pending) return { finished: false as const, pending };
+        const head = pending ? tables.pendingItems(turn.channelId, 1)[0] : undefined;
+        const imageBlocked = !!head && turnImageBytes(turnId) + imageBytes(head) > 40 * 1024 * 1024;
+        if (pending && !imageBlocked) return { finished: false as const, pending };
         const done: TurnRow = { ...turn, state: { status: "completed" } };
         tables.putTurn(done); settle(turn.channelId); seq(meta);
         return { finished: true as const, turn: full(done) };
@@ -1178,6 +1262,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }, true),
     snapshot: () => run(() => readSnapshot(tables), true),
 
+    // Snapshot rows and file buffers are newly allocated. Avoid a second full
+    // copy here so the bounded encoder stays within its archive memory budget.
     exportArchive: () => run(meta => {
       const snapshot = readSnapshot(tables);
       if (snapshot.modelCalls.some(call => call.outcome === "running" || call.attempts.some(attempt => attempt.outcome === "running")))
@@ -1186,11 +1272,37 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         && !snapshot.channels.some(channel => channel.lifecycle === "suspending")
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: meta.formatVersion >= 8 ? 7 : meta.formatVersion === 7 ? 6 : 5, exportedAt: now(), snapshot,
-        ...(meta.formatVersion >= 7 ? { reminderState: reminders.archive() } : {}),
+      let archiveFormat = meta.formatVersion;
+      let attachmentState: SessionArchive["attachmentState"];
+      if (archiveFormat === 9) {
+        const attachments = tables.attachments;
+        if (!attachments) throw new Fail("invalid_archive", "Attachment storage is unavailable");
+        const base = attachments.baseFormat();
+        if (base !== 6 && base !== 7 && base !== 8) throw new Fail("invalid_archive", "Invalid attachment base format");
+        archiveFormat = base;
+        const records = attachments.retained();
+        if (records.length) {
+          if (!readFiles) throw new Fail("attachment_unavailable", "Managed attachment files are unavailable");
+          const placeholder = { format: "harness-session", archiveVersion: 8, exportedAt: now(), snapshot,
+            ...(base >= 7 ? { reminderState: reminders.archive() } : {}), allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber },
+            attachmentState: { baseFormat: base, files: records.map(record => ({ ...record, bytes: new Uint8Array() })) } };
+          const max = 268435456;
+          const header = (size: number) => size < 24 ? 1 : size <= 255 ? 2 : size <= 65535 ? 3 : size <= 0xffffffff ? 5 : 9;
+          let required: number;
+          try { required = encodeSessionFile({ archive: placeholder, config: ownerSnapshot ?? null }, max).length; }
+          catch (error) { if (error instanceof SessionFileError && error.code === "transfer_limit") throw new Fail("transfer_limit", error.message); throw error; }
+          for (const record of records) required += record.metadata.bytes + header(record.metadata.bytes) - 1;
+          if (!Number.isSafeInteger(required) || required > max) throw new Fail("transfer_limit", "Session file exceeds limit");
+          try { attachmentState = { baseFormat: base, files: readFiles(records, max - required + records.reduce((n, record) => n + record.metadata.bytes, 0)) }; }
+          catch (error) { const code = (error as { code?: string }).code; throw new Fail(code === "transfer_limit" ? "transfer_limit" : "attachment_unavailable", String(error)); }
+        } else snapshot.session.formatVersion = base;
+      }
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: attachmentState ? 8 : archiveFormat >= 8 ? 7 : archiveFormat === 7 ? 6 : 5, exportedAt: now(), snapshot,
+        ...(attachmentState ? { attachmentState } : {}),
+        ...(archiveFormat >= 7 ? { reminderState: reminders.archive() } : {}),
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };
       return archive;
-    }),
+    }, false, true),
 
     close() {
       if (closed) return { ok: true, value: undefined, revision: 0 };
