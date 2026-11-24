@@ -49,6 +49,7 @@ export async function bringUp(
     launcher: config.launcher,
     execPrefix: config.execPrefix,
     env: config.env,
+    terminalEnv: config.terminalEnv,
     cwd: config.cwd,
     additionalDirectories: config.additionalDirectories,
     sessionId,

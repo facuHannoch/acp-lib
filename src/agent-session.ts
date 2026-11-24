@@ -588,6 +588,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       launcher: config.launcher,
       execPrefix: config.execPrefix,
       env: config.env,
+      terminalEnv: config.terminalEnv,
       cwd: config.cwd,
       additionalDirectories: config.additionalDirectories,
       mcpServers: config.mcpServers,

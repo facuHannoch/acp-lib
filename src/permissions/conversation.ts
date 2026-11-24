@@ -4,7 +4,8 @@ import type { Logger } from "../logger.ts";
 import type { PermissionOutcome, PermissionRequest, PromptHandlers } from "../types.ts";
 import { acpPermissionArrivals, permissionArrival, type PermissionArrival } from "./arrival.ts";
 import { DEFAULT_PERMISSION_TIMEOUT_MS } from "./consumer-config.ts";
-import { selectPermissionOutcome } from "./outcome.ts";
+import type { PermissionSettings } from "./matcher.ts";
+import { selectPermissionOutcome, unansweredPermissionOutcome } from "./outcome.ts";
 import { permissionLevel, recordingPermissionHandlers, type ConversationPermissionConfig } from "./policy.ts";
 
 export type PermissionResolutionSource = "handler" | "consumer" | "default" | "timeout" | "turn_ended";
@@ -53,6 +54,7 @@ export interface NativePermission {
   readonly hasWireOutcome: boolean;
   readonly resolution: Promise<PermissionResolution>;
   answer(resolution: PermissionResolution): Promise<boolean>;
+  onCancelTurn?(listener: () => void): void;
 }
 
 export const nativeProviderTurnEnded = Symbol("native provider turn ended");
@@ -81,6 +83,7 @@ const forwarding = new WeakMap<object, {
 export interface ForwardPermissionOptions {
   readonly source: WorkerPermissionSource;
   readonly includeAllowAlways: boolean;
+  readonly unanswered?: PermissionSettings["unanswered"];
   readonly signal?: AbortSignal;
 }
 
@@ -88,10 +91,11 @@ export async function forwardPermission(
   conversation: object | undefined, request: PermissionRequest, options: ForwardPermissionOptions,
 ): Promise<PermissionOutcome> {
   const destination = conversation && forwarding.get(conversation);
-  if (!destination) return selectPermissionOutcome("deny", request.options)!;
+  if (!destination) return unansweredPermissionOutcome(request.options, options.unanswered);
   const { source, signal, includeAllowAlways } = options;
-  const offered = includeAllowAlways ? request : {
-    ...request, options: request.options.filter(option => option.kind !== "allow_always"),
+  // A forwarded UI request must not answer the worker's native ticket directly.
+  const offered = {
+    ...request, options: includeAllowAlways ? request.options : request.options.filter(option => option.kind !== "allow_always"),
   };
   const time = acpPermissionArrivals.get(request);
   if (time && offered !== request) acpPermissionArrivals.set(offered, time);
@@ -248,7 +252,11 @@ export class ConversationPermissions {
 
     if (native?.hostHandled || native?.settled || waitForConsumer) return result;
     if (level !== "ask" || !handler) {
-      const decision = level === "ask" || level === undefined ? refuse("default")
+      const unanswered = level === "ask" && !handler;
+      const cancelTurn = unanswered && policy.permissions?.unanswered === "cancel";
+      const decision = cancelTurn
+        ? { outcome: unansweredPermissionOutcome(request.options, "cancel"), by: "default" as const }
+        : level === "ask" || level === undefined ? refuse("default")
         : { outcome: selectPermissionOutcome(level, request.options)!, by: "default" as const };
       void sendAfterRecord(decision).catch(failed);
       return result;

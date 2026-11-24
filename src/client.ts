@@ -62,6 +62,8 @@ export interface AcpClientConfig extends PermissionPolicyConfig {
   execPrefix?: string[];
   /** @deprecated Use launcher and its exact spawnEnv. */
   env?: Record<string, string>;
+  /** Exact environment for built-in ACP terminals. */
+  terminalEnv?: Record<string, string>;
   /** Workspace visible to the ACP target and sent in session requests. */
   cwd?: string;
   /** Additional workspace roots passed to ACP session creation and loading. */
@@ -331,7 +333,7 @@ export class AcpClient implements AgentClient {
     this.terminals = this.handlers.terminal === "builtin"
       ? new TerminalRegistry({
           cwd: this.config.cwd,
-          env: this.config.env,
+          terminalEnv: launch.terminalEnv ?? this.config.terminalEnv,
           logger: this.config.logger,
         })
       : null;
@@ -728,7 +730,7 @@ export class AcpClient implements AgentClient {
   private terminalHandlers(registry: TerminalRegistry) {
     return {
       create: async (p: schema.CreateTerminalRequest) => ({
-        terminalId: registry.create(p as Parameters<TerminalRegistry["create"]>[0]),
+        terminalId: registry.create({ command: p.command, args: p.args, cwd: p.cwd, env: p.env, outputByteLimit: p.outputByteLimit }),
       }),
       output: async (p: schema.TerminalOutputRequest) => {
         const { output, truncated, exitStatus } = registry.output(p.terminalId);
@@ -983,7 +985,7 @@ export class AcpClient implements AgentClient {
           if (abort.signal.aborted) return { outcome: "cancelled" as const };
           if (handler && recordingPermissionHandlers.has(handler)) return handler(request, abort.signal);
           return answerPermissionLevel(permissionLevel(request, this.config), request,
-            handler && (() => handler(request, abort.signal)));
+            handler && (() => handler(request, abort.signal)), this.config.permissions?.unanswered);
         }),
       ]);
     } finally {

@@ -237,3 +237,15 @@ test("a consumer expiry reaches the ACP agent while requested-record persistence
     await agent.close();
   }
 }, 10_000);
+
+test("an unanswered ACP ask can be cancelled by the conversation setting", async () => {
+  const { conversation, events } = await observeAcp({ permissions: { default: "ask", unanswered: "cancel" } });
+  try {
+    const result = await conversation.prompt("reject-first");
+    expect(JSON.parse(result.text)).toEqual({ outcome: "cancelled" });
+    expect(events[1]).toEqual({ kind: "permission_resolved", id: events[0]!.id, by: "default", outcome: "cancelled" });
+    expect(await conversation.prompt("stop-on-cancel")).toMatchObject({ status: "cancelled", text: "" });
+  } finally {
+    await conversation.stop();
+  }
+}, 10_000);

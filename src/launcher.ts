@@ -13,6 +13,8 @@ export interface PreparedLaunch {
   spawnCwd?: string;
   /** Complete environment for the directly spawned process. */
   spawnEnv: Record<string, string>;
+  /** Exact environment for built-in host terminals. Independent of spawnEnv. */
+  terminalEnv?: Record<string, string>;
   /** Release resources created while preparing this launch. Called exactly once. */
   dispose?: () => void | Promise<void>;
 }
