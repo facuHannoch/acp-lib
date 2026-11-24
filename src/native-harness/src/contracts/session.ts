@@ -89,6 +89,11 @@ export interface PersistentSessionOptions {
   reminderClock?: import("./reminders.ts").ReminderClock;
   /** Local opt-in when there is no managed configuration. */
   timelineTools?: boolean;
+  /** Trusted assembly has verified the opted-in model and image validator. */
+  imageInput?: boolean;
+  /** Local web implementations created by trusted session assembly. */
+  mcpTools?: ReadonlyMap<string, import("./mcp.ts").McpTool>;
+  webTools?: readonly import("./web.ts").CheckedWebRegistration[];
   systemPrompt: string;
   /** Optional assertion of the storage owner's validated config. Omission uses
    * the owner snapshot; legacy allow applies only when that snapshot is absent. */
@@ -113,7 +118,7 @@ export interface PersistentSessionOptions {
 /** Creating the session executes nothing: it can be inspected, loaded and
  * exported first. Opening, starting and resuming are separate actions. */
 export interface PersistentSession {
-  reminders?: Pick<SessionStorage, "readReminder" | "listReminders" | "reminderWake"> & {
+  reminders?: Pick<SessionStorage, "readReminder" | "listReminders" | "reminderWake" | "unattendedGuard"> & {
     change(change: import("./reminders.ts").ReminderChange): ReturnType<SessionStorage["changeReminder"]>;
     processStartup(): void;
     releaseTimer(): void;
@@ -123,7 +128,7 @@ export interface PersistentSession {
   };
   /** Read an oldest-first page of complete model-call summaries. */
   readModelCalls: SessionStorage["readCalls"];
-  operatorReads?: Pick<SessionStorage, "readSession" | "readExecution" | "readChannel" | "readTracked" | "readTimeline">;
+  operatorReads?: Pick<SessionStorage, "readSession" | "readExecution" | "readChannel" | "readTracked" | "readTimeline"> & Partial<Pick<SessionStorage, "readManagedAttachment">>;
   turnPhase?(turnId: number): import("./tools.ts").TurnPhase | undefined;
   /** Approval requests belong to this connection; disconnect closes them. */
   approvals: {

@@ -1,11 +1,15 @@
 # Controller interface
 
-## Native one-off reminders
+## Native reminders
 
 - Agent-owned native conversations expose `conversation.reminders`, and
   `agent.reminders.list()` pages reminder views. New events report local
-  intent outcomes and live harness changes. The current harness accepts
-  one-off schedules. Routines remain disabled.
+  intent outcomes and live harness changes.
+- A 0032-compatible peer supports interval and timezone-aware cron routines
+  after an executable open confirms the configured unattended-turn guard.
+  Routine rows expose remaining count, missed-run and overlap policies, and
+  timezone migration state. Consumers can subscribe to `routine_disposition`
+  and `routine_migration_blocked`.
 - SQLite schema 22 adds the offline intent journal, last-confirmed cache
   and wake index. The file-backed SQLite owner can wake a stopped harness
   while the Agent is running. Optional idle stop respects near-due work

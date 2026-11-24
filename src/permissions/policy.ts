@@ -1,7 +1,7 @@
 import { validatePermissionConsumerConfig, type PermissionConsumerConfig } from "./consumer-config.ts";
 import type { PermissionRequest, PromptHandlers } from "../types.ts";
 import { matchPermissionLevel, type PermissionLevel, type PermissionSettings } from "./matcher.ts";
-import { selectPermissionOutcome } from "./outcome.ts";
+import { selectPermissionOutcome, unansweredPermissionOutcome } from "./outcome.ts";
 
 export interface PermissionPolicyConfig {
   /** The whole setting replaces any inherited setting. Defaults to ask. */
@@ -47,8 +47,12 @@ export function ownPermissions(settings: PermissionSettings | undefined): Permis
   if (settings === null || typeof settings !== "object" || !isLevel(settings.default)) {
     throw new Error("permissions.default must be deny, ask, or allow");
   }
-  const rules = settings.rules;
-  if (rules === undefined) return Object.freeze({ default: settings.default });
+  const { rules, unanswered } = settings;
+  if (unanswered !== undefined && unanswered !== "reject" && unanswered !== "cancel") {
+    throw new Error("permissions.unanswered must be reject or cancel");
+  }
+  const base = { default: settings.default, ...(unanswered === undefined ? {} : { unanswered }) };
+  if (rules === undefined) return Object.freeze(base);
   if (rules === null || typeof rules !== "object" || Array.isArray(rules)) throw new Error("permissions.rules must be an object");
   for (const [key, level] of Object.entries(rules)) {
     const command = key.startsWith("command:") ? key.slice(8) : "";
@@ -57,7 +61,7 @@ export function ownPermissions(settings: PermissionSettings | undefined): Permis
     if (!valid) throw new Error(`invalid permission rule key: ${key}`);
     if (!isLevel(level)) throw new Error(`invalid permission level for ${key}: ${String(level)}`);
   }
-  return Object.freeze({ default: settings.default, rules: Object.freeze({ ...rules }) });
+  return Object.freeze({ ...base, rules: Object.freeze({ ...rules }) });
 }
 
 export function permissionLevel(request: PermissionRequest, config: PermissionPolicyConfig, native = false): PermissionLevel {
@@ -67,14 +71,15 @@ export function permissionLevel(request: PermissionRequest, config: PermissionPo
   return override ?? (native ? settings.default : matchPermissionLevel(request, settings));
 }
 
-/** R2 refuses unattended asks. R3 will supply an event-based answerer. */
+/** Resolve an ACP request outside a conversation permission coordinator. */
 export function answerPermissionLevel(
   level: PermissionLevel,
   request: PermissionRequest,
-  handler?: () => ReturnType<NonNullable<PromptHandlers["onPermissionRequest"]>>,
+  handler: (() => ReturnType<NonNullable<PromptHandlers["onPermissionRequest"]>>) | undefined,
+  unanswered: PermissionSettings["unanswered"],
 ) {
-  if (level === "ask" && handler) return handler();
-  return selectPermissionOutcome(level === "ask" ? "deny" : level, request.options)!;
+  if (level === "ask") return handler ? handler() : unansweredPermissionOutcome(request.options, unanswered);
+  return selectPermissionOutcome(level, request.options)!;
 }
 
 /** A turn's recording handler already applies policy and must see every request for persistence. */

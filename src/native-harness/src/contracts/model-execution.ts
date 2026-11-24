@@ -29,7 +29,8 @@ export type ModelAttemptEvent =
   | { type: "text_delta"; text: string }
   | { type: "usage"; usage: ModelUsage }
   | { type: "response"; response: ModelResponse; providerRequestId?: string }
-  | { type: "failure"; kind: "transient" | "invalid_request" | "invalid_config" | "provider"; message: string; providerRequestId?: string };
+  | { type: "failure"; kind: "transient" | "invalid_request" | "invalid_config" | "provider"; message: string; providerRequestId?: string;
+      code?: "unsupported_image" | "attachment_unavailable" | "transfer_limit"; attachmentIds?: readonly string[] };
 /** One attempt emits exactly one terminal response or failure unless aborted;
  * EOF without a terminal is incomplete. A consumer ignores events after the
  * first terminal, timeout or abort. The adapter assembles and validates tools. */

@@ -1,4 +1,8 @@
+import { memoryWebTables } from "./web-tables.ts";
+import { bindUnattendedGuard, checkUnattendedGuard } from "./engine.ts";
 import { emptyMemoryReminders, memoryReminderTables, type MemoryReminderState } from "./memory-reminders.ts";
+import { emptyMemoryAttachments, memoryAttachmentTables, type MemoryAttachmentState } from "./memory-attachments.ts";
+import { readArchiveFiles, writeMemoryArchiveFiles } from "./attachment-files.ts";
 import { historicalCandidate, historicalRetrievalProjection, retrievalMessage, timelineTokens, timelineBytes } from "../../util/timeline-text.ts";
 import { byteLength, entryOverhead, type ContextRow } from "./inference.ts";
 import { checkScriptIdentity } from "./script-identity.ts";
@@ -10,7 +14,9 @@ import { validateManagedConfig } from "../../util/config.ts";
 type ContextEntry = ContextRow & { entry: TimelineEntry };
 
 interface Data {
+  web: { base?: number; records: Map<string, import("../../contracts/web.ts").StoredWebDispatch> };
   reminders: MemoryReminderState;
+  attachments: MemoryAttachmentState;
   bySeq: Map<number, ContextEntry>;
   retrievalReplies: Map<string, number>;
   historicalCandidates: TimelineEntry[];
@@ -27,7 +33,7 @@ interface Data {
   channels: Map<string, ChannelRow>; participants: Set<string>;
   items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[]; conversation: Map<string, TimelineEntry[]>; replies: Map<number, TimelineEntry[]>;
 }
-const empty = (meta: Meta): Data => ({ meta, reminders: emptyMemoryReminders(), channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), historicalCandidates: [], retrievalCalls: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
+const empty = (meta: Meta): Data => ({ meta, web: { records: new Map() }, reminders: emptyMemoryReminders(), attachments: emptyMemoryAttachments(), channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), historicalCandidates: [], retrievalCalls: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
 const copy = <T>(value: T): T => structuredClone(value);
 const live = (turn: TurnRow) => turn.state.status === "running" || turn.state.status === "suspended";
 
@@ -55,6 +61,8 @@ function memoryTables(data: Data): Tables {
       bytes: base.bytes - byteLength(JSON.stringify(row.entry.message)) + byteLength(JSON.stringify(projected)) };
   };
   return {
+    web: memoryWebTables(data.web, log),
+    attachments: memoryAttachmentTables(data.attachments, log, () => data.meta.formatVersion === 10 ? data.web.base! : data.meta.formatVersion, id => data.items.get(id)),
     reminders: memoryReminderTables(data.reminders, log, channel => data.channels.get(channel)?.lifecycle === "open"),
     contextTurnStart(channelId, turnId) {
       const turn = data.turns.get(turnId);
@@ -69,6 +77,9 @@ function memoryTables(data: Data): Tables {
       const rows = data.inputs.get(turnId) ?? [];
       const start = before(rows, after + 1);
       return rows.slice(start, start + limit).map(header);
+    },
+    contextAttachmentInputs(turnId, limit) {
+      return (data.inputs.get(turnId) ?? []).filter(row => row.entry.message.role === "user" && row.entry.message.parts !== undefined).slice(0, limit).map(header);
     },
     contextActive: (turnId, limit) => recent(data.byTurn.get(turnId) ?? [], limit).map(header),
     contextLocal(channelId, start, limit) {
@@ -184,6 +195,11 @@ function memoryTables(data: Data): Tables {
         log(() => { namesForUndo.delete(name); });
       }
     },
+    hasOpenRoutineNotice: (channelId, source) => [...data.items.values()].some(item => {
+      if (item.channelId !== channelId || item.externalSource !== source || item.kind !== "external_notice") return false;
+      const status = item.turnId === undefined ? undefined : data.turns.get(item.turnId)?.state.status;
+      return item.milestone === "received" || status === "running" || status === "suspended";
+    }),
     pendingItems: (channelId, limit) => copy([...data.items.values()].filter(item => item.channelId === channelId && item.milestone === "received")
       .sort((a, b) => a.acceptedSeq - b.acceptedSeq).slice(0, limit ?? Infinity)),
     itemsOfTurn: turnId => copy([...data.items.values()].filter(item => item.turnId === turnId).sort((a, b) => a.entrySeq! - b.entrySeq!)),
@@ -282,7 +298,7 @@ function memoryTables(data: Data): Tables {
 /** One in-memory location with the same semantics as a database file: the
  * session outlives its handle, so close and open behave like a restart within
  * one process. Nothing survives the process itself. */
-export function createMemoryStorageAdapter(): SessionStorageAdapter {
+export function createMemoryStorageAdapter(adapterOptions: { mediaRoot?: string } = {}): SessionStorageAdapter {
   let data: Data | undefined;
   let owned = false;
   return {
@@ -294,10 +310,12 @@ export function createMemoryStorageAdapter(): SessionStorageAdapter {
     importSessionFile(payload, options) {
       try {
         const { archive, config } = validateSessionPayload(payload);
+        if (archive.archiveVersion === 8 && !adapterOptions.mediaRoot) throw new Fail("incompatible", "Managed attachment root is unavailable");
         if (options?.sessionId !== undefined && (typeof options.sessionId !== "string" || !options.sessionId.trim())) throw new Fail("invalid_input", "sessionId must be a nonempty string");
         if (data) throw new Fail("already_exists", "A session already exists at this location");
         const next = empty(archiveMeta(copy(archive), options?.sessionId));
         const tables = memoryTables(next); tables.transaction(() => { restoreArchive(tables, archive); tables.setConfig(config); });
+        if (archive.attachmentState) writeMemoryArchiveFiles(adapterOptions.mediaRoot!, archive.attachmentState.files);
         data = next;
         return { ok: true, value: storedSession(next.meta), revision: next.meta.revision };
       } catch (error) { return failure(error); }
@@ -320,19 +338,29 @@ export function createMemoryStorageAdapter(): SessionStorageAdapter {
           checkScriptIdentity(data.meta.compatibilityKey, options.requiredScriptDigest);
         }
         const tables = memoryTables(data);
-        if (referencesCompatible(tables, config)) recover(tables);
+        const reminderEvents: NonNullable<Parameters<typeof recover>[2]> = [];
+        tables.transaction(() => {
+          checkUnattendedGuard(tables, config?.limits?.unattendedTurns);
+          if (referencesCompatible(tables, config)) {
+            recover(tables, undefined, reminderEvents);
+            bindUnattendedGuard(tables, config?.limits?.unattendedTurns);
+          }
+        });
         owned = true;
-        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { owned = false; }, config), revision: data.meta.revision };
+        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { owned = false; }, config, false, reminderEvents,
+          adapterOptions.mediaRoot ? (records, maxBytes) => readArchiveFiles(adapterOptions.mediaRoot!, records, maxBytes) : undefined), revision: data.meta.revision };
       } catch (error) { return failure(error); }
     },
     importArchive(raw, options) {
       try {
         const archive = validateArchive(raw);
+        if (archive.archiveVersion === 8 && !adapterOptions.mediaRoot) throw new Fail("incompatible", "Managed attachment root is unavailable");
         if (options?.sessionId !== undefined && (typeof options.sessionId !== "string" || !options.sessionId.trim()))
           throw new Fail("invalid_input", "sessionId must be a nonempty string");
         if (data) throw new Fail("already_exists", "A session already exists at this location");
         const next = empty(archiveMeta(copy(archive), options?.sessionId));
         restoreArchive(memoryTables(next), archive);
+        if (archive.attachmentState) writeMemoryArchiveFiles(adapterOptions.mediaRoot!, archive.attachmentState.files);
         data = next; // Published only after every row was written.
         return { ok: true, value: storedSession(next.meta), revision: next.meta.revision };
       } catch (error) { return failure(error); }

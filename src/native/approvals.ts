@@ -2,6 +2,7 @@ import { permissionArrival } from "../permissions/arrival.ts";
 import type { ChannelEvent } from "../native-harness/src/client.ts";
 import type { Logger } from "../logger.ts";
 import { cancelledPermission, nativeConversationStopping, nativePermissionRequests, refuseNativeOnClose, type NativePermission, type PermissionResolution } from "../permissions/conversation.ts";
+import { unansweredCancellation } from "../permissions/outcome.ts";
 import { recordingPermissionHandlers } from "../permissions/policy.ts";
 import type { PermissionRequest, PromptHandlers } from "../types.ts";
 import type { NativeApprovalRequest, NativeApprovalResponder } from "./host.ts";
@@ -20,11 +21,15 @@ class Approval implements NativePermission {
   private inFlight = false;
   private observedAnswer?: PermissionResolution;
   private started = false;
+  private cancelTurn?: () => void;
+
+  onCancelTurn(listener: () => void): void { this.cancelTurn = listener; }
 
   constructor(
     readonly request: NativeApprovalRequest,
     readonly hostHandled: boolean,
     private readonly send: SendApproval,
+    private readonly interrupt?: () => Promise<boolean>,
   ) {
     this.resolution = new Promise(resolve => { this.resolve = resolve; });
   }
@@ -46,6 +51,17 @@ class Approval implements NativePermission {
   async answer(resolution: PermissionResolution): Promise<boolean> {
     if (this.inFlight || this.abort.signal.aborted) return false;
     this.inFlight = true;
+    if (resolution.outcome === unansweredCancellation && this.interrupt) {
+      this.observedAnswer = resolution;
+      try {
+        this.cancelTurn?.();
+        const accepted = await this.interrupt();
+        this.finish(accepted ? resolution : cancelledPermission);
+        return accepted;
+      } finally {
+        this.finish(cancelledPermission);
+      }
+    }
     const decision = resolution.outcome.outcome === "selected" && resolution.outcome.optionId === "allow_once" ? allow : deny;
     try {
       const accepted = await this.send(decision.optionId);
@@ -64,7 +80,7 @@ class Approval implements NativePermission {
       if (!this.inFlight) this.finish(this.observedAnswer);
     } else if (reason === "approval_timeout") {
       this.finish({ outcome: deny, by: "timeout" });
-    } else {
+    } else if (this.observedAnswer?.outcome !== unansweredCancellation) {
       this.finish(cancelledPermission);
     }
   }
@@ -76,6 +92,7 @@ class Approval implements NativePermission {
   finish(result: PermissionResolution): void {
     if (this.abort.signal.aborted) return;
     this.abort.abort();
+    this.cancelTurn = undefined;
     this.resolve(result);
   }
 }
@@ -88,11 +105,11 @@ export class NativeApprovals {
 
   constructor(private readonly responder: NativeApprovalResponder | undefined, private readonly log: Logger) {}
 
-  observe(channel: string, event: ApprovalEvent, send: SendApproval): void {
+  observe(channel: string, event: ApprovalEvent, send: SendApproval, interrupt?: () => Promise<boolean>): void {
     let ticket = this.events.get(event) ?? this.active.get(event.requestId);
     if (!ticket) {
       const { type: _type, ...request } = event;
-      ticket = new Approval({ ...request, channel }, this.responder !== undefined, send);
+      ticket = new Approval({ ...request, channel }, this.responder !== undefined, send, interrupt);
       this.active.set(event.requestId, ticket);
     }
     this.events.set(event, ticket);

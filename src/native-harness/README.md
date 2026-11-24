@@ -24,7 +24,15 @@ work. Experiments live in [.res/sandbox/](.res/sandbox/).
 This directory is an independent TypeScript and Bun project (Bun >= 1.3.5), with
 its own package manifest, lockfile and TypeScript configuration. It does not
 depend on the parent acp-client package. Development dependencies are TypeScript
-and Bun types; there are no runtime dependencies.
+and Bun types. Managed image input additionally requires the optional local
+`ffmpeg`, `ffprobe`, and Linux `prlimit` executables on `PATH`; general-file attachments do not.
+Image input is offered only when the model configuration explicitly opts in
+and all three executables are available. Both image processes run under a 1 GiB
+address-space limit, a CPU limit, and a file-descriptor limit, with bounded
+output and a cancellable timeout. Input is passed via an anonymous Linux temporary inode on stdin, with no named
+copy left on disk; an O_TMPFILE-capable temporary filesystem is required.
+They accept only pipe input; missing tools,
+unsupported platforms, resource exhaustion, and invalid images fail closed.
 
 From this directory:
 
@@ -605,6 +613,28 @@ Run `bun test test/protocol.test.ts test/stdio.test.ts` for transport parity and
 framing/process lifecycle checks. Child stdin in Bun uses IPC and may require
 local IPC permissions in sandboxed environments. All scenarios are offline.
 
+### Managed attachments
+
+Managed stdio sessions store files in `<home>/<sessionId>/media`; development
+with an explicit `--db PATH` uses `PATH.media`. The paired web chat can upload
+and download files, and memory-backed development uses a temporary media root.
+The host can use `beginAttachment`, `writeAttachment`, `finalizeAttachment`,
+`attachmentStatus`, `abortAttachment` and `readAttachment` on `HarnessClient`.
+Chunks are at most 512 KiB decoded; each file is at most 20 MiB. Finalization
+checks length and SHA-256 before committing ready metadata. A push may contain
+ordered text and attachment references, including an attachment-only input.
+Text-only pushes retain their existing retry identity.
+
+Set `model.imageInput: true` explicitly to enable PNG, JPEG and WebP input
+when the local validator is available. Initialize reports attachment protocol
+support; create/open reports the effective image capability and limits. A
+text-only model rejects an image push before acceptance. Ready files belong to
+their uploading channel until a referenced message enters the shared timeline;
+then timeline readers may download them. History and diagnostics contain
+references and metadata, not image bytes. Complete session exports include
+retained attachment bytes and fail if those bytes are missing or the bounded
+archive cannot contain them.
+
 ## Consumer tools and host callbacks
 
 A host can register functions for the model to call
@@ -724,3 +754,30 @@ A stopped harness needs a host to reopen it before any due work can run.
 
 Run `bun test test/reminder-stdio.test.ts` from this package to verify cold
 open, replay, process death and the idle-stop fence with a scripted model.
+
+Managed web tools are disabled until configured. `webSearch` accepts an Exa
+backend; `webFetch` independently accepts Exa or direct HTTP. Exa resolves the
+configured `apiKeyEnv` (default `EXA_API_KEY`) from the launching process at
+executable open; configuration and exports store the variable name, never its
+value. Direct HTTP needs no Exa credential. Both tools use the session's normal
+tool policy and produce bounded JSON previews; inspect per-invocation provider
+estimates separately from model token usage. See
+[decision 0035](.res/decisions/0035-web-search-fetch.md) for transport limits,
+address checks, cost recovery and defaults.
+
+### Managed MCP tools
+
+Decision 0036 adds the optional `@modelcontextprotocol/sdk` 1.31.0 dependency
+for executable sessions with configured MCP servers. Install the harness
+package dependencies before running the feature. Set `mcpServers` in managed
+configuration, with a direct executable, arguments and any explicit environment
+references. Grant `mcp: "allow"` under the trusted owner policy. MCP defaults
+to deny, including when any taken input contributes a policy without a grant.
+An executable reopen discovers the configured server's tools again.
+
+Streamable HTTPS uses an optional private Undici 7.29.0 dispatcher, with
+endpoint binding and certificate validation. Use environment references or
+runtime declarations for secret headers. The owning protocol caller supplies
+runtime values on each executable create or reopen. Upstream launcher
+acceptance is tracked separately. The offline fixtures do not establish the
+approval behavior of agents-tools or the door.

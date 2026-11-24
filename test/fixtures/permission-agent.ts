@@ -128,6 +128,10 @@ async function runTurn(message: any): Promise<void> {
     return;
   }
   const response: any = await permission;
+  if (key === "stop-on-cancel" && response?.outcome?.outcome === "cancelled") {
+    send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "cancelled" } });
+    return;
+  }
 
   // Echo what we got. `__error` means the client failed the request outright, which is a
   // distinct failure from being refused, and the tests need to tell them apart.

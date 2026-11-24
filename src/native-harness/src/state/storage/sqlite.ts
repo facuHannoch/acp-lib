@@ -1,4 +1,9 @@
+import { sqliteWebTables } from "./web-tables.ts";
+import { bindUnattendedGuard, checkUnattendedGuard } from "./engine.ts";
 import { sqliteReminderTables } from "./sqlite-reminders.ts";
+import { sqliteAttachmentTables } from "./attachment-tables.ts";
+import { readArchiveFiles } from "./attachment-files.ts";
+import { acquireImportLease, publishAttachmentImport, recoverAttachmentImport } from "./attachment-import.ts";
 import { historicalCandidate, historicalRetrievalProjection, encodedTimelineToken, retrievalMessage, timelineBytes, timelineIndexText } from "../../util/timeline-text.ts";
 import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import { entryOverhead, type ContextRow } from "./inference.ts";
@@ -250,6 +255,12 @@ function installContextPolicyIndex(db: Database): void {
 }
 
 function sqliteTables(db: Database): Tables & { dispose(): void } {
+  const attachments = sqliteAttachmentTables(db);
+  const web = sqliteWebTables(db);
+  const readItem = (row: Row): StoredItem => {
+    const value = item(row), parts = attachments.parts(value.itemId);
+    return parts ? { ...value, parts } : value;
+  };
   // Prepared on first use: statements for tables a format 2 file does not have
   // yet must not be compiled before the upgrade runs.
   const finalizers: (() => void)[] = [];
@@ -289,6 +300,8 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     contextPreviousResponse: q(`SELECT seq FROM entries WHERE turn_id = ? AND ${ASSISTANT} ORDER BY seq DESC LIMIT 1`),
     contextInputs: q(`SELECT ${contextHeader("'input'")}, (SELECT octet_length(text) FROM items WHERE items.item_id = e.item_id) AS text_bytes FROM entries AS e
       WHERE turn_id = ? AND item_id IS NOT NULL AND seq > ? ORDER BY seq LIMIT ?`),
+    contextAttachmentInputs: q(`SELECT ${contextHeader("'input'")}, (SELECT octet_length(text) FROM items WHERE items.item_id = e.item_id) AS text_bytes FROM entries AS e
+      WHERE turn_id = ? AND item_id IS NOT NULL AND json_type(message, '$.parts') = 'array' ORDER BY seq DESC LIMIT ?`),
     contextActive: q(`SELECT ${contextHeader(`CASE WHEN item_id IS NOT NULL THEN 'input'
       WHEN EXISTS (SELECT 1 FROM entries AS a INDEXED BY entries_context_assistants
         WHERE a.turn_id = e.turn_id AND a.seq = e.seq AND ${ASSISTANT}) THEN 'assistant' ELSE 'other' END`)}
@@ -351,6 +364,8 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     }
   };
   return {
+    web,
+    attachments,
     reminders: sqliteReminderTables(db),
     contextTurnStart: (channelId, turnId) => s.contextTurnStart.get(turnId, channelId)?.started_seq,
     contextTrigger(turnId) {
@@ -359,6 +374,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     },
     contextPreviousResponse: turnId => s.contextPreviousResponse.get(turnId)?.seq ?? 0,
     contextInputs: (turnId, after, limit) => s.contextInputs.all(turnId, after, limit).map(contextRow),
+    contextAttachmentInputs: (turnId, limit) => s.contextAttachmentInputs.all(turnId, limit).reverse().map(contextRow),
     contextActive: (turnId, limit) => s.contextActive.all(turnId, limit).map(contextRow),
     contextLocal: (channelId, start, limit) => s.contextLocal.all(channelId, start, limit).map(contextRow),
     contextRecent: (before, limit, legacy) => (legacy ? s.contextRecentLegacy : s.contextRecent).all(before, limit).map(contextRow),
@@ -449,12 +465,15 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     channels: () => s.channels.all().map(channel),
     addParticipant(id) { s.addParticipant.run(id); },
     participants: () => s.participants.all().map(row => row.participant_id),
-    item(id) { const row = s.item.get(id); return row ? item(row) : undefined; },
+    item(id) { const row = s.item.get(id); return row ? readItem(row) : undefined; },
     putItem(i) { s.putItem.run(i.itemId, i.kind, i.channelId, i.senderId, i.sourceChannelId ?? null, i.text, i.signature,
       i.acceptedSeq, i.acceptedAt, i.milestone, i.turnId ?? null, i.entrySeq ?? null, i.withdrawnAt ?? null, JSON.stringify(i.policy ?? { resolved: "__legacy_allow", inherited: [] }), i.externalSource ?? null); },
-    pendingItems: (channelId, limit) => s.pending.all(channelId, limit ?? -1).map(item),
-    itemsOfTurn: turnId => s.ofTurn.all(turnId).map(item),
-    items: () => s.items.all().map(item),
+    hasOpenRoutineNotice: (channelId, source) => !!db.query(`SELECT 1 FROM items i LEFT JOIN turns t USING(turn_id)
+      WHERE i.channel_id = ? AND i.external_source = ? AND i.kind = 'external_notice'
+      AND (i.milestone = 'received' OR t.status IN ('running','suspended')) LIMIT 1`).get(channelId, source),
+    pendingItems: (channelId, limit) => s.pending.all(channelId, limit ?? -1).map(readItem),
+    itemsOfTurn: turnId => s.ofTurn.all(turnId).map(readItem),
+    items: () => s.items.all().map(readItem),
     turn(id) { const row = s.turn.get(id); return row ? turn(row) : undefined; },
     putTurn(t) { s.putTurn.run(t.turnId, t.channelId, t.startedSeq, t.startedAt, t.compatibilityKey, t.state.status, JSON.stringify(t.state)); },
     liveTurn(channelId) { const row = s.live.get(channelId); return row ? turn(row) : undefined; },
@@ -515,7 +534,7 @@ interface SavedSessionHeader { sessionId: string; config: PortableSessionConfig 
 /** One SQLite file holds one session. Ownership is SQLite's exclusive file
  * lock, held from open to close: a second handle, in this or any process,
  * fails immediately, and the operating system releases it if the owner dies. */
-export function createSqliteStorageAdapter(path: string): SessionStorageAdapter & {
+export function createSqliteStorageAdapter(path: string, adapterOptions: { mediaRoot?: string } = {}): SessionStorageAdapter & {
   /** Inspect the saved identity and config without taking session ownership. */
   readSavedHeader(): StorageResult<SavedSessionHeader>;
 } {
@@ -542,22 +561,31 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
       return result.ok ? { ...result, value: result.value.config } : result;
     },
     importSessionFile(payload, options) {
+      let releaseLease: (() => void) | undefined;
       try {
         const { archive, config } = validateSessionPayload(payload);
         if (options?.sessionId !== undefined && (typeof options.sessionId !== "string" || !options.sessionId.trim())) throw new Fail("invalid_input", "sessionId must be a nonempty string");
+        const root = adapterOptions.mediaRoot ?? `${path}.media`;
+        releaseLease = acquireImportLease(path); recoverAttachmentImport(path, root);
         const meta = archiveMeta(archive, options?.sessionId);
-        publish(path, meta, tables => { restoreArchive(tables, archive); tables.setConfig(config); });
+        const publishDatabase = () => publish(path, meta, tables => { restoreArchive(tables, archive); tables.setConfig(config); });
+        if (archive.attachmentState) publishAttachmentImport(path, root, archive, publishDatabase); else publishDatabase();
         return { ok: true, value: storedSession(meta), revision: meta.revision };
       } catch (error) { return failure(error); }
+      finally { releaseLease?.(); }
     },
     open(options) {
       let db: Database | undefined;
+      let releaseLease: (() => void) | undefined;
       try {
         const identity = options?.identity;
         if (!identity || typeof identity.sessionId !== "string" || !identity.sessionId.trim() || typeof identity.compatibilityKey !== "string"
           || (options.mode !== "create" && options.mode !== "open")) throw new Fail("invalid_input", "Open needs a mode, sessionId and compatibilityKey");
         let config; try { config = options.config === undefined ? undefined : validateManagedConfig(options.config); } catch (error) { throw new Fail("invalid_input", String(error)); }
         if (options.mode === "create") checkScriptIdentity(identity.compatibilityKey, options.requiredScriptDigest);
+        if (options.mode === "open" && !existsSync(path) && !existsSync(`${path}.attachment-import`)) throw new Fail("not_found", `No session exists at ${path}`);
+        releaseLease = acquireImportLease(path);
+        recoverAttachmentImport(path, adapterOptions.mediaRoot ?? `${path}.media`);
         if (options.mode === "create") publish(path, { sessionId: identity.sessionId, formatVersion: 6, createdAt: new Date().toISOString(),
           compatibilityKey: identity.compatibilityKey, lifecycle: "running", revision: 0, nextTurnId: 1, nextItemNumber: 1 });
         else if (!existsSync(path)) throw new Fail("not_found", `No session exists at ${path}`);
@@ -570,8 +598,18 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         try {
           try { meta = inspect.getMeta(); }
           catch { throw new Fail("incompatible", "File is not a readable harness session"); }
-          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
-          if (meta.formatVersion === 7 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
+          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6 && meta.formatVersion !== 7 && meta.formatVersion !== 8 && meta.formatVersion !== 9 && meta.formatVersion !== 10) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
+          const webBase = meta.formatVersion === 10 ? inspect.web.baseFormat() : undefined;
+          if (meta.formatVersion === 10 && (![6, 7, 8, 9].includes(webBase ?? 0) || db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM sqlite_schema WHERE type='table' AND name='web_dispatch'").get()?.count !== 1))
+            throw new Fail("incompatible", "Format 10 is missing web dispatch evidence");
+          const attachmentFormat = meta.formatVersion === 9 || webBase === 9;
+          const attachmentBase = attachmentFormat ? inspect.attachments?.baseFormat() : undefined;
+          if (attachmentFormat && attachmentBase !== 6 && attachmentBase !== 7 && attachmentBase !== 8)
+            throw new Fail("incompatible", "Format 9 is missing its base format");
+          if (attachmentFormat && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
+              WHERE type = 'table' AND name IN ('attachment_files','attachment_items','attachment_item_parts')`).get()?.count !== 3)
+            throw new Fail("incompatible", "Format 9 is missing attachment storage");
+          if ((attachmentFormat ? attachmentBase! : webBase ?? meta.formatVersion) >= 7 && db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM sqlite_schema
               WHERE type = 'table' AND name IN ('reminder_rows','reminder_receipts','reminder_creates','reminder_metadata')`).get()?.count !== 4)
             throw new Fail("incompatible", "Format 7 is missing reminder storage");
           if (meta.sessionId !== identity.sessionId) throw new Fail("incompatible", "File holds a different session");
@@ -592,17 +630,21 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           } catch (error) { clone.close(); throw error; }
         }
         const tables = sqliteTables(db), owner = db;
+        const reminderEvents: NonNullable<Parameters<typeof recover>[2]> = [];
         tables.transaction(() => {
+          checkUnattendedGuard(tables, config?.limits?.unattendedTurns);
           refreshReplyIds(owner);
           refreshModelCalls(owner);
           const compatible = meta.formatVersion < 4 || referencesCompatible(tables, config);
           if (meta.formatVersion >= 4 && meta.formatVersion < 6 && compatible) addExternalSource(owner);
           if (compatible)
-            recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); addExternalSource(owner); } : undefined);
+            recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); addExternalSource(owner); } : undefined, reminderEvents);
+          if (compatible) bindUnattendedGuard(tables, config?.limits?.unattendedTurns);
           if (tables.getMeta().formatVersion >= 6) installContextPolicyIndex(owner);
           refreshRetrieval(owner, tables.entries);
         });
-        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config), revision: tables.getMeta().revision };
+        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config, false, reminderEvents,
+          (records, maxBytes) => readArchiveFiles(adapterOptions.mediaRoot ?? `${path}.media`, records, maxBytes)), revision: tables.getMeta().revision };
       } catch (error) {
         try { db?.close(); } catch { /* The original failure is the one to report. */ }
         const code = (error as { code?: string }).code;
@@ -610,16 +652,22 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         if (code === "SQLITE_NOTADB" || code === "SQLITE_CORRUPT") return failure(new Fail("incompatible", "File is not a readable harness session"));
         return failure(error);
       }
+      finally { releaseLease?.(); }
     },
     importArchive(raw, options) {
+      let releaseLease: (() => void) | undefined;
       try {
         const archive = validateArchive(raw);
         if (options?.sessionId !== undefined && (typeof options.sessionId !== "string" || !options.sessionId.trim()))
           throw new Fail("invalid_input", "sessionId must be a nonempty string");
+        const root = adapterOptions.mediaRoot ?? `${path}.media`;
+        releaseLease = acquireImportLease(path); recoverAttachmentImport(path, root);
         const meta = archiveMeta(archive, options?.sessionId);
-        publish(path, meta, tables => restoreArchive(tables, archive));
+        const publishDatabase = () => publish(path, meta, tables => restoreArchive(tables, archive));
+        if (archive.attachmentState) publishAttachmentImport(path, root, archive, publishDatabase); else publishDatabase();
         return { ok: true, value: storedSession(meta), revision: meta.revision };
       } catch (error) { return failure(error); }
+      finally { releaseLease?.(); }
     },
   };
 }

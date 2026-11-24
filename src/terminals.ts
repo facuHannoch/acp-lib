@@ -15,6 +15,8 @@ export interface CreateTerminalParams {
   args?: string[];
   cwd?: string | null;
   env?: Array<{ name: string; value: string }>;
+  /** Exact environment for this terminal, supplied by the host. */
+  terminalEnv?: Record<string, string>;
   /** Bytes of output to retain; older output is dropped from the FRONT. */
   outputByteLimit?: number | null;
 }
@@ -28,8 +30,10 @@ export interface TerminalOutput {
 export interface TerminalRegistryOptions {
   /** Fallback cwd when the agent doesn't specify one. */
   cwd?: string;
-  /** Extra env for every terminal, merged over process.env. */
+  /** Base environment when no exact terminalEnv is supplied. Defaults to empty. */
   env?: Record<string, string>;
+  /** Exact environment for every terminal unless overridden at creation. */
+  terminalEnv?: Record<string, string>;
   logger?: Logger;
 }
 
@@ -113,11 +117,10 @@ export class TerminalRegistry {
   /** Spawn a command and return its terminal id. Output accumulates until released. */
   create(params: CreateTerminalParams): string {
     const id = `term-${++this.seq}`;
-    const env: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      ...(this.options.env ?? {}),
-    };
-    for (const v of params.env ?? []) env[v.name] = v.value;
+    const exact = params.terminalEnv ?? this.options.terminalEnv;
+    const env = exact === undefined
+      ? { ...this.options.env, ...Object.fromEntries((params.env ?? []).map(({ name, value }) => [name, value])) }
+      : { ...exact };
 
     const proc = Bun.spawn(toArgv(params), {
       cwd: params.cwd ?? this.options.cwd,

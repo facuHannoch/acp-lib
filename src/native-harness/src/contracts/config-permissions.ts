@@ -1,15 +1,26 @@
+import type { McpServer } from "./mcp.ts";
+
 /** Decisions 0016 and 0017: a validated portable session configuration.
  * Script files and credential environment variables are destination resources. */
 export type ToolDecision = "allow" | "ask" | "deny";
-export interface ToolPolicy { fallback: ToolDecision; tools: Record<string, ToolDecision> }
-export type ManagedModel = { protocol: "scripted"; script: string }
-  | { protocol: "openrouter"; model: string; apiKeyEnv: string };
+export interface ToolPolicy { fallback: ToolDecision; mcp?: "allow" | "deny"; tools: Record<string, ToolDecision> }
+export type ManagedModel = { protocol: "scripted"; script: string; imageInput?: boolean }
+  | { protocol: "openrouter"; model: string; apiKeyEnv: string; imageInput?: boolean }
+  | { protocol: "openai-compatible"; providerId: string; model: string; baseUrl: string; apiKeyEnv?: string };
+/** Decision 0035: independent portable web backends, with credential names only. */
+export interface ExaSearchConfig { backend: "exa"; apiKeyEnv?: string; maxResults?: number; excerptBytes?: number; deadlineMs?: number }
+export type WebFetchConfig = { backend: "exa"; apiKeyEnv?: string; deadlineMs?: number } | { backend: "http"; deadlineMs?: number };
+export interface WebConfig { webSearch?: ExaSearchConfig; webFetch?: WebFetchConfig }
 export interface ManagedConfig {
   version: 1;
+  limits?: { unattendedTurns?: number; mcpCallTimeoutMs?: number };
+  mcpServers?: Record<string, McpServer>;
   system: string;
   model: ManagedModel;
   defaultPolicy: string;
   timelineTools?: boolean;
+  webSearch?: ExaSearchConfig;
+  webFetch?: WebFetchConfig;
   policies: Record<string, ToolPolicy>;
 }
 

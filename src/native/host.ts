@@ -1,7 +1,7 @@
 import type { NativeConnection, NativeHarnessHostConfig } from "./host-config.ts";
 export type { NativeConnection, NativeHarnessHostConfig, NativeApprovalRequest, NativeApprovalResponder } from "./host-config.ts";
-import { idleMilliseconds, ReminderIdleSupervisor, type IdleStopResult } from "./reminders/idle.ts";
-import { reminderNotification, reminderRpc, type WireChange, type ReminderNotification, type WireReminderEvent } from "./reminders/wire.ts";
+import { idleMilliseconds, ReminderIdleSupervisor } from "./reminders/idle.ts";
+import { reminderNotification, type WireChange, type ReminderNotification, type WireReminderEvent } from "./reminders/wire.ts";
 import type { ReminderWakeSupervisor } from "./reminders/supervisor.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
 import { deferred, launchNativeConnection, type Deferred } from "./connection.ts";
@@ -29,7 +29,7 @@ import { takenSender } from "./delegation-sender.ts";
  * by channel id (the conversation id) and receive that channel's events and reconciled view.
  */
 import {
-  type HarnessClient,
+  type HarnessClient, type ConditionalStopResult,
   type ChannelEvent,
   type ChannelStatusResult,
   type ItemStatus,
@@ -46,7 +46,7 @@ import { noopLogger, type Logger } from "../logger.ts";
 import type { ChannelDesire, ChannelPersistence, PendingChange } from "../persistence/channels.ts";
 import { createMemoryHostRecords, fileHasPendingChannelChanges, submissionRecords, type NativeHostRecords, type Submission } from "./records.ts";
 import { channelStore, NativeChannelChanges, type ChannelChangeOutcome } from "./channel-changes.ts";
-import { ambiguous, codeOf, HarnessIncompatibleError, HarnessUnavailableError } from "./errors.ts";
+import { ambiguous, codeOf, HarnessIncompatibleError, HarnessUnavailableError, terminalStartupError } from "./errors.ts";
 
 export { HarnessIncompatibleError, HarnessUnavailableError } from "./errors.ts";
 export type { ChannelChangeOutcome } from "./channel-changes.ts";
@@ -85,14 +85,15 @@ const REQUIRED_METHODS = ["session/open", "channel/observe", "channel/reconcile"
 export class NativeHarnessHost {
   readonly sessionId: string;
   readonly records: NativeHostRecords;
-  readonly #config: NativeHarnessHostConfig;
+  #config: NativeHarnessHostConfig;
+  #restartTransition?: Promise<void>;
   readonly #log: Logger;
   reminderSync?: ReminderSync;
   reminderWake?: ReminderWakeSupervisor;
   #stoppingExplicitly = false;
   // Keep receiving deadlines from the detached connection until explicit stop drains them.
   #stoppingConnection: NativeConnection | null = null;
-  #wakeFailure: HarnessUnavailableError | null = null;
+  #wakeFailure: Error | null = null;
   get reminderWakeState(): NativeHostState { return this.#wakeFailure ? "failed" : this.#stoppingExplicitly ? "running" : this.#state; }
   get reminderTimer() { return this.#config.reminderTimer; }
   startForReminder(now: number): Promise<void> {
@@ -102,7 +103,7 @@ export class NativeHarnessHost {
       this.#wakeFailure = new HarnessUnavailableError("the reminder wake exhausted its restart budget", { code: "reopen_failed" });
       return Promise.reject(this.#wakeFailure);
     }
-    return this.ensureStarted();
+    return this.ensureStarted().catch(error => { if (terminalStartupError(error)) { this.#restarts.pop(); this.#wakeFailure = error; } throw error; });
   }
   async changeReminder(change: WireChange) {
     await this.ensureStarted();
@@ -114,22 +115,23 @@ export class NativeHarnessHost {
   }
   reminderIdle?: ReminderIdleSupervisor;
   closeReminderSupervisors(): void { this.reminderIdle?.close(); this.reminderWake?.close(); }
-  #idling?: Promise<IdleStopResult>;
+  #idling?: Promise<ConditionalStopResult>;
 
   #localBusy(): boolean {
     return this.#waiters.size > 0 || this.records.submissions().length > 0 || this.#approvals.busy
       || this.#changes.busy || [...this.#ports.values()].some(port => port.busy());
   }
 
-  #idleStop(window: number, stillIdle: () => boolean): Promise<IdleStopResult> {
+  #idleStop(window: number, stillIdle: () => boolean, onStopped?: () => void): Promise<ConditionalStopResult> {
     if (this.#idling) return this.#idling;
     const connection = this.#connection;
     if (this.#stoppingExplicitly || !connection || !stillIdle() || this.#localBusy()) return Promise.resolve({ stopped: false, reason: "busy" });
-    const attempt = reminderRpc<IdleStopResult>(connection.client, "session/stop", { ifIdle: true, unlessDueWithinMs: window });
+    const attempt = connection.client.stopIfIdle({ ifIdle: true, unlessDueWithinMs: window });
     this.#idling = attempt.then(async result => {
       await this.reminderSync?.settled();
       if (result.stopped && this.#connection === connection) {
         this.#connection = null;
+        onStopped?.();
         this.#approvals.stop();
         for (const port of this.#ports.values()) port.disconnected();
         try { await connection.kill(); } finally { this.#setState("stopped"); }
@@ -240,8 +242,9 @@ export class NativeHarnessHost {
 
   #observeApproval(connection: NativeConnection, { channel, event }: ChannelEvent): void {
     if (event.type === "approval_requested") {
-      this.#approvals.observe(channel, event, async decision =>
-        this.#connection === connection && this.#answerApproval(event.requestId, decision));
+      this.#approvals.observe(channel, event,
+        async decision => this.#connection === connection && this.#answerApproval(event.requestId, decision),
+        async () => this.#connection === connection && this.interrupt(channel, event.turnId, "unanswered permission"));
     } else if (event.type === "approval_closed") {
       this.#approvals.closed(event);
     }
@@ -301,8 +304,72 @@ export class NativeHarnessHost {
     }
   }
 
+  async waitForIdle(signal?: AbortSignal): Promise<void> {
+    for (;;) {
+      signal?.throwIfAborted();
+      if (!this.#localBusy() && !this.#starting && !this.#stoppingExplicitly) {
+        const connection = this.#connection;
+        if (!connection) return;
+        const status = await connection.client.status();
+        signal?.throwIfAborted();
+        if (connection === this.#connection && !this.#localBusy() &&
+          (status.execution === "idle" || status.execution === "suspended") && status.channels.every(
+          channel => !channel.activeTurn && !channel.waitingForResume && channel.pending.length === 0,
+        )) return;
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 25));
+    }
+  }
+
+  async restartForAgent(options: import("../agent/native-operations.ts").NativeRestartOptions,
+    interrupted: { channel: string; turnId: string }[]): Promise<void> {
+    const { signal, when = "idle" } = options;
+    signal?.throwIfAborted();
+    let configured = false;
+    const configure = () => {
+      if (configured) return;
+      configured = true;
+      if (options.functions !== undefined) {
+        this.#functions?.dispose();
+        this.#functions = null;
+      }
+      this.#config = { ...this.#config, ...(options.config ? { config: options.config } : {}),
+        ...(options.functions !== undefined ? { functions: options.functions ?? undefined } : {}) };
+    };
+    if (when === "idle") {
+      for (;;) {
+        await this.waitForIdle(signal);
+        if (!this.#connection) break;
+        if ((await this.#idleStop(0, () => !signal?.aborted, configure)).stopped) break;
+        await new Promise<void>(resolve => setTimeout(resolve, 25));
+      }
+      configure();
+    } else {
+      const transition = async () => {
+        await this.#starting;
+        const connection = this.#connection;
+        if (connection) {
+          const { channels } = await connection.client.status();
+          await Promise.all(channels.map(async ({ channel, activeTurn }) => {
+            if (activeTurn?.state === "running" && await this.interrupt(channel, activeTurn.turnId, "agent_restart")) {
+              interrupted.push({ channel, turnId: activeTurn.turnId });
+            }
+          }));
+        }
+        await this.stop();
+        configure();
+      };
+      const pending = this.#restartTransition = transition();
+      try { await pending; }
+      finally { if (this.#restartTransition === pending) this.#restartTransition = undefined; }
+    }
+    signal?.throwIfAborted();
+    await this.restart();
+  }
+
   /** Starts the harness if it is not running. Concurrent callers share one start. */
   ensureStarted(): Promise<void> {
+    if (this.#restartTransition) return this.#restartTransition.then(() => this.ensureStarted());
     if (this.#idling) return this.#idling.catch(() => {}).then(() => this.ensureStarted());
     if (this.#wakeFailure) { this.#wakeFailure = null; this.#restarts.length = 0; }
     this.reminderIdle?.activity();
@@ -405,7 +472,7 @@ export class NativeHarnessHost {
     let reminderOpen = false;
     const earlyReminders: ReminderNotification[] = [];
     const reminderEvent = (event: ReminderNotification) =>
-      this.reminderSync?.notification(event, (channel, payload) => this.#ports.get(channel)?.reminderEvent?.(payload));
+      this.reminderSync?.notification(event, (channel, payload) => this.#ports.get(channel)?.reminderEvent?.(payload), client);
     const notifyReminder = (event: ReminderNotification) => {
       if (!reminderOpen) earlyReminders.push(event);
       else if (this.#connection === connection || ("deadline" in event && this.#stoppingConnection === connection)) reminderEvent(event);
@@ -455,6 +522,7 @@ export class NativeHarnessHost {
     signal.throwIfAborted();
 
     const status = await client.status();
+    if (status.mcpServers === undefined && opened.mcpServers !== undefined) status.mcpServers = opened.mcpServers;
     signal.throwIfAborted();
     const view: LoadResult = { status, items: [], turns: [], messages: [] };
     const submissions = this.records.submissions();
@@ -596,6 +664,7 @@ export class NativeHarnessHost {
         await this.ensureStarted();
         return;
       } catch (error) {
+        if (terminalStartupError(error)) { this.#restarts.pop(); this.#failReopen(error); return; }
         this.#log.warn("native_harness_reopen_failed", { error: String(error) });
         await new Promise((resolve) => setTimeout(resolve, 100 * this.#restarts.length));
       }
@@ -611,9 +680,8 @@ export class NativeHarnessHost {
     return true;
   }
 
-  #failReopen(): Error {
-    // Report exhausted retries to pending callers and stop automatic starts.
-    this.#failure = new HarnessUnavailableError("the native harness could not be reopened", { code: "reopen_failed" });
+  #failReopen(error?: Error): Error {
+    this.#failure = error ?? new HarnessUnavailableError("the native harness could not be reopened", { code: "reopen_failed" });
     this.#setState("failed");
     this.#rejectWaiters(this.#failure);
     for (const port of [...this.#ports.values()]) port.failed(this.#failure);
@@ -678,6 +746,7 @@ export class NativeHarnessHost {
    * definite refusal (suspended or retired channel, unknown policy, a conflicting id) rejects it.
    */
   async push(input: Omit<Submission, "state">): Promise<ItemStatus> {
+    if (this.#restartTransition) await this.#restartTransition;
     this.records.saveSubmission({ ...input, state: "saved" });
     const waiter = this.#waiters.get(input.id) ?? deferred<ItemStatus>();
     this.#waiters.set(input.id, waiter);
@@ -760,6 +829,7 @@ export class NativeHarnessHost {
    * the harness.
    */
   async changeChannel(channel: string, desire: ChannelDesire): Promise<ChannelChangeOutcome> {
+    if (this.#restartTransition) await this.#restartTransition;
     if (this.#idling) await this.ensureStarted();
     this.reminderIdle?.activity();
     const result = await this.#changes.change(channel, desire, this.#state === "running");
@@ -788,6 +858,15 @@ export class NativeHarnessHost {
     const live = await this.#client().status();
     this.#lastStatus = live;
     return live;
+  }
+
+  async mcpStatus(): Promise<import("./mcp.ts").NativeMcpStatus> {
+    const { session, stale } = await this.operatorStatus();
+    return this.mcpSnapshot(stale, session);
+  }
+
+  mcpSnapshot(stale = this.#state !== "running", session = this.#lastStatus): import("./mcp.ts").NativeMcpStatus {
+    return { capabilities: this.#capabilities?.mcpServers, servers: session?.mcpServers, stale };
   }
 
   async operatorStatus() {

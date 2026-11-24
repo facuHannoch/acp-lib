@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { join } from "node:path";
 import { spawnHarness } from "../../src/native-harness/test/helpers/stdio.ts";
 import { HarnessClientError, type HarnessClient, type ReminderSessionEvent } from "../../src/native-harness/src/client.ts";
 import { ReminderClock } from "./fixtures/reminder-clock.ts";
@@ -7,11 +8,17 @@ import { hold, nativeRig, reply, until } from "./support.ts";
 type Child = ReturnType<typeof spawnHarness>;
 type Open = Awaited<ReturnType<HarnessClient["openSession"]>>;
 
-async function joint() {
+async function joint(guard?: number) {
   const rig = await nativeRig();
+  if (guard !== undefined) rig.harness.config = {
+    version: 1, system: "Joint routine acceptance", model: { protocol: "scripted", script: join(rig.directory, "script.jsonl") },
+    defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } }, limits: { unattendedTurns: guard },
+  };
   const clock = new ReminderClock();
   clock.time = Date.now();
   const peer = { time: clock.time as number | undefined, fault: undefined as string | undefined,
+    beforeOpen: undefined as (() => void) | undefined,
+    beforeChange: undefined as ((entry: Parameters<HarnessClient["changeReminder"]>[0]) => Promise<void>) | undefined,
     lostReply: false, dropWake: false, holdWakeUntilStop: false, current: undefined as Child | undefined };
   const opens: Open[] = [];
   const batches: Array<Parameters<HarnessClient["openSession"]>[0]> = [];
@@ -38,8 +45,11 @@ async function joint() {
         return stop();
       };
     }
+    const change = client.changeReminder.bind(client);
+    client.changeReminder = async entry => { await peer.beforeChange?.(entry); return change(entry); };
     const open = client.openSession.bind(client);
     client.openSession = async params => {
+      peer.beforeOpen?.();
       batches.push(structuredClone(params));
       const opened = await open(params);
       opens.push(opened);
@@ -570,4 +580,87 @@ test("joint explicit stop adopts a starting connection, drains its deadline and 
     write.resolve();
     await rig.clean();
   }
+}, 15_000);
+
+test("joint counted routine delivers twice across reconnect and recovers from an exhausted guard", async () => {
+  const s = await joint(1);
+  try {
+    const agent = await s.rig.open();
+    const host = agent.nativeHarness!;
+    const channel = await agent.conversations.create();
+    const events = s.rig.watch(channel);
+    await host.changeChannel(channel.id, { displayName: "Routine acceptance" });
+    await host.start();
+    const item = await channel.reminders.create({ text: "counted", schedule: { every: 600_000, count: 2 } });
+    expect(item).toMatchObject({ state: "confirmed", remainingCount: 2 });
+    const due = item.nextRunAt!;
+    const second = due + 600_000;
+    const fired = () => events.filter(event => event.kind === "reminder_fired").map(event => event.noticeId);
+    await host.stop();
+    s.peer.time = due;
+    await host.start();
+    await until(() => fired().length === 1, "first routine occurrence");
+    const firstChild = s.peer.current!;
+    await until(async () => (await firstChild.client.status()).execution === "idle", "first unattended turn finishes");
+    expect(await channel.reminders.get(item.id)).toMatchObject({ status: "active", remainingCount: 1 });
+
+    await host.stop();
+    s.peer.time = second;
+    s.peer.beforeOpen = () => expect(host.reminderSync!.routineAdmission.available).toBe(false);
+    await host.start();
+    const opened = last(s.opens);
+    expect(opened.unattendedTurnGuard).toEqual({ maxConsecutiveTurns: 1 });
+    expect(last(s.batches).config).not.toHaveProperty("limits");
+    expect(host.reminderSync!.routineAdmission.available).toBe(true);
+    const current = s.peer.current!.client;
+    expect(opened.reminders?.find(row => row.id === item.id)).toMatchObject({ state: "active", remainingCount: 1 });
+    expect(opened.nextDueAt).toBeNull();
+    expect((await current.reconcileChannel({ channel: channel.id, itemIds: [notice(item.id, second)] })).items).toEqual([]);
+    await current.push({ channel: channel.id, item: { kind: "user_message", id: "operator", sender: "owner",
+      content: [{ type: "text", text: "Continue the routine." }] } });
+    await until(() => fired().length === 2, "second occurrence after participant resets guard");
+    expect(fired()).toEqual([notice(item.id, due), notice(item.id, second)]);
+    const itemIds = fired() as string[];
+    expect((await current.reconcileChannel({ channel: channel.id, itemIds })).items.map(row => row.id).sort()).toEqual([...itemIds].sort());
+    expect(await channel.reminders.get(item.id)).toMatchObject({ status: "completed", remainingCount: 0, nextRunAt: null });
+  } finally { await s.clean(); }
+}, 15_000);
+
+test("joint routine create and pause stay held through open and drain in order after guard confirmation", async () => {
+  const s = await joint(3);
+  try {
+    const agent = await s.rig.open();
+    const host = agent.nativeHarness!;
+    const channel = await agent.conversations.create();
+    const events = s.rig.watch(channel);
+    await host.changeChannel(channel.id, { displayName: "Routine acceptance" });
+    await host.start();
+    await host.stop();
+    const item = await channel.reminders.create({ text: "held", schedule: { every: 600_000, count: 2 } });
+    await channel.reminders.pause(item.id);
+    expect((await agent.persistence.reminders!.wake()).effectiveAt).toBeNull();
+    expect(s.clock.delays).toEqual([]);
+    if (!("startAt" in item.schedule)) throw new Error("Expected an interval routine");
+    const due = item.schedule.startAt;
+    s.peer.time = due;
+    const trace: string[] = [];
+    s.peer.beforeOpen = () => {
+      expect(host.reminderSync!.routineAdmission.available).toBe(false);
+      trace.push("open");
+    };
+    s.peer.beforeChange = async entry => {
+      expect(last(s.opens).unattendedTurnGuard).toEqual({ maxConsecutiveTurns: 3 });
+      expect(host.reminderSync!.routineAdmission.available).toBe(true);
+      trace.push(entry.op);
+      if (entry.op === "update") await until(() => events.some(event => event.kind === "reminder_fired"), "a due occurrence before live pause");
+    };
+    await host.start();
+    await until(async () => (await agent.persistence.reminders!.list()).find(row => row.id === item.id)?.confirmed?.status === "paused",
+      "paused row confirmed after held writes");
+    expect(trace).toEqual(["open", "create", "update"]);
+    expect(last(s.batches).reminderChanges ?? []).toEqual([]);
+    expect(last(s.opens).reminders?.some(row => row.id === item.id)).toBe(false);
+    expect(events.filter(event => event.kind === "reminder_fired").map(event => event.noticeId)).toEqual([notice(item.id, due)]);
+    expect(await channel.reminders.get(item.id)).toMatchObject({ status: "paused", remainingCount: 1, nextRunAt: null });
+  } finally { await s.clean(); }
 }, 15_000);

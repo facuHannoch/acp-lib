@@ -32,6 +32,7 @@ export function partOf(prompt: SteeringPrompt): CombinedMessage {
     text: prompt.text,
     messageParts: prompt.messageParts,
     attachments: prompt.attachments,
+    ...(prompt.nativePolicy === undefined ? {} : { nativePolicy: prompt.nativePolicy }),
     ...(prompt.beforeDispatch ? { beforeDispatch: prompt.beforeDispatch } : {}),
     ...(prompt.participantId ? { participantId: prompt.participantId } : {}),
     ...(prompt.consumerMetadata !== undefined ? { consumerMetadata: prompt.consumerMetadata } : {}),

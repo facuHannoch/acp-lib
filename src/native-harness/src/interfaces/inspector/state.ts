@@ -24,7 +24,8 @@ function read<T>(result: StorageResult<T>) {
 /** Capture state is process-local. A notification marks the requested view
  * dirty. Only HTTP reads request data from storage. */
 export function createInspection(systemPrompt: string, tools: readonly ToolDefinition[],
-  reads: InspectionStorageReads, storage: string) {
+  reads: InspectionStorageReads, storage: string,
+  webInvocations?: (turnId: number) => import("../../contracts/tools.ts").ToolInvocation[]) {
   const instructions = composeSystemPrompt(systemPrompt);
   const captures = new Map<string, { turnId: number; metadata: NonNullable<InspectedInference["context"]> }>();
   const channels = new Map<string, InspectedInference[]>();
@@ -55,7 +56,10 @@ export function createInspection(systemPrompt: string, tools: readonly ToolDefin
     modelCalls(id: string) {
       const result = reads.readInspectionCalls(id);
       if (!result.ok) throw new Error(result.error.message);
-      return { modelCalls: result.value };
+      const turns = [...new Set(result.value.map(call => Number(call.turnId)))];
+      const webUsage = turns.flatMap(turnId => webInvocations?.(turnId) ?? []).filter(value => value.webUsage)
+        .map(({ invocationId, turnId, tool, webUsage }) => ({ invocationId, turnId, tool, webUsage }));
+      return { modelCalls: result.value, webUsage };
     },
     subscribe(listener: () => void) {
       listeners.add(listener);

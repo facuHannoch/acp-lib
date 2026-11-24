@@ -28,6 +28,13 @@ function message(value: any): value is RpcResponse | RpcNotification | RpcSessio
     if (event.type === "item_withdrawn") return typeof event.item === "string";
     if (event.type === "reminder_changed") return typeof event.reminder?.id === "string" && event.reminder.channel === value.params.channel;
     if (event.type === "reminder_cancelled") return typeof event.reminderId === "string" && ["host", "agent", "channel_retired"].includes(event.by);
+    if (event.type === "routine_disposition") return typeof event.reminderId === "string"
+      && typeof event.firstScheduledAt === "string" && typeof event.lastScheduledAt === "string"
+      && Number.isSafeInteger(event.count) && event.count > 0
+      && ["missed", "catch_up_limit", "overlap", "expired", "coalesced"].includes(event.reason);
+    if (event.type === "routine_migration_blocked") return typeof event.reminderId === "string"
+      && typeof event.fromVersion === "string" && typeof event.targetVersion === "string"
+      && ["invalid_schedule", "proof_budget"].includes(event.cause);
     if (event.type === "reminder_fired" || event.type === "reminder_expired") {
       return typeof event.reminderId === "string" && typeof event.occurrenceId === "string" && typeof event.scheduledAt === "string"
         && (event.type === "reminder_fired" ? typeof event.firedAt === "string" && typeof event.noticeId === "string" : typeof event.expiredAt === "string");
@@ -42,6 +49,7 @@ function message(value: any): value is RpcResponse | RpcNotification | RpcSessio
         && typeof event.toolCallId === "string" && typeof event.tool === "string" && typeof event.arguments === "string";
       case "turn_ended": return ["completed", "failed", "interrupted"].includes(event.outcome)
         && (event.error === undefined || typeof event.error === "string")
+        && (event.attachmentFailure === undefined || (["unsupported_image", "attachment_unavailable", "transfer_limit"].includes(event.attachmentFailure?.code) && strings(event.attachmentFailure?.attachmentIds)))
         && (event.uncertainCalls === undefined || strings(event.uncertainCalls));
       case "text_delta": return typeof event.messageId === "string" && typeof event.text === "string";
       case "text_gap": return typeof event.messageId === "string";

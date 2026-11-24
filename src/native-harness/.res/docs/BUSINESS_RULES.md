@@ -109,3 +109,14 @@ accepts up to 20 neighbors on each side and returns at most 20 fragments
 per page. Storage output is capped at 32 KiB of JSON. The model-tool
 adapter requests at most 8 KiB so paged JSON and its cursor can fit in
 active inference without the generic tool-result string shortening.
+
+## Web search and fetch
+
+Decision [0035](../decisions/0035-web-search-fetch.md) sets the initial web
+research limits. An enabled search returns at most five hits with excerpts up to
+512 UTF-8 bytes. Both tools default to a 15-second deadline and emit complete
+JSON no larger than 2048 UTF-8 bytes. Direct fetch caps raw responses at 2 MiB,
+decoded responses at 4 MiB and follows at most five validated redirects. Exa
+fetch requests a 24-hour cache freshness target with live crawling; Exa may
+return older cached content if the fresh crawl fails. A reported provider cost
+is an estimate, and a paid dispatch without a committed estimate is unknown.

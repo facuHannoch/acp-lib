@@ -16,7 +16,7 @@ import type { Message } from "./loop.ts";
 /** Expected failures never require callers to inspect SQLite or exception text. */
 export type StorageErrorCode =
   | "already_exists" | "not_found" | "owner_conflict" | "incompatible"
-  | "invalid_input" | "invalid_state" | "invalid_policy" | "closed"
+  | "invalid_input" | "invalid_config" | "invalid_state" | "invalid_policy" | "closed"
   /** The item ID was accepted earlier with a different payload signature. */
   | "item_conflict"
   /** The session lifecycle does not admit this work (suspending/suspended). */
@@ -30,7 +30,7 @@ export type StorageErrorCode =
   /** Export refused: active or pending work exists and the session is not suspended. */
   | "busy"
   | "invalid_archive"
-  | "serialization_error" | "storage_failure" | "transfer_limit" | "invalid_cursor";
+  | "serialization_error" | "storage_failure" | "transfer_limit" | "invalid_cursor" | "unsupported_image" | "attachment_unavailable";
 
 /** A failed mutation leaves no partial domain changes. Do not retry blindly. */
 export interface StorageError { code: StorageErrorCode; message: string }
@@ -79,7 +79,7 @@ export interface StoredSession {
   sessionId: string;
   /** Storage contract/data format revision, distinct from RPC and archive versions.
    * Revision 5 stores model calls and script reservations. Formats 2–4 upgrade on open. */
-  formatVersion: 6 | 7;
+  formatVersion: 6 | 7 | 8 | 9 | 10;
   createdAt: string;
   lifecycle: SessionLifecycle;
   /** The key supplied at create. Immutable; open never rewrites it. */
@@ -133,6 +133,8 @@ export interface AcceptItem {
   inheritedPolicyNames?: readonly string[];
   /** Original payload, kept unrendered for the life of the item. */
   text: string;
+  /** Ordered mixed input; absent for legacy text-only identity. */
+  parts?: readonly import("./attachments.ts").InputPart[];
 }
 
 /** An accepted input. While `milestone` is `received` it is pending: in the
@@ -222,6 +224,7 @@ export interface StorageSnapshot {
   /** Decision 0021: names of revocable tools whose grant is revoked, sorted.
    * Absent when none ever was. Carried by export and import. */
   revokedTools?: string[];
+  webDispatches?: import("./web.ts").StoredWebDispatch[];
 }
 
 /** Logical, adapter-independent session copy. JSON-serializable. Versioned
@@ -229,7 +232,10 @@ export interface StorageSnapshot {
  * Version 5 adds external notices. */
 export interface SessionArchive {
   format: "harness-session";
-  archiveVersion: 5 | 6;
+  archiveVersion: 5 | 6 | 7 | 8 | 9;
+  /** Complete retained managed bytes, only in logical archive 8. */
+  webState?: { baseFormat: 6 | 7 | 8 | 9 };
+  attachmentState?: { baseFormat: 6 | 7 | 8; files: Array<{ metadata: import("./attachments.ts").AttachmentMetadata; readyAt: string; bytes: Uint8Array }> };
   reminderState?: import("./reminders.ts").ReminderArchiveState;
   exportedAt: string;
   snapshot: StorageSnapshot;
@@ -291,8 +297,8 @@ export interface TimelineRetrievalReads {
 }
 
 export interface ReminderStorage {
-  scheduleAgentReminder(turnId: number, invocationId: string, schedule: import("./reminders.ts").AgentReminderSchedule, text: string,
-    policyNames: readonly string[], expiresAfter: number | null | undefined, now: number): StorageResult<{ reminder: import("./reminders.ts").Reminder; created: boolean }>;
+  scheduleAgentReminder(turnId: number, invocationId: string, schedule: import("./reminders.ts").AgentReminderSchedule | import("./reminders.ts").RoutineSchedule, text: string,
+    policyNames: readonly string[], expiresAfter: number | null | undefined, now: number, delivery?: import("./reminders.ts").RoutineDeliveryOptions): StorageResult<{ reminder: import("./reminders.ts").Reminder; created: boolean }>;
   cancelAgentReminder(turnId: number, id: string): StorageResult<{ id: string; alreadyQueued: boolean; changed: boolean }>;
   changeReminder(change: import("./reminders.ts").ReminderChange, now: number): StorageResult<import("./reminders.ts").ReminderChangeResult>;
   readReminder(id: string): StorageResult<import("./reminders.ts").Reminder | undefined>;
@@ -302,9 +308,19 @@ export interface ReminderStorage {
 }
 
 export interface SessionStorage extends ModelCallStore, ReminderStorage, TimelineRetrievalReads, OperatorStorageReads, InferenceStorageReads, InspectionStorageReads {
+  /** Owner-only publication fence. The managed-byte owner calls this only
+   * after it has verified and durably published the immutable bytes. */
+  registerReadyAttachment(metadata: import("./attachments.ts").AttachmentMetadata): StorageResult<void>;
+  /** Owner-scoped metadata and timeline visibility; bytes are read separately. */
+  readManagedAttachment(id: string): StorageResult<{ metadata: import("./attachments.ts").AttachmentMetadata; timelineVisible: boolean } | undefined>;
+  /** IDs with committed ready metadata, for owner-only crash recovery. */
+  managedAttachmentIds(): StorageResult<string[]>;
+  /** Owner-only cleanup fence; accepted references prevent reclamation. */
+  unreferencedAttachments(readyBefore: string): StorageResult<import("./attachments.ts").AttachmentMetadata[]>;
+  reclaimAttachment(id: string, readyBefore: string): StorageResult<boolean>;
   readSession(): StorageResult<StoredSession>;
   readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
-  readReadyChannels(): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
+  readReadyChannels(intake?: IntakeLimit): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
   readRevokedTools(): StorageResult<string[]>;
   /** Validated config supplied to this open, copied at bind time; undefined for
    * legacy allow-only opens. Returns a defensive copy. It is independent of
@@ -315,9 +331,12 @@ export interface SessionStorage extends ModelCallStore, ReminderStorage, Timelin
    * dispatched. Invalid or duplicate marks write nothing; failure cannot invoke
    * the tool or emit started. After success its effect is uncertain until its
    * result commits. This evidence is never an approval grant. */
-  markToolDispatched(turnId: number, callId: string): StorageResult<void>;
+  markToolDispatched(turnId: number, callId: string, evidence?: import("./web.ts").WebDispatchEvidence): StorageResult<void>;
   /** False when stored policy references cannot be resolved by this owner. */
+  unattendedGuard(): StorageResult<number | undefined>;
   executionCompatible(): StorageResult<boolean>;
+  /** Bind the current open catalog before any checkpoint can run. */
+  bindMcpCatalog?(fingerprint: string): void;
   /** Imported configuration, or undefined for sessions not imported from a file. */
   importedConfig(): StorageResult<import("./session-file.ts").PortableSessionConfig | undefined>;
   /** Persist the validated configuration used by this owner. */
@@ -339,7 +358,7 @@ export interface SessionStorage extends ModelCallStore, ReminderStorage, Timelin
    * Nothing is added to the timeline and no turn is created or changed. */
   /** External notice retries compare durable identity before admission or
    * policy validation for new work, through a path that writes nothing. */
-  acceptItem(input: AcceptItem, maxInputBytes?: number): StorageResult<{ item: StoredItem; duplicate: boolean }>;
+  acceptItem(input: AcceptItem, maxInputBytes?: number, options?: { imageInput?: boolean }): StorageResult<{ item: StoredItem; duplicate: boolean }>;
 
   /** Start the channel's next turn by taking ALL its pending items, in
    * acceptance order, in one transaction: create the running turn, move each

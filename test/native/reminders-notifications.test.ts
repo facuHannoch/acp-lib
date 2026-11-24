@@ -47,3 +47,52 @@ test("native stdio launch routes reminder notifications to the registered consum
     expect(seen[1]).toMatchObject({ event: { kind: "reminder_changed" } });
   } finally { await connection.kill(); }
 });
+
+import { reminderNotification } from "../../src/native/reminders/wire.ts";
+
+test("reminder notifications reject missing fields, nonstrings and wrong-channel rows", () => {
+  const frame = (event: Record<string, unknown>) =>
+    reminderNotification({ jsonrpc: "2.0", method: "channel/event", params: { channel: "one", event } });
+  for (const [type, required] of [
+    ["reminder_fired", ["reminderId", "occurrenceId", "scheduledAt", "firedAt", "noticeId"]],
+    ["reminder_cancelled", ["reminderId", "by"]],
+    ["reminder_expired", ["reminderId", "occurrenceId", "scheduledAt", "expiredAt"]],
+  ] as const) {
+    const event: Record<string, unknown> = { type, ...Object.fromEntries(required.map(key => [key, "value"])) };
+    expect(frame(event)).toMatchObject({ event: { kind: type } });
+    for (const key of required) {
+      const { [key]: _missing, ...absent } = event;
+      expect(frame(absent)).toBeUndefined();
+      expect(frame({ ...event, [key]: 7 })).toBeUndefined();
+    }
+  }
+  const row = changed.params.event.reminder;
+  for (const reminder of [{ ...row, channel: "different" }, { ...row, schedule: {} }, { ...row, id: 42 }, null]) {
+    expect(frame({ type: "reminder_changed", reminder })).toBeUndefined();
+  }
+});
+
+test("the pre-0032 transport shim routes routine events and discards malformed variants", async () => {
+  const common = { reminderId: "r", firstScheduledAt: "first", lastScheduledAt: "last" };
+  const disposition = { type: "routine_disposition", ...common, count: 2, reason: "coalesced" };
+  const migration = { type: "routine_migration_blocked", reminderId: "r", fromVersion: "2026a", targetVersion: "2026b", cause: "proof_budget" };
+  const frames = [disposition, { ...disposition, count: 0 }, { ...disposition, reason: "future" }, migration, { ...migration, cause: "future" }]
+    .map(event => ({ jsonrpc: "2.0", method: "channel/event", params: { channel: "one", event } }));
+  const seen: ReminderNotification[] = [];
+  const stream = new Blob([frames.map(frame => JSON.stringify(frame) + "\n").join("")]).stream();
+  expect(await new Response(separateReminderNotifications(stream, event => seen.push(event))).text()).toBe("");
+  expect(seen.map(event => "event" in event ? event.event.kind : null)).toEqual(["routine_disposition", "routine_migration_blocked"]);
+});
+
+test("routine dispositions require the reminder and range string fields", () => {
+  const event = { type: "routine_disposition", reminderId: "r", firstScheduledAt: "first",
+    lastScheduledAt: "last", count: 2, reason: "expired" };
+  const parse = (value: Record<string, unknown>) =>
+    reminderNotification({ jsonrpc: "2.0", method: "channel/event", params: { channel: "one", event: value } });
+  expect(parse(event)).toMatchObject({ event: { kind: "routine_disposition" } });
+  for (const key of ["reminderId", "firstScheduledAt", "lastScheduledAt"] as const) {
+    const { [key]: _missing, ...rest } = event;
+    expect(parse(rest)).toBeUndefined();
+    expect(parse({ ...event, [key]: 9 })).toBeUndefined();
+  }
+});

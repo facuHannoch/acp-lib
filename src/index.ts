@@ -41,6 +41,7 @@ export type { ConversationTimelineItem } from "./persistence/timeline-reconcile.
 export * from "./audit/index.ts";
 
 export { Agent } from "./agent.ts";
+export { channelSettingsLive, type NativeChannelSettings, type NativeChannelSettingsResult, type NativeRestartOptions, type NativeRestartPreview, type NativeRestartResult, type NativeToolSetting } from "./agent/native-operations.ts";
 export type {
   AgentConfig,
   AgentConversationManager,
@@ -804,3 +805,5 @@ export { ReminderError } from "./native/reminders/schedule.ts";
 export type { ReminderErrorCode, ReminderSchedule, ReminderScheduleInput } from "./native/reminders/schedule.ts";
 export type { Reminder } from "./persistence/reminders.ts";
 export type { ReminderCreate, ReminderEdit, ReminderView, ReminderEvent } from "./native/reminders/service.ts";
+
+export type { McpRuntimeHeaders, McpRuntimeHeadersProvider, NativeInputPolicy, NativeMcpStatus } from "./native/mcp.ts";

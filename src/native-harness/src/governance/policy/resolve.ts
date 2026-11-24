@@ -11,6 +11,10 @@ export function resolvePolicy(config: ManagedConfig, explicit?: string | null, c
 }
 /** A taken input contributes all its policy names; no pending input is passed. */
 export function toolDecision(config: ManagedConfig, references: readonly string[], tool: string): ToolDecision {
+  if (tool.startsWith("mcp__")) {
+    return references.length > 0 && references.every(name => name !== "__legacy_allow" &&
+      Object.hasOwn(config.policies, name) && config.policies[name]?.mcp === "allow") ? "allow" : "deny";
+  }
   if (!references.length) throw new Error("Cannot authorize a turn without taken-input policies");
   let result: ToolDecision = "allow";
   for (const reference of new Set(references)) {
@@ -27,6 +31,7 @@ export function policyFingerprint(config: ManagedConfig, references: readonly st
   return JSON.stringify([...new Set(references)].sort().map(name => {
     if (!Object.hasOwn(config.policies, name)) throw new PolicyError(name);
     const policy = config.policies[name]!;
-    return [name, policy.fallback, Object.keys(policy.tools).sort().map(tool => [tool, policy.tools[tool]])];
+    return [name, policy.fallback, Object.keys(policy.tools).sort().map(tool => [tool, policy.tools[tool]]),
+      ...(policy.mcp === undefined ? [] : [["mcp-v1", policy.mcp]])];
   }));
 }

@@ -577,6 +577,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       ...(defaults.launcher ? { launcher: defaults.launcher } : {}),
       ...(defaults.execPrefix ? { execPrefix: defaults.execPrefix } : {}),
       ...(defaults.env ? { env: defaults.env } : {}),
+      ...(defaults.terminalEnv ? { terminalEnv: defaults.terminalEnv } : {}),
       ...(defaults.cwd ? { cwd: defaults.cwd } : {}),
       ...(defaults.clientInfo ? { clientInfo: defaults.clientInfo } : {}),
       ...(defaults.logger ? { logger: defaults.logger } : {}),

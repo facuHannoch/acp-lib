@@ -46,3 +46,32 @@ while a cancel is pending/maybe_sent is refused with `conflict` (minor, non-bloc
   cod2b-t: whole joint file 20/20 and each test 20/20; Clad1a independently confirmed the harness side at the same SHA
   (40/0 on the five reminder files, 3 extra joint runs). clad2a independent review of the joint tests: in progress.
 - Non-blocking residuals (clad2a): G4b `isSafeInteger` guard in `isWakeSchedule` untested; D3b unknown-policy display expiry `null`.
+
+## Alpha 4dad65e, R8.5 and R9 (2026-11-24)
+
+- Alpha `4dad65e` = R7 + R8 + joint acceptance + docs, merged by core-p at the user's go-ahead.
+- R8.5 typed harness client (`reminders-typed` `b2b4fbe`): clad2a approved (`reminders-typed-reviews`); core-p gate 2,164/225.
+- R9 routines, library side, against decision 0032 (`973a522`) plus the approved pin `c8facc2`, SDK `e594870` + `4df4634` (Clad approved):
+  cod2a-r conformance report `e7f1f6e`; clad2a conformance review `5dded26` (12 conditions, 9 missed rules); cod2b-t Part 2 stages and
+  fixes; clad2a reviews R9 (`not approved`: marker-blocks-create bug, event dedupe, expiry terminal, gaps), R9 follow-up (one residual
+  bug B1'), R9 final: APPROVE on `a55b574`. core-p clean-copy gate on `a55b574`: root tsc clean, plain `bun test` 2,191 pass / 0 fail /
+  226 files, 35 snapshots; host.ts 909/909, native/controller 591, agent-session 4,527 (alpha's own); harness subtree identical to the
+  approved SDK `4df4634`. Routine real-stdio acceptance awaits the independently approved R-H4 runtime (not available yet).
+- Rulings kept: first-open split (non-activating changes in startup, activations held until THIS connection's open proves the guard;
+  evidence never persisted); no routine event dedupe; routine expiry only via `routine_disposition expired`; local cron check is
+  shape-only; ONE 10-minute minimum; guard setting optional with no default; `discardExhausted` operator path.
+
+## R9 joint acceptance (2026-11-24)
+
+- R9 library candidate merged into alpha (`15f27b1`) with the `"unlimited"` guard option; approved R-H4 runtime `174c7c4` composed onto it.
+- Joint slice 1 (cod2b-t `ba2cb95`, reviewed by clad2a, Clad1a confirmed the harness side): integrated as alpha `51abd7f`. Gate: root tsc clean,
+  plain `bun test` 2,228 / 233, 35 snapshots; harness subtree identical to the approved runtime.
+- Joint slice 2 (cod2b-t `3447e64`, base `51abd7f`): clad2a APPROVE (no defects). core-p gate: root tsc clean, plain `bun test` 2,237 / 234,
+  35 snapshots; only `test/native/reminders-routines-joint.test.ts` changed; harness diff 0. Covered with the REAL harness child: guard
+  invalid_config/same value/"unlimited" both spellings; unattended_guard_required; missed/coalesced/expired dispositions with
+  authoritative rows (no reminder_expired/fired for routine expiry); overlap skip after a crash; migration hold (event, blocked row,
+  idempotent reopen); kind-change and routine-options-on-one-off refusals; offline cancel/pause beating due work; routine cold wake.
+- Not covered real-stdio: catch_up_limit and `each`, overlap queue, until, explicit startAt, a cron routine firing, DST, migration
+  proof_budget/repair/revalidation (the fixture is synthetic data: zone `Unavailable/Legacy`), held resume/replacement vs old-calendar due
+  work, idle stop with routines, real storage_failure (no deterministic seam; covered by scripted tests). Surviving mutant: the stdio
+  filter matcher alone (the client's own route delivers the same frames).

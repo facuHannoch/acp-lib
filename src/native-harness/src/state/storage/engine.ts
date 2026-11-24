@@ -1,6 +1,17 @@
+import { validCommittedWebUsage, validWebDispatch } from "../../util/web-usage.ts";
+import { resolveRoutineZone } from "../../capabilities/reminders/iana-zones.ts";
+import { SESSION_INTAKE_LIMITS } from "../../util/intake.ts";
+import { advanceRoutine } from "../../capabilities/reminders/routine-advance.ts";
+import { planRoutineEpisode } from "../../capabilities/reminders/routine-occurrence.ts";
+import { createRoutineEvaluator } from "../../capabilities/reminders/routine-schedule.ts";
+import { isRoutine, prepareRoutineRow } from "./routine-row.ts";
+import { unattendedAdmission } from "../../capabilities/reminders/unattended.ts";
 import { normalizeReminderSchedule, resolveAgentReminder } from "../../util/reminder-schedule.ts";
+import { createHash } from "node:crypto";
+import { validateMixedParts, mixedPartsSignature } from "../../util/attachment-input.ts";
+import { encodeSessionFile, SessionFileError } from "./session-file.ts";
 import { applyReminderChange } from "./reminder-change.ts";
-import type { Reminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
+import type { OneOffReminder, Reminder, ReminderChannelEvent } from "../../contracts/reminders.ts";
 import type { ReminderTables } from "./reminder-tables.ts";
 import { searchTimeline, readMessageWindow } from "./retrieval.ts";
 import type { InspectionEntry } from "../../contracts/inspection.ts";
@@ -41,6 +52,9 @@ export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], item
  * rule of the storage contract; a backend only stores rows and makes
  * `transaction` atomic (all writes of a throwing callback are undone). */
 export interface Tables extends ContextRows {
+  web: import("./web-tables.ts").WebTables;
+  /** SQLite attachment metadata, absent in adapters without managed bytes. */
+  attachments?: ReturnType<typeof import("./attachment-tables.ts").sqliteAttachmentTables>;
   reminders: ReminderTables;
   retrievalCandidates(terms: readonly string[], channel: string | undefined, limit: number): Array<{ seq: number; bytes: number }>;
   retrievalEntry(seq: number): TimelineEntry | undefined;
@@ -70,6 +84,7 @@ export interface Tables extends ContextRows {
   /** Insert, or update milestone/turn link of an existing item. */
   putItem(item: StoredItem): void;
   /** Milestone `received` (never `withdrawn`), in acceptedSeq order. */
+  hasOpenRoutineNotice(channelId: string, source: string): boolean;
   pendingItems(channelId: string, limit?: number): StoredItem[];
   /** In take (entrySeq) order. */
   itemsOfTurn(turnId: number): StoredItem[];
@@ -116,8 +131,9 @@ function cleanName(name: unknown): string {
 }
 
 /** The contract's exact signature; identical for both adapters and archives. */
-export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text" | "explicitPolicy" | "externalSource" | "inheritedPolicyNames">): string {
-  return item.kind === "external_notice" ? externalNoticeSignature(item.channelId, item.externalSource, item.text, item.inheritedPolicyNames ?? []) : policyItemSignature(item);
+export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text" | "explicitPolicy" | "externalSource" | "inheritedPolicyNames" | "parts">): string {
+  const legacy = item.kind === "external_notice" ? externalNoticeSignature(item.channelId, item.externalSource, item.text, item.inheritedPolicyNames ?? []) : policyItemSignature(item);
+  return item.parts === undefined ? legacy : createHash("sha256").update(JSON.stringify([legacy, mixedPartsSignature(item.parts)])).digest("hex");
 }
 
 /** Strict JSON data: what survives a JSON round trip unchanged. */
@@ -143,8 +159,10 @@ function checkMessage(message: unknown): Stored {
   const m = message as Record<string, unknown>;
   const keys = Object.keys(m);
   if (m.role === "tool") {
-    if (typeof m.content !== "string" || !text(m.callId) || keys.some(key => !["role", "content", "callId", "outcome"].includes(key)))
+    if (typeof m.content !== "string" || !text(m.callId) || keys.some(key => !["role", "content", "callId", "outcome", "usage", "webNoDispatch"].includes(key)))
       fail("invalid_input", "Tool result needs content and callId");
+    if (m.webNoDispatch !== undefined && m.webNoDispatch !== true) fail("invalid_input", "Invalid web refusal evidence");
+    if (m.usage !== undefined && !validCommittedWebUsage(m.usage)) fail("invalid_input", "Invalid web usage");
     // Decision 0021: an optional, typed outcome. Checked here so a stored
     // result never claims a status the invocation view cannot interpret.
     if (m.outcome !== undefined) {
@@ -167,7 +185,7 @@ function checkMessage(message: unknown): Stored {
 }
 
 function session(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
+  return { sessionId: meta.sessionId, formatVersion: meta.formatVersion >= 10 ? 10 : meta.formatVersion >= 9 ? 9 : meta.formatVersion >= 8 ? 8 : meta.formatVersion === 7 ? 7 : 6, createdAt: meta.createdAt,
     lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
 
@@ -190,6 +208,7 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
       const id = tables.getModelState()?.entryIds[String(entry.seq)];
       return id ? { ...entry, messageId: id } : entry;
     }),
+    ...(tables.web.baseFormat() === undefined ? {} : { webDispatches: tables.web.all() }),
     modelCalls: tables.getModelState()?.calls ?? [], scriptPositions: tables.getModelState()?.scriptPositions ?? {},
     ...(tables.getRevokedTools() === undefined ? {} : { revokedTools: tables.getRevokedTools()! }),
   };
@@ -202,14 +221,109 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
  * and its checkpoint survive, in every lifecycle); a clean session suspension
  * keeps all. A `suspending` channel never committed and returns to `open`. A
  * clean state with nothing to change is left unwritten. */
+export function initialIntakeHasParticipant(items: readonly StoredItem[]) {
+  let bytes = SESSION_INTAKE_LIMITS.maxTakenTextBytes;
+  for (const [index, item] of items.entries()) {
+    if (index >= SESSION_INTAKE_LIMITS.maxTakenItems) break;
+    bytes -= byteLength(item.text);
+    if (bytes < 0 && index > 0) break;
+    if (item.kind === "participant_message") return true;
+    if (bytes < 0) break;
+  }
+  return false;
+}
+
+/** Physical web format 10 retains the prior logical feature format separately. */
+function logicalFormat(tables: Tables, meta: Meta): number {
+  const physical = meta.formatVersion === 10 ? tables.web.baseFormat() ?? 0 : meta.formatVersion;
+  return physical === 9 ? tables.attachments?.baseFormat() ?? 0 : physical;
+}
+function advancePriorFormat(tables: Tables, meta: Meta, format: 7 | 8) {
+  const physical = meta.formatVersion === 10 ? tables.web.baseFormat() ?? 0 : meta.formatVersion;
+  if (physical === 9) tables.attachments?.advanceBaseFormat(format);
+  else if (meta.formatVersion === 10) tables.web.advanceBaseFormat(format);
+  else meta.formatVersion = Math.max(meta.formatVersion, format);
+}
+
+function routineHeldChannels(tables: Tables, meta: Meta): string[] {
+  const limit = logicalFormat(tables, meta) >= 8 ? tables.reminders.guardLimit() : undefined;
+  if (limit === undefined) return [];
+  return tables.channels().filter(({ channelId, lifecycle }) => {
+    if (lifecycle !== "open" || tables.reminders.guardSpent(channelId) < limit) return false;
+    return !initialIntakeHasParticipant(tables.pendingItems(channelId, SESSION_INTAKE_LIMITS.maxTakenItems));
+  }).map(channel => channel.channelId);
+}
+
 function refreshReminderWake(tables: Tables, meta: Meta) {
-  if (meta.formatVersion !== 7) return;
+  if (logicalFormat(tables, meta) < 7) return;
   const wake = tables.reminders.wake();
-  const nextDueAt = meta.lifecycle === "running" ? tables.reminders.eligible(null, 1)[0]?.reminder.nextRunAt ?? null : null;
+  const nextDueAt = meta.lifecycle === "running" ? tables.reminders.eligible(null, 1, routineHeldChannels(tables, meta))[0]?.reminder.nextRunAt ?? null : null;
   if (nextDueAt !== wake.nextDueAt) tables.reminders.setWake({ nextDueAt, reminderRevision: wake.reminderRevision + 1 });
 }
 
-export function recover(tables: Tables, upgrade?: () => void): void {
+/** Called under the adapter's owner transaction before recovery writes. */
+export function checkUnattendedGuard(tables: Tables, requested: number | undefined) {
+  const bound = tables.reminders.guardLimit();
+  if (bound !== undefined && requested !== undefined && requested !== bound)
+    fail("invalid_config", "Unattended turn limit differs from the saved limit");
+}
+
+export function bindUnattendedGuard(tables: Tables, requested: number | undefined) {
+  if (requested === undefined || tables.reminders.guardLimit() !== undefined) return;
+  tables.reminders.bindGuard(requested);
+  const meta = tables.getMeta();
+  advancePriorFormat(tables, meta, 8);
+  tables.setMeta({ ...meta, revision: meta.revision + 1 });
+}
+
+type ReminderDeliveryEvent = { channel: string; event: ReminderChannelEvent };
+
+function migrateRoutineZones(tables: Tables, meta: Meta, events: ReminderDeliveryEvent[]) {
+  if (logicalFormat(tables, meta) < 8) return false;
+  const version = resolveRoutineZone("Etc/UTC")!.timezoneVersion;
+  let after = 0, changed = false;
+  for (;;) {
+    const batch = tables.reminders.list(undefined, after, 100);
+    for (const saved of batch) {
+      const { reminder: row } = saved;
+      if (!isRoutine(row) || !row.timezoneVersion || row.timezoneVersion === version) continue;
+      if (row.timezoneVersion > version) fail("incompatible", "Routine requires newer timezone data");
+      if (row.state === "done" || row.state === "cancelled" || row.state === "expired" || row.timezoneMigration?.targetVersion === version) continue;
+      const anchor = Date.parse(row.acceptedAt);
+      const schedule = row.remainingCount === undefined ? row.schedule : { ...row.schedule, count: row.remainingCount, until: undefined };
+      const prepared = prepareRoutineRow(schedule, row.acceptedAt, anchor, saved.defaultedExpiry ? undefined : row.expiresAfter, saved.processedThrough);
+      let reminder: Reminder;
+      if (prepared.kind !== "valid") {
+        const timezoneMigration = { fromVersion: row.timezoneVersion, targetVersion: version, cause: prepared.kind };
+        reminder = { ...row, state: "blocked", nextRunAt: null, blockedReason: "invalid_schedule", timezoneMigration } as Reminder;
+        const event = { type: "routine_migration_blocked", reminderId: row.id, ...timezoneMigration } as const;
+        tables.reminders.recordDisposition(event);
+        events.push({ channel: row.channel, event });
+      } else {
+        const state = row.timezoneMigration ? "active" : row.state;
+        const timezone = "timezone" in prepared.fields.schedule ? prepared.fields.schedule.timezone : undefined;
+        const schedule = timezone !== undefined ? { ...row.schedule, timezone } : row.schedule;
+        reminder = { ...row, ...prepared.fields, schedule, state,
+          blockedReason: row.timezoneMigration ? undefined : row.blockedReason,
+          nextRunAt: state === "active" ? prepared.fields.nextRunAt : null, timezoneMigration: undefined } as Reminder;
+      }
+      tables.reminders.put({ ...saved, reminder, episodeCutoff: undefined, coalescedPending: undefined });
+      events.push({ channel: row.channel, event: { type: "reminder_changed", reminder } });
+      changed = true;
+    }
+    if (batch.length < 100) return changed;
+    after = batch.at(-1)!.sequence;
+  }
+}
+
+export function migrateImportedRoutines(tables: Tables) {
+  const meta = tables.getMeta();
+  if (!migrateRoutineZones(tables, meta, [])) return;
+  refreshReminderWake(tables, meta);
+  tables.setMeta({ ...meta, revision: meta.revision + 1 });
+}
+
+export function recover(tables: Tables, upgrade?: () => void, reminderEvents: ReminderDeliveryEvent[] = []): void {
   tables.transaction(() => {
     if (upgrade) upgrade();
     const meta = tables.getMeta();
@@ -242,6 +356,7 @@ export function recover(tables: Tables, upgrade?: () => void): void {
       if (changed) tables.setModelState(state);
     }
     if (meta.formatVersion < 6) { meta.formatVersion = 6; changed = true; }
+    changed = migrateRoutineZones(tables, meta, reminderEvents) || changed;
     refreshReminderWake(tables, meta);
     if (changed) tables.setMeta({ ...meta, revision: meta.revision + 1 });
   });
@@ -257,6 +372,9 @@ function unanswered(tables: Tables, turnId: number): string[] {
 }
 
 /** Older states lack dispatch evidence and retain the conservative old rule. */
+function stateDispatched(turn: TurnRow, callId: string): boolean {
+  return (turn.state.status === "running" || turn.state.status === "suspended") && !!turn.state.dispatchedCallIds?.includes(callId);
+}
 function uncertain(tables: Tables, turn: TurnRow): string[] {
   const open = unanswered(tables, turn.turnId);
   if (turn.state.status !== "running" && turn.state.status !== "suspended") return open;
@@ -265,13 +383,14 @@ function uncertain(tables: Tables, turn: TurnRow): string[] {
 }
 
 /** The contract over any backend. `ownerKey` is the key passed to this open. */
-export function createEngine(tables: Tables, ownerKey: string, release: () => void, config?: ManagedConfig, incompatibleViewOnly = false): SessionStorage {
+export function createEngine(tables: Tables, ownerKey: string, release: () => void, config?: ManagedConfig, incompatibleViewOnly = false, recoveredReminderEvents: ReminderDeliveryEvent[] = [],
+  readFiles?: (records: ReturnType<NonNullable<Tables["attachments"]>["retained"]>, maxBytes: number) => NonNullable<SessionArchive["attachmentState"]>["files"]): SessionStorage {
   let closed = false;
   // This is the config validated at open, not the separately mutable saved copy.
   const ownerSnapshot = config === undefined ? undefined : structuredClone(config);
   const now = () => new Date().toISOString();
 
-  function run<T>(work: (meta: Meta) => T, readOnly = false): StorageResult<T> {
+  function run<T>(work: (meta: Meta) => T, readOnly = false, alreadyDetached = false): StorageResult<T> {
     if (closed) return failure(new Fail("closed", "Storage handle is closed"));
     if (incompatibleViewOnly && !readOnly) return failure(new Fail("incompatible", "Stored policy is not available in the open configuration"));
     try {
@@ -281,7 +400,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         if (!readOnly && JSON.stringify(meta) !== before) refreshReminderWake(tables, meta);
         if (JSON.stringify(meta) !== before) tables.setMeta(meta);
         // Results never alias rows a backend may keep in memory.
-        return { ok: true as const, value: structuredClone(value), revision: meta.revision };
+        return { ok: true as const, value: alreadyDetached ? value : structuredClone(value), revision: meta.revision };
       });
     } catch (error) { return failure(error); }
   }
@@ -292,14 +411,29 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     if (turn.state.status !== "running") fail("invalid_state", `Turn ${turnId} is ${turn.state.status}, not running`);
     return turn;
   }
+  function imageBytes(item: StoredItem): number {
+    let total = 0;
+    for (const part of item.parts ?? []) if (part.type === "attachment") {
+      const metadata = tables.attachments?.get(part.id)?.metadata;
+      if (!metadata) fail("storage_failure", `Attachment metadata unavailable: ${part.id}`);
+      if (metadata!.mediaType.startsWith("image/")) total += metadata!.bytes;
+    }
+    return total;
+  }
+  function turnImageBytes(turnId: number | undefined): number {
+    return turnId === undefined ? 0 : tables.itemsOfTurn(turnId).reduce((sum, item) => sum + imageBytes(item), 0);
+  }
   function boundaryPending(channelId: string, intake?: IntakeLimit, turnId?: number): StoredItem[] {
-    if (!intake) return tables.pendingItems(channelId);
-    const already = turnId === undefined ? [] : tables.contextInputs(turnId, tables.contextPreviousResponse(turnId), intake.maxTakenItems);
-    const slots = intake.maxTakenItems - already.length;
+    const already = !intake || turnId === undefined ? [] : tables.contextInputs(turnId, tables.contextPreviousResponse(turnId), intake.maxTakenItems);
+    const slots = intake ? intake.maxTakenItems - already.length : Number.MAX_SAFE_INTEGER;
     if (slots <= 0) return [];
-    let bytes = intake.maxTakenTextBytes - already.reduce((sum, row) => sum + (row.textBytes ?? 0), 0);
+    let bytes = intake ? intake.maxTakenTextBytes - already.reduce((sum, row) => sum + (row.textBytes ?? 0), 0) : Number.MAX_SAFE_INTEGER;
+    let activeImages = turnImageBytes(turnId);
     const selected: StoredItem[] = [];
     for (const item of tables.pendingItems(channelId, slots)) {
+      const images = imageBytes(item);
+      if (activeImages + images > 40 * 1024 * 1024) break;
+      activeImages += images;
       bytes -= byteLength(item.text);
       // A legacy oversized head advances alone and gets a typed build failure.
       if (bytes < 0 && (selected.length || already.length)) break;
@@ -315,7 +449,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         from: item.senderId, kind: item.kind, ...(item.sourceChannelId ? { sourceChannelId: item.sourceChannelId } : {}),
         ...(item.externalSource !== undefined ? { externalSource: item.externalSource } : {}),
         itemId: item.itemId, message: { role: "user", content: item.kind !== "participant_message" ? item.text
-          : `Participant: ${JSON.stringify(item.senderId)}\n\n${item.text}` } };
+          : `Participant: ${JSON.stringify(item.senderId)}\n\n${item.text}`, ...(item.parts ? { parts: item.parts } : {}) } };
       tables.addEntry(entry);
       const taken: StoredItem = { ...item, milestone: "taken", turnId: turn.turnId, entrySeq: entry.seq };
       tables.putItem(taken);
@@ -352,8 +486,12 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
   const requireCompatible = () => {
     if (!referencesCompatible(tables, activeConfig)) fail("incompatible", "A stored policy no longer exists");
   };
-  const turnFingerprint = (turn: TurnRow) => fingerprint(activeConfig, contributingPolicies(tables.itemsOfTurn(turn.turnId)
-    .map(item => item.policy ?? { resolved: legacy, inherited: [] })));
+  let mcpCatalog: string | undefined;
+  const turnFingerprint = (turn: TurnRow) => {
+    const policy = fingerprint(activeConfig, contributingPolicies(tables.itemsOfTurn(turn.turnId)
+      .map(item => item.policy ?? { resolved: legacy, inherited: [] })));
+    return mcpCatalog === undefined ? policy : JSON.stringify([policy, "mcp-v1", mcpCatalog]);
+  };
   const compatible = (turn: TurnRow) => {
     try { return turn.compatibilityKey === ownerKey && turn.state.status === "suspended" && turn.state.checkpoint.policyFingerprint === turnFingerprint(turn); }
     catch { return false; }
@@ -381,9 +519,16 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }
     if (changed.length) tables.setModelState(state, changed);
   };
-  const accept = (meta: Meta, input: AcceptItem, maxInputBytes?: number) => {
+  const accept = (meta: Meta, input: AcceptItem, maxInputBytes?: number, options?: { imageInput?: boolean }) => {
       const external = input?.kind === "external_notice";
-      if (!external) requireCompatible();
+      if (!external && input?.parts === undefined) requireCompatible();
+      if (input?.parts !== undefined) {
+        if (input.kind !== "participant_message") fail("invalid_input", "Only participant messages can carry attachments");
+        try { input = { ...input, parts: validateMixedParts(input.parts) }; }
+        catch (error) { fail((error as { code?: string }).code === "transfer_limit" ? "transfer_limit" : "invalid_input", String(error)); }
+        const textParts = input.parts!.filter(part => part.type === "text").map(part => (part as { text: string }).text).join("\n");
+        if (input.text !== textParts) fail("invalid_input", "Text projection does not match ordered parts");
+      }
       if (external && (!text(input.itemId) || !text(input.channelId) || !text(input.text)
         || (input.externalSource !== undefined && !text(input.externalSource))
         || !Array.isArray(input.inheritedPolicyNames) || !Array.from(input.inheritedPolicyNames).every(text)
@@ -400,8 +545,23 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
           return { item: known, duplicate: true };
         }
       }
+      if (!external && input?.parts !== undefined) requireCompatible();
+      if (input?.parts) {
+        const attachments = tables.attachments;
+        if (!attachments) fail("incompatible", "Managed attachments are unavailable in this store");
+        let imageBytes = 0;
+        for (const part of input.parts) if (part.type === "attachment") {
+          const metadata = attachments!.get(part.id)?.metadata;
+          if (!metadata || metadata.channel !== input.channelId) fail("not_found", "Unknown attachment");
+          if (metadata!.mediaType.startsWith("image/")) {
+            if (!options?.imageInput) fail("unsupported_image", "Image input is unsupported");
+            imageBytes += metadata!.bytes;
+          }
+        }
+        if (imageBytes > 40 * 1024 * 1024) fail("transfer_limit", "Input image budget exceeded");
+      }
       const notice = shaped && input.kind === "channel_notice";
-      if (!shaped || !(notice || external || input.kind === "participant_message") || ![input.channelId, input.senderId, input.text].every(text)
+      if (!shaped || !(notice || external || input.kind === "participant_message") || ![input.channelId, input.senderId].every(text) || (input.parts === undefined && !text(input.text))
         || (input.itemId !== undefined && !text(input.itemId))
         || (notice ? !text(input.sourceChannelId) : input.sourceChannelId !== undefined))
         fail("invalid_input", "Item needs kind, channelId, senderId and text; a notice also needs sourceChannelId");
@@ -443,7 +603,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       }
       const item: StoredItem = { itemId, kind: input.kind, channelId: input.channelId, senderId: external ? input.externalSource ?? "host" : input.senderId,
         ...(external ? { inheritedPolicyNames: inherited, ...(input.externalSource === undefined ? {} : { externalSource: input.externalSource }) } : {}),
-        ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), ...(input.explicitPolicy == null ? {} : { explicitPolicy: input.explicitPolicy }), text: input.text,
+        ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), ...(input.explicitPolicy == null ? {} : { explicitPolicy: input.explicitPolicy }), text: input.text, ...(input.parts ? { parts: input.parts } : {}),
         signature: signatureOf(input), policy: { ...(input.explicitPolicy == null ? {} : { explicit: input.explicitPolicy }), resolved, inherited },
         acceptedSeq: seq(meta), acceptedAt: now(), milestone: "received" };
       if (!notice && !external) {
@@ -451,20 +611,21 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         tables.addParticipant(item.senderId);
       }
       tables.putItem(item);
+      if (input.parts) tables.attachments!.saveParts(itemId, input.parts);
       return { item, duplicate: false };
   };
   const reminders = tables.reminders;
   const activateReminders = (meta: Meta) => {
-    if (meta.formatVersion < 7) {
+    if (logicalFormat(tables, meta) < 7) {
       reminders.activate();
-      meta.formatVersion = 7;
+      advancePriorFormat(tables, meta, 7);
     }
   };
   const putReminder = (meta: Meta, reminder: Reminder, defaultedExpiry?: boolean, original?: string) => {
     activateReminders(meta);
     const existing = reminders.get(reminder.id);
     const revision = seq(meta);
-    reminders.put({ sequence: existing?.sequence ?? revision, reminder, defaultedExpiry: defaultedExpiry ?? existing?.defaultedExpiry ?? false, original: existing?.original ?? original });
+    reminders.put({ ...existing, sequence: existing?.sequence ?? revision, reminder, defaultedExpiry: defaultedExpiry ?? existing?.defaultedExpiry ?? false, original: existing?.original ?? original });
   };
   const validReminderPolicies = (names: readonly string[]) =>
     names.every(name => name !== legacy && Object.hasOwn(activeConfig.policies, name));
@@ -475,8 +636,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const batch = reminders.blocked(channelId, after, 100);
       for (const { reminder } of batch) {
         if (tables.channel(reminder.channel)?.lifecycle !== "open" || !validReminderPolicies(reminder.policyNames)) continue;
+        if (isRoutine(reminder)) continue;
         const { blockedReason: _block, ...fields } = reminder;
-        const active: Reminder = { ...fields, state: "active", nextRunAt: reminder.schedule.at };
+        const active: OneOffReminder = { ...fields, state: "active", nextRunAt: reminder.schedule.at };
         putReminder(meta, active);
         unblocked.push(active);
       }
@@ -485,6 +647,39 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }
   }
   return {
+    registerReadyAttachment: metadata => run(meta => {
+      if (!tables.attachments) fail("incompatible", "Managed attachments are unavailable in this store");
+      if (!metadata || typeof metadata.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(metadata.id)
+        || !text(metadata.channel) || typeof metadata.filename !== "string" || metadata.filename.length === 0 || !metadata.filename.isWellFormed()
+        || Buffer.byteLength(metadata.filename) > 255 || /[\u0000-\u001f\u007f-\u009f]/u.test(metadata.filename)
+        || typeof metadata.mediaType !== "string" || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(metadata.mediaType) || metadata.mediaType.length > 127
+        || !Number.isSafeInteger(metadata.bytes) || metadata.bytes <= 0 || metadata.bytes > 20 * 1024 * 1024
+        || !/^[a-f0-9]{64}$/.test(metadata.sha256)) fail("invalid_input", "Invalid attachment metadata");
+      channelOf(metadata.channel);
+      const attachments = tables.attachments!;
+      if (attachments.get(metadata.id)) fail("already_exists", "Attachment ID already exists");
+      attachments.publish(metadata, now());
+      if (meta.formatVersion === 10) tables.web.advanceBaseFormat(9);
+      else meta.formatVersion = 9;
+      seq(meta);
+    }),
+    readManagedAttachment: id => run(() => {
+      const attachments = tables.attachments;
+      if (!attachments || !text(id)) return undefined;
+      const row = attachments.get(id);
+      return row ? { metadata: row.metadata, timelineVisible: attachments.isTimelineVisible(id) } : undefined;
+    }, true),
+    managedAttachmentIds: () => run(() => tables.attachments?.readyIds() ?? [], true),
+    unreferencedAttachments: readyBefore => run(() => {
+      if (!Number.isFinite(Date.parse(readyBefore))) fail("invalid_input", "Invalid cleanup deadline");
+      return tables.attachments?.unreferencedBefore(readyBefore).map(row => row.metadata) ?? [];
+    }, true),
+    reclaimAttachment: (id, readyBefore) => run(meta => {
+      if (!text(id) || !Number.isFinite(Date.parse(readyBefore))) fail("invalid_input", "Invalid cleanup request");
+      const removed = tables.attachments?.reclaim(id, readyBefore) ?? false;
+      if (removed) seq(meta);
+      return removed;
+    }),
     startCall: (turnId, itemIds) => run(meta => {
       if (!/^[1-9]\d*$/.test(turnId) || !Number.isSafeInteger(Number(turnId))) fail("invalid_input", "Invalid turn ID");
       const turn = running(Number(turnId));
@@ -562,32 +757,63 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const calls = rows.slice(0, limit);
       return { calls, ...(rows.length > limit ? { next: calls.at(-1)!.callId } : {}) };
     }, true),
-    acceptItem: (input, maxInputBytes) => run(meta => accept(meta, input, maxInputBytes), input?.kind === "external_notice"),
+    acceptItem: (input, maxInputBytes, options) => run(meta => accept(meta, input, maxInputBytes, options), input?.kind === "external_notice"),
 
     changeReminder: (change, wallTime) => run(meta => {
       requireCompatible();
+      const routineSchedule = change.op !== "cancel" && change.payload.schedule !== undefined && change.payload.schedule.at === undefined;
+      const replacing = change.op === "update" && change.payload.schedule !== undefined;
       return applyReminderChange({
+        guardEnabled: () => reminders.guardLimit() !== undefined,
+        activeRoutines: channel => reminders.activeRoutines(channel),
+        processedThrough: id => reminders.get(id)?.processedThrough,
+        proofExhausted: () => fail("storage_failure", "Routine calendar proof budget exhausted"),
         receipt: reminders.receipt, highWater: reminders.highWater, originalCreate: reminders.originalCreate,
         defaultedExpiry: id => reminders.get(id)?.defaultedExpiry ?? false,
-        get: id => reminders.get(id)?.reminder, put: (reminder, defaulted, original) => putReminder(meta, reminder, defaulted, original),
-        saveReceipt(receipt) { activateReminders(meta); reminders.saveReceipt(receipt); seq(meta); },
+        get: id => reminders.get(id)?.reminder, put: (reminder, defaulted, original) => {
+          putReminder(meta, reminder, defaulted, original);
+          if (replacing && isRoutine(reminder)) {
+            const row = reminders.get(reminder.id)!;
+            if (row.episodeCutoff !== undefined || row.coalescedPending !== undefined)
+              reminders.put({ ...row, episodeCutoff: undefined, coalescedPending: undefined });
+          }
+        },
+        saveReceipt(receipt) {
+          activateReminders(meta);
+          if (routineSchedule) {
+            advancePriorFormat(tables, meta, 8);
+          }
+          reminders.saveReceipt(receipt);
+          seq(meta);
+        },
         channelStatus: channel => tables.channel(channel)?.lifecycle, validPolicies: validReminderPolicies,
       }, change, wallTime);
     }),
-    scheduleAgentReminder: (turnId, invocationId, schedule, body, inherited, grace, wallTime) => run(meta => {
+    scheduleAgentReminder: (turnId, invocationId, schedule, body, inherited, grace, wallTime, delivery) => run(meta => {
       requireCompatible();
       const turn = running(turnId);
       const id = `agent-reminder:${invocationId}`;
       const existing = reminders.get(id)?.reminder;
       if (existing) return { reminder: existing, created: false };
       const anchor = new Date(wallTime).toISOString();
-      const at = resolveAgentReminder(schedule, wallTime);
-      const timing = at && normalizeReminderSchedule(at, anchor, grace, wallTime);
-      if (!timing) return fail("invalid_input", "Invalid reminder schedule");
       const policyNames = [...new Set(inherited.filter(name => name !== legacy))].sort();
       if (!validReminderPolicies(policyNames)) return fail("invalid_policy", "Unknown reminder policy");
       const creatorId = tables.itemsOfTurn(turnId).find(item => item.kind === "participant_message")?.senderId;
-      const reminder: Reminder = { ...timing, id, channel: turn.channelId, createdBy: "agent",
+      if ("every" in schedule || "cron" in schedule) {
+        if (reminders.guardLimit() === undefined) return fail("invalid_state", "An unattended turn guard is required");
+        if (reminders.activeRoutines(turn.channelId) >= 20) return fail("invalid_input", "Active routine limit reached");
+        const prepared = prepareRoutineRow(schedule, anchor, wallTime, grace);
+        if (prepared.kind === "proof_budget") return fail("storage_failure", "Routine calendar proof budget exhausted");
+        if (prepared.kind !== "valid") return fail("invalid_input", "Invalid routine schedule");
+        const routine = { ...prepared.fields, id, channel: turn.channelId, createdBy: "agent", creatorId, policyNames, text: body,
+          state: "active", missedRuns: delivery?.missedRuns ?? "coalesce", overlap: delivery?.overlap ?? "skip" } as Reminder;
+        putReminder(meta, routine, grace === undefined);
+        return { reminder: routine, created: true };
+      }
+      const at = resolveAgentReminder(schedule, wallTime);
+      const timing = at && normalizeReminderSchedule(at, anchor, grace, wallTime);
+      if (!timing) return fail("invalid_input", "Invalid reminder schedule");
+      const reminder: OneOffReminder = { ...timing, id, channel: turn.channelId, createdBy: "agent",
         ...(creatorId === undefined ? {} : { creatorId }), policyNames, text: body, state: "active", nextRunAt: timing.schedule.at };
       putReminder(meta, reminder, grace === undefined);
       return { reminder, created: true };
@@ -618,12 +844,65 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return { reminders: page.map(row => row.reminder), ...(rows.length > limit ? { next: cursor(page.at(-1)!.sequence) } : {}) };
     }, true),
     reminderWake: () => run(() => reminders.wake(), true),
-    fireDueReminders: wallTime => run(meta => {
+    fireDueReminders: wallTime => {
+      const result = run(meta => {
       requireCompatible();
-      const events: Array<{ channel: string; event: ReminderChannelEvent }> = [];
+      const events: ReminderDeliveryEvent[] = [...recoveredReminderEvents];
       if (meta.lifecycle !== "running") return events;
       const firedAt = new Date(wallTime).toISOString();
-      for (const { reminder } of reminders.eligible(firedAt, 100)) {
+      const evaluate = createRoutineEvaluator();
+      const held = routineHeldChannels(tables, meta);
+      for (let attempts = 0; attempts < 100; attempts++) {
+        const saved = reminders.eligible(firedAt, 1, held)[0];
+        if (!saved) break;
+        const { reminder } = saved;
+        if (isRoutine(reminder)) {
+          const { channel, id } = reminder;
+          if (!validReminderPolicies(reminder.policyNames)) {
+            const blocked: Reminder = { ...reminder, state: "blocked", nextRunAt: null, blockedReason: "invalid_policy" };
+            putReminder(meta, blocked);
+            events.push({ channel, event: { type: "reminder_changed", reminder: blocked } });
+            continue;
+          }
+          const limit = reminders.guardLimit();
+          if (limit === undefined || !unattendedAdmission(limit, reminders.guardSpent(channel),
+            boundaryPending(channel, SESSION_INTAKE_LIMITS).some(item => item.kind === "participant_message")).eligible) break;
+          const grace = saved.defaultedExpiry ? undefined : reminder.expiresAfter;
+          const schedule = reminder.remainingCount === undefined ? reminder.schedule
+            : { ...reminder.schedule, count: reminder.remainingCount, until: undefined };
+          const calendar = evaluate(schedule, reminder.acceptedAt, reminder.timezoneVersion, saved.processedThrough);
+          if (!calendar) {
+            const blocked: Reminder = { ...reminder, state: "blocked", nextRunAt: null, blockedReason: "invalid_schedule" };
+            putReminder(meta, blocked);
+            events.push({ channel, event: { type: "reminder_changed", reminder: blocked } });
+            continue;
+          }
+          const cutoff = saved.episodeCutoff ?? wallTime;
+          const step = planRoutineEpisode(calendar, 0, cutoff, grace, reminder.missedRuns)[0];
+          if (!step) break;
+          const overlapping = reminder.overlap === "skip" && tables.hasOpenRoutineNotice(channel, `reminder:${id}`);
+          const partial = saved.coalescedPending ?? 0;
+          const effective = step.kind === "enqueue" && partial ? { ...step, represented: step.represented + partial } : step;
+          const advanced = advanceRoutine(reminder, calendar, effective, wallTime, grace, overlapping);
+          if (advanced.disposition) {
+            reminders.recordDisposition(advanced.disposition);
+            events.push({ channel, event: advanced.disposition });
+          }
+          if (advanced.notice) {
+            const { noticeId, occurrenceId, scheduledAt, text } = advanced.notice;
+            accept(meta, { kind: "external_notice", itemId: noticeId, channelId: channel, senderId: `reminder:${id}`,
+              externalSource: `reminder:${id}`, text, inheritedPolicyNames: reminder.policyNames });
+            events.push({ channel, event: { type: "reminder_fired", reminderId: id, occurrenceId, scheduledAt, firedAt, noticeId } });
+          }
+          seq(meta);
+          const nextDue = advanced.reminder.nextRunAt;
+          reminders.put({ ...saved, reminder: advanced.reminder, processedThrough: calendar.at(step.last),
+            episodeCutoff: nextDue !== null && Date.parse(nextDue) <= cutoff ? cutoff : undefined,
+            coalescedPending: step.kind === "coalesced" ? partial + step.last - step.first + 1
+              : step.kind === "enqueue" ? undefined : saved.coalescedPending });
+          events.push({ channel, event: { type: "reminder_changed", reminder: advanced.reminder } });
+          continue;
+        }
         const { id, channel, schedule } = reminder;
         const scheduledAt = schedule.at, occurrenceId = `reminder:${id}:${scheduledAt}`;
         if (reminder.expiresAt !== null && reminder.expiresAt <= firedAt) {
@@ -632,7 +911,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
           continue;
         }
         if (!validReminderPolicies(reminder.policyNames)) {
-          const blocked: Reminder = { ...reminder, state: "blocked", nextRunAt: null, blockedReason: "invalid_policy" };
+          const blocked: OneOffReminder = { ...reminder, state: "blocked", nextRunAt: null, blockedReason: "invalid_policy" };
           putReminder(meta, blocked);
           events.push({ channel, event: { type: "reminder_changed", reminder: blocked } });
           continue;
@@ -644,7 +923,10 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         events.push({ channel, event: { type: "reminder_fired", reminderId: id, occurrenceId, scheduledAt, firedAt, noticeId } });
       }
       return events;
-    }),
+      });
+      if (result.ok) recoveredReminderEvents.length = 0;
+      return result;
+    },
 
     beginTurn: (channelId, intake) => run(meta => {
       requireCompatible();
@@ -654,6 +936,13 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (tables.liveTurn(channel.channelId)) return null;
       const pending = boundaryPending(channelId, intake);
       if (!pending.length) return null;
+      const limit = logicalFormat(tables, meta) >= 8 ? reminders.guardLimit() : undefined;
+      if (limit !== undefined) {
+        const spent = reminders.guardSpent(channelId);
+        const admission = unattendedAdmission(limit, spent, pending.some(item => item.kind === "participant_message"));
+        if (!admission.eligible) return null;
+        if (admission.nextSpent !== spent) reminders.setGuardSpent(channelId, admission.nextSpent);
+      }
       const turn: TurnRow = { turnId: meta.nextTurnId++, channelId, startedSeq: seq(meta), startedAt: now(),
         compatibilityKey: ownerKey, state: { status: "running" } };
       tables.putTurn(turn);
@@ -682,17 +971,32 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         if (message.calls.length && turn.state.status === "running" && turn.state.dispatchedCallIds === undefined)
           tables.putTurn({ ...turn, state: { ...turn.state, dispatchedCallIds: [] } });
       } else if (!open.includes(message.callId)) fail("invalid_input", `No unanswered call ${message.callId} in this turn`);
+      if (message.role === "tool" && message.webNoDispatch) {
+        const call = tables.entriesOfTurn(turnId).flatMap(entry => entry.message.role === "assistant" ? entry.message.calls : []).find(candidate => candidate.id === message.callId);
+        if (!call || !["web_search", "web_fetch"].includes(call.name) || message.outcome?.status !== "skipped" || stateDispatched(turn, message.callId)) fail("invalid_input", "Invalid web refusal");
+        tables.web.activate(meta.formatVersion);
+        meta.formatVersion = 10;
+      }
+      if (message.role === "tool" && message.usage !== undefined && !tables.web.all().some(record => record.turnId === turnId && record.callId === message.callId && record.evidence.paid))
+        fail("invalid_input", "Web usage needs paid dispatch evidence");
       const entry: TimelineEntry = { seq: seq(meta), at: now(), channelId: turn.channelId, turnId,
         from: message.role === "tool" ? "tool" : "agent", message: structuredClone(message) };
       tables.addEntry(entry);
       return entry;
     }),
 
-    markToolDispatched: (turnId, callId) => run(meta => {
+    markToolDispatched: (turnId, callId, evidence) => run(meta => {
       const turn = running(turnId);
       const state = turn.state.status === "running" ? turn.state : fail("invalid_state", "Turn is not running");
       if (!text(callId) || !unanswered(tables, turnId).includes(callId)
         || state.dispatchedCallIds?.includes(callId)) fail("invalid_state", "Call is not an undispatched outstanding call of this turn");
+      if (evidence !== undefined) {
+        if (!validWebDispatch(evidence)) fail("invalid_input", "Invalid web dispatch evidence");
+        const call = tables.entriesOfTurn(turnId).flatMap(entry => entry.message.role === "assistant" ? entry.message.calls : []).find(candidate => candidate.id === callId);
+        if (!call || call.name !== evidence.operation) fail("invalid_input", "Web dispatch operation does not match call");
+        tables.web.add({ turnId, callId, evidence }, meta.formatVersion);
+        meta.formatVersion = 10;
+      }
       tables.putTurn({ ...turn, state: { ...state, dispatchedCallIds: [...(state.dispatchedCallIds ?? []), callId] } });
       seq(meta);
     }),
@@ -714,7 +1018,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         if (!last || last.role !== "assistant" || last.calls.length)
           fail("invalid_state", "Completion needs a final assistant response without tool calls");
         const pending = tables.pendingCount(turn.channelId);
-        if (pending) return { finished: false as const, pending };
+        const head = pending ? tables.pendingItems(turn.channelId, 1)[0] : undefined;
+        const imageBlocked = !!head && turnImageBytes(turnId) + imageBytes(head) > 40 * 1024 * 1024;
+        if (pending && !imageBlocked) return { finished: false as const, pending };
         const done: TurnRow = { ...turn, state: { status: "completed" } };
         tables.putTurn(done); settle(turn.channelId); seq(meta);
         return { finished: true as const, turn: full(done) };
@@ -888,6 +1194,11 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }),
 
     ownerConfig: () => run(() => ownerSnapshot, true),
+    unattendedGuard: () => run(meta => logicalFormat(tables, meta) >= 8 ? reminders.guardLimit() : undefined, true),
+    bindMcpCatalog(value) {
+      if (mcpCatalog !== undefined) throw new Error("MCP catalog already bound");
+      mcpCatalog = value;
+    },
     executionCompatible: () => run(() => !incompatibleViewOnly && referencesCompatible(tables, activeConfig), true),
     importedConfig: () => run(() => tables.getConfig(), true),
     saveConfig: value => run(() => {
@@ -905,8 +1216,14 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return { revision: meta.revision, session: session(meta), channels, turns,
         items: channels.flatMap(channel => tables.pendingItems(channel.channelId)) };
     }, true),
-    readReadyChannels: () => run(meta => ({ lifecycle: meta.lifecycle,
-      channels: tables.channels().filter(channel => channel.lifecycle === "open" && tables.pendingCount(channel.channelId) > 0).map(channel => channel.channelId) }), true),
+    readReadyChannels: intake => run(meta => {
+      const limit = logicalFormat(tables, meta) >= 8 ? reminders.guardLimit() : undefined;
+      return { lifecycle: meta.lifecycle, channels: tables.channels()
+        .filter(({ lifecycle, channelId }) => lifecycle === "open" && tables.pendingCount(channelId) > 0 &&
+          (limit === undefined || reminders.guardSpent(channelId) < limit ||
+            boundaryPending(channelId, intake).some(item => item.kind === "participant_message")))
+        .map(channel => channel.channelId) };
+    }, true),
     readRevokedTools: () => run(() => tables.getRevokedTools() ?? [], true),
     readSession: () => run(meta => session(meta), true),
     readChannel: channelId => run(() => {
@@ -987,6 +1304,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }, true),
     snapshot: () => run(() => readSnapshot(tables), true),
 
+    // Snapshot rows and file buffers are newly allocated. Avoid a second full
+    // copy here so the bounded encoder stays within its archive memory budget.
     exportArchive: () => run(meta => {
       const snapshot = readSnapshot(tables);
       if (snapshot.modelCalls.some(call => call.outcome === "running" || call.attempts.some(attempt => attempt.outcome === "running")))
@@ -995,11 +1314,43 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         && !snapshot.channels.some(channel => channel.lifecycle === "suspending")
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: meta.formatVersion === 7 ? 6 : 5, exportedAt: now(), snapshot,
-        ...(meta.formatVersion === 7 ? { reminderState: reminders.archive() } : {}),
+      const webBase = meta.formatVersion === 10 ? tables.web.baseFormat() : undefined;
+      if (meta.formatVersion === 10 && ![6, 7, 8, 9].includes(webBase ?? 0)) fail("invalid_archive", "Invalid web base format");
+      let archiveFormat = webBase ?? meta.formatVersion;
+      let attachmentState: SessionArchive["attachmentState"];
+      if (archiveFormat === 9) {
+        const attachments = tables.attachments;
+        if (!attachments) throw new Fail("invalid_archive", "Attachment storage is unavailable");
+        const base = attachments.baseFormat();
+        if (base !== 6 && base !== 7 && base !== 8) throw new Fail("invalid_archive", "Invalid attachment base format");
+        archiveFormat = base;
+        const records = attachments.retained();
+        if (records.length) {
+          if (!readFiles) throw new Fail("attachment_unavailable", "Managed attachment files are unavailable");
+          const placeholder = { format: "harness-session", archiveVersion: webBase === undefined ? 8 : 9, exportedAt: now(), snapshot,
+            ...(webBase === undefined ? {} : { webState: { baseFormat: 9 } }),
+            ...(base >= 7 ? { reminderState: reminders.archive() } : {}), allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber },
+            attachmentState: { baseFormat: base, files: records.map(record => ({ ...record, bytes: new Uint8Array() })) } };
+          const max = 268435456;
+          const header = (size: number) => size < 24 ? 1 : size <= 255 ? 2 : size <= 65535 ? 3 : size <= 0xffffffff ? 5 : 9;
+          let required: number;
+          try { required = encodeSessionFile({ archive: placeholder, config: ownerSnapshot ?? null }, max).length; }
+          catch (error) { if (error instanceof SessionFileError && error.code === "transfer_limit") throw new Fail("transfer_limit", error.message); throw error; }
+          for (const record of records) required += record.metadata.bytes + header(record.metadata.bytes) - 1;
+          if (!Number.isSafeInteger(required) || required > max) throw new Fail("transfer_limit", "Session file exceeds limit");
+          try { attachmentState = { baseFormat: base, files: readFiles(records, max - required + records.reduce((n, record) => n + record.metadata.bytes, 0)) }; }
+          catch (error) { const code = (error as { code?: string }).code; throw new Fail(code === "transfer_limit" ? "transfer_limit" : "attachment_unavailable", String(error)); }
+        } else if (webBase === undefined) snapshot.session.formatVersion = base;
+      }
+      const priorFormat = attachmentState ? 9 : archiveFormat;
+      const webState: SessionArchive["webState"] = webBase === undefined ? undefined : { baseFormat: priorFormat as 6 | 7 | 8 | 9 };
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: webState ? 9 : attachmentState ? 8 : archiveFormat >= 8 ? 7 : archiveFormat === 7 ? 6 : 5, exportedAt: now(), snapshot,
+        ...(webState ? { webState } : {}),
+        ...(attachmentState ? { attachmentState } : {}),
+        ...(archiveFormat >= 7 ? { reminderState: reminders.archive() } : {}),
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };
       return archive;
-    }),
+    }, false, true),
 
     close() {
       if (closed) return { ok: true, value: undefined, revision: 0 };

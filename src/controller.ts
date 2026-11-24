@@ -68,6 +68,8 @@ export interface AgentControllerConfig extends PermissionPolicyConfig {
   execPrefix?: string[];
   /** @deprecated Use launcher and its exact spawnEnv. */
   env?: Record<string, string>;
+  /** Exact environment for built-in ACP terminals. */
+  terminalEnv?: Record<string, string>;
   cwd?: string;
   additionalDirectories?: string[];
   /** Session id to load on start(). */

@@ -23,5 +23,12 @@ export function chooseManagedConfig(options: { mode: "create" | "open"; sidecar:
   const raw = options.mode === "create" ? options.inline ?? (present ? sidecar() : undefined)
     : present ? sidecar() : options.inline ?? options.saved;
   if (raw === undefined) throw new ConfigError("config", "supply an inline configuration or config.json; no saved configuration exists");
-  return validateManagedConfig(raw, options.mode === "open" && raw === options.saved);
+  const selected = validateManagedConfig(raw, options.mode === "open" && raw === options.saved);
+  if (options.mode !== "open" || options.inline === undefined || raw === options.inline) return selected;
+  const requested = validateManagedConfig(options.inline).limits;
+  if (!requested) return selected;
+  if (selected.limits?.unattendedTurns !== undefined && requested.unattendedTurns !== undefined &&
+      selected.limits.unattendedTurns !== requested.unattendedTurns)
+    throw new ConfigError("config.limits.unattendedTurns", "inline and selected limits differ");
+  return { ...selected, limits: { ...selected.limits, ...requested } };
 }

@@ -5,6 +5,7 @@ export interface ReminderLimits {
   readonly minGraceMs: number;
   readonly maxGraceMs: number;
   readonly expiryMultiplier: number;
+  readonly maxRoutineCatchUp?: number;
 }
 
 export const defaultReminderLimits: ReminderLimits = {
@@ -14,4 +15,5 @@ export const defaultReminderLimits: ReminderLimits = {
   minGraceMs: 300_000,
   maxGraceMs: 86_400_000,
   expiryMultiplier: 2,
+  maxRoutineCatchUp: 10,
 };

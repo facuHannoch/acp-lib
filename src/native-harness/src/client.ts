@@ -12,3 +12,7 @@ export type { ModelCallSummary, ModelAttemptSummary, ModelUsage, ModelTextEvent,
 export { aggregateUsage } from "./capabilities/model/usage.ts";
 
 export type { Reminder, ReminderChange, ReminderChangeResult, ReminderList, ReminderListParams, ReminderWake, ReminderSessionEvent, ConditionalStopParams, ConditionalStopResult } from "./contracts/reminders.ts";
+
+export type { InitializeResult } from "./contracts/protocol.ts";
+export type { OpenResult } from "./contracts/operator-controls.ts";
+export type { ReminderBlockReason, OneOffSchedule, ReminderSchedule, RoutineSchedule, IntervalRoutineSchedule, CalendarRoutineSchedule, RoutineEnd, RoutineDeliveryOptions, RoutineTimezoneMigration, ReminderLimits, ReminderChannelEvent } from "./contracts/reminders.ts";

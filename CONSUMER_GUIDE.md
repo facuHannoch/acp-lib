@@ -1064,8 +1064,16 @@ export async function openApprovalDemo(adapter: AgentAdapter, path: string) {
 
 Allow and deny resolve immediately. Ask first uses a per-prompt
 `onPermissionRequest` handler. Without one, it waits for a consumer only if
-`answersPermissions` is true. Otherwise the unattended ask is refused. The
-consumer wait defaults to five minutes, starts at request ingress, and expires
+`answersPermissions` is true. An ask with neither responder uses `permissions.unanswered`. The default,
+`"reject"`, refuses the tool and lets the turn continue. ACP selects
+`reject_once` when offered and sends cancellation otherwise. Native responds
+with `deny`. Use `permissions: { default: "ask", unanswered: "cancel" }`
+to send ACP's cancelled permission response or interrupt the requesting
+native turn. The setting applies only to an unanswered ask. It leaves
+explicit deny, handler responses and consumer timeout behavior unchanged.
+A forwarded ask uses the giving conversation's setting when it is
+available. Without a giving conversation, an applicable worker policy with
+`unanswered: "cancel"` cancels an otherwise unanswered ask. The consumer wait defaults to five minutes, starts at request ingress, and expires
 to a refusal. Supply a positive integer below 600,000 to override it.
 `expiresAt` is epoch milliseconds and is present only for a consumer wait.
 Check `answerPermission()`'s `{ accepted }` result. Unknown, expired,
@@ -1082,6 +1090,22 @@ and `deny`. The harness also has a ten-minute approval limit. A configured
 `harness.approvalResponder(request, answer, signal)` can answer centrally,
 including while detached. Await `answer("allow_once")` or `answer("deny")`
 to learn whether the harness accepted the decision.
+
+## Built-in ACP terminal environments
+
+Set `terminalEnv` on the client, controller or conversation runtime, or
+return it from `launcher.prepare()`. The prepared value takes precedence.
+For example, `terminalEnv: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" }`
+passes exactly those environment variables to built-in terminals. Use an
+empty object to pass none. In this mode ACP terminal request environment
+entries cannot add to or override the host's environment.
+
+When no exact environment is configured, the built-in ACP terminal uses the
+variables supplied in the terminal request. The hub's process environment,
+client spawn settings and the launcher's `spawnEnv` are separate.
+`TerminalRegistry` also accepts `terminalEnv` in its options and in a direct
+`create()` call. A direct per-terminal setting wins. Custom terminal
+handlers are responsible for their own environment isolation.
 
 ## Cancellable ACP startup and deferred connections
 
@@ -1166,7 +1190,14 @@ export async function openNative(
 }
 ```
 
-Use a supported OpenRouter model ID configured for your account. For an offline
+Use a supported OpenRouter model ID configured for your account. `harness.config.model` is typed from the harness SDK
+and passed through unchanged on every open. Besides `scripted` and `openrouter`, the SDK defines an inference-source arm,
+`{ protocol: "openai-compatible", providerId, model, baseUrl, apiKeyEnv? }` (decision 0034): an OpenAI-compatible Chat
+Completions endpoint chosen by the consumer. `baseUrl` is HTTPS or a literal loopback address over HTTP (`127.x` or `::1`,
+not `localhost`) with no credentials, query or fragment; the harness appends the Chat Completions path and follows no
+redirects; `apiKeyEnv` names a variable in the harness's environment, is optional for keyless endpoints and is read only
+when the session opens. The library accepts and forwards this arm today (compile-time and open-request tests); the harness
+runtime that executes it is still being implemented, so an open with this arm is not yet usable end to end. For an offline
 equivalent, pass `{ protocol: "scripted", script: "/path/to/scenario.jsonl" }`
 as the second argument. Function parameters are JSON Schema. Functions return
 JSON values and receive a context with invocation identity and an abort signal.
@@ -1311,9 +1342,8 @@ export async function listReminderPages(agent: Agent) {
 - **Schedule.** Use `{ at: epochMilliseconds }` or `{ in: delayMilliseconds }`.
   The library converts relative time to an absolute time at acceptance and
   keeps it across retries and restarts. The bundled harness requires at least
-  two minutes of lead time. It advertises `maxActiveRoutinesPerChannel: 0`.
-  `every` and `cron` requests fail with `routines_unavailable`; routines
-  need a separate harness release.
+  two minutes of lead time. See [Reminder routines](#reminder-routines) for
+  interval and cron schedules on compatible harnesses.
 - **Expiry.** Grace starts at the scheduled instant. Omit `expiresAfter`
   for twice the lead time, clamped to five minutes through 24 hours with the
   bundled limits. Supply an integer millisecond duration within those bounds
@@ -1366,7 +1396,11 @@ view.
 | Local | `unauthorized` | The configured authorization callback refused the change. |
 | Local | `reminders_unavailable` | The mutation needs a live reminder service or durable storage. Agent-owned storage and service setup are required for this API. |
 | Local | `reminders_unsupported` | The conversation or connected harness lacks reminder support. |
-| Local | `routines_unavailable` | Repeating schedules are disabled. |
+| Local | `routines_unavailable` | The peer lacks routine or unattended guard support, or executable open has yet to confirm an effective guard. |
+| Local or harness startup | `invalid_config` | The unattended-turn limit is invalid or differs from the saved limit. |
+| Harness request | `storage_failure` | A retryable storage or proof-budget failure returned no receipt. A live routine mutation that still has no receipt after retry returns a pending view. Retrying the same input reuses the saved ID and change. |
+| Startup | `reminder_batch_retry_exhausted` | Three startup attempts returned a storage failure. The session stays stopped and the frozen batch remains unacknowledged. See the recovery steps below. |
+| Harness | `unattended_guard_required` | Routine activation was blocked because the session lacks an enabled guard. |
 | Harness | `invalid_policy` | The reminder names a policy the harness does not accept. |
 | Harness | `channel_missing`, `channel_retired` | The destination channel is missing or retired. |
 | Harness | `invalid_schedule` | The harness refused the scheduled time, acceptance anchor or expiry. |
@@ -1387,11 +1421,119 @@ Subscribe on the conversation for live updates. Extend exhaustive
 | `reminder_changed` | The harness reported a row change, including an agent-created reminder. |
 | `reminder_fired` | A notice was queued. Use its `noticeId` to relate it to inbox activity. This event does not indicate a completed turn. |
 | `reminder_cancelled`, `reminder_expired` | The harness cancelled or expired the reminder. |
+| `routine_disposition` | A routine processed a range of occurrences. Includes `reminderId`, `firstScheduledAt`, `lastScheduledAt`, `count` and `reason` (`missed`, `catch_up_limit`, `overlap`, `expired` or `coalesced`). |
+| `routine_migration_blocked` | A timezone data update held a cron routine. Includes `reminderId`, `fromVersion`, `targetVersion` and `cause` (`invalid_schedule` or `proof_budget`). |
 
 The harness tools `schedule_reminder`, `list_reminders` and
 `cancel_reminder` are scoped to the calling channel and subject to its
 tool policy. Historical events are not replayed. Read reminder rows and
 normal inbox or turn history after reconnect.
+
+#### Reminder routines
+
+A 0032-compatible native harness advertises both `routines` and
+`unattendedTurnGuard`. The Agent enables authoring when an executable open
+also confirms a non-null guard. Check `conversationCapabilities.routines`
+after that open. Routine authoring requires an executable open in this Agent
+process, including for offline writes after a restart. Guard evidence stays
+in memory and each connection obtains it from its own executable open.
+The bundled one-off harness reports a zero routine cap.
+
+Set `AgentConfig.harness.config.limits.unattendedTurns` to a positive safe
+integer or `"unlimited"` to enable the guard on session creation or on the first executable
+open that enables it for an existing session. There is no default. The
+harness persists the bound value and later opens can omit it. Setting a
+different value fails with `invalid_config`. Explicit configuration on a
+peer lacking support fails as incompatible. Inspection cannot enable the
+guard.
+
+`"unlimited"` sends `9007199254740991` (`Number.MAX_SAFE_INTEGER`). The
+guard stays on and keeps counting, with a limit high enough that it
+effectively leaves unattended paid turns uncapped. A spending cap is
+still a TODO. Both spellings bind the same numeric value.
+
+The guard counts consecutive turns per channel that begin without
+owning-host participant input. A taken participant item resets the count.
+Automated work should use notices. When the limit is exhausted, the
+channel's routines wait for eligible participant input and contribute no
+routine wake. No disposition is emitted when the guard holds work.
+
+Use the existing reminder API to author a routine after startup.
+
+```ts
+import type { ReminderCreate } from "@qlairoslabs/acp-client";
+
+export const checkQueue = {
+  text: "Check the queue and summarize new items.",
+  schedule: { every: 600_000, count: 6 },
+  missedRuns: "coalesce",
+  overlap: "skip",
+} satisfies ReminderCreate;
+
+export const reviewCalendar = {
+  text: "Review today's calendar.",
+  schedule: { cron: "0 9 * * 1-5", timezone: "Europe/Paris" },
+  expiresAfter: null,
+} satisfies ReminderCreate;
+```
+
+Pass either input to `conversation.reminders.create(input)`.
+
+- Intervals take milliseconds and an optional epoch-millisecond `startAt`.
+  The first occurrence defaults to acceptance plus one interval. Cron accepts
+  five numeric fields with wildcards, lists, ranges and steps. Both day
+  fields must match. Supply a timezone. The harness validates the zone and
+  proves the spacing between occurrences.
+- Use a positive safe integer `count` or an inclusive epoch-millisecond
+  `until`. Omitting both allows the routine to continue indefinitely.
+  Each processed occurrence consumes count, including skipped ones. A
+  routine can remain active after `reminder_fired`.
+- A schedule edit replaces the remaining recurrence and resets its anchor
+  and bound. The schedule kind stays the same. Text, grace, policy and
+  lifecycle edits preserve the anchor. Default grace is twice the time to
+  the next calendar match, clamped to five minutes through 24 hours. Explicit
+  durations and `null` are preserved unless replaced. Read a confirmed row
+  for the next occurrence's expiry and any remaining count.
+- `missedRuns` defaults to `coalesce`, which produces one notice for the
+  live backlog. `skip` consumes it without a notice. `each` queues a
+  bounded backlog. `overlap` defaults to `skip` and also accepts `queue`.
+  The harness advertises a 600,000 ms minimum interval, 20 active routines
+  per channel and 10 catch-up notices per routine per eligibility episode.
+  The harness enforces its active cap.
+- Offline mutations require durable storage and guard confirmation in this process.
+  At startup, cancellations, pauses and other non-activating changes go
+  before due work. Creates, resumes and schedule replacements wait for
+  the connection's executable open and retain their original acceptance time.
+  A held entry also holds any later changes to its ID. An entirely unsent
+  create can be cancelled locally. A create followed by pause is sent live
+  in order, and a due occurrence may commit between those requests. An
+  offline schedule replacement can take effect after overdue work from the
+  old calendar. Held changes alone do not launch the harness. If open
+  confirms no effective guard, the harness can record
+  `unattended_guard_required` when the queued activation is sent live.
+
+If startup exhausts its reminder batch retries, correct the storage cause
+and start again to replay the exact frozen batch. The harness does not
+identify the failing entry. To recover by elimination, stop the harness,
+call `conversation.reminders.discardExhausted(reminderId)` for one
+reminder, then start the harness again. Repeat if the remaining batch still
+fails. The call returns `true` when it removes that reminder's frozen
+entries. Later pending entries for the same reminder stay queued. If they
+target a discarded create that never committed, they can come back blocked
+with `not_found`. Use `discardBlocked(reminderId)` to clear them.
+
+Discard removes local intent only. If the harness already committed a
+discarded create, the reminder can still fire and the next startup sweep
+will show it as a confirmed row. Check that row before creating a new
+reminder. A new ID creates a duplicate if the original is still alive.
+
+Routine events are live, and identical frames are all delivered. An
+`expired` disposition counts occurrences. The client refreshes the row to
+learn the remaining count, next run and terminal state. Within one commit a disposition precedes the fire
+it describes. A migration hold precedes the updated row, whose state is
+`blocked` with `blockedReason: "invalid_schedule"` and `timezoneMigration`.
+The row remains visible and contributes no wake while held. Use confirmed
+rows after reconnect.
 
 #### Cold wake and idle stop
 
@@ -1431,6 +1573,66 @@ atomically with `session/stop { ifIdle: true, unlessDueWithinMs }`.
 The harness can refuse with `busy` or `next_due_soon`. A refusal leaves
 the session running. Work that arrives after a successful idle stop can
 start it again.
+
+### Restart the native agent and apply live settings
+
+Use `await agent.previewNativeRestart()` to get `conversationCount` and
+`conversationIds` for a confirmation dialog. The preview includes active
+native conversation records, including ones whose harness channel is created
+on first use. ACP conversations are outside its scope.
+
+```ts
+const preview = await agent.previewNativeRestart();
+const result = await agent.restartNative({ when: "idle", config: nextHarnessConfig });
+```
+
+`when: "idle"` waits for active turns, approvals and queued native input
+across the agent, then uses the harness's atomic idle stop. Use
+`waitForNativeIdle({ signal })` to wait without restarting. An idle wait is
+a snapshot and new input can arrive after it resolves. Suspended work
+with queued input can keep the wait pending. Supply an abort signal when
+the user can cancel the wait. `when: "now"` requests interruption of
+running turns and restarts the shared native process. The harness retains
+its durable queue and reminder wake. Closing the Agent cancels idle waits.
+
+The executable open takes the replacement `config` and optional
+`functions` catalog. Omit either to keep the Agent's current setting.
+Pass `functions: null` to clear application-supplied functions.
+The harness applies its normal configuration precedence and compatibility
+checks, including a managed configuration sidecar when present. The
+Agent uses the new settings for subsequent opens in the same process.
+Persist application configuration separately if future Agent instances
+need to supply it.
+
+`subscribeNativeRestart(listener)` returns an unsubscribe function.
+The listener receives the same `restarted` or `restart_failed` result
+as the caller, with interrupted harness turn IDs and per-conversation
+outcomes. A `reconnected` channel was reconciled by the replacement
+open. A `deferred` conversation has no channel in that open and can
+materialize on use. On failure the result includes the error. Native
+conversation handles retain their identity and subscriptions.
+
+Read `agent.channelSettingsLive` for channel-scoped edits, session-wide
+tool controls and settings to defer to an executable open.
+
+- `applyNativeChannelSettings(id, { displayName, policy, lifecycle })`
+  uses the ordered channel change path. A running harness applies it
+  live. A stopped harness stores it for its next open. `policy` selects
+  an existing named policy. A policy-only change keeps the channel
+  name. Pass `null` to clear a name or policy. The lifecycle values
+  `"suspended"`, `"open"` and `"retired"` map to suspend, resume and
+  delete. To delete the local conversation and its records as well,
+  use `agent.conversations.delete(id)`.
+- `applyNativeToolSetting(name, operation)` enables or removes runtime
+  tools, or revokes or restores revocable tools. It requires a running
+  harness. The operations affect the whole session. Per-channel access
+  can be restricted by the channel's named policy.
+- Named policy definitions, the default policy, model, system prompt and
+  tool catalog take effect on executable open. The native wire has no
+  participant-roster edit for an existing channel. An open alone cannot
+  replace that roster, so hold or refuse that edit. Unsupported
+  channel fields return `channel_settings_not_live` with the field
+  names, without applying any part of the patch.
 
 ### Native turn metering
 
@@ -1502,10 +1704,19 @@ manual barriers and process replacement in code.
 
 ### Functions the model can call
 
-Register functions in `harness.functions`. The harness offers them to the
-model, applies the conversation's policy and asks for approval where the policy
-says `ask`, validates the arguments against `parameters`, and then calls the
-handler in this process.
+Register functions in `harness.functions.tools` before the Agent starts.
+The host declares the handler names during initialize and sends the tool
+catalog on every executable session open or create. Set `defaultPolicy` and
+`policies` under `harness.config`. The harness uses those policies to decide
+which tools to offer and whether a call needs approval. It validates the
+arguments against `parameters` before calling the handler in this process.
+
+`harness.config.system` supplies the complete consumer system text. At the
+next executable open, changing it replaces that text for subsequent model
+requests in the same saved session. The harness still appends its own
+instructions and retains the conversation history. To apply a different
+configuration, close the Agent and open it with the new configuration and
+the same persisted Agent and harness home.
 
 ```ts
 harness: {
@@ -1533,7 +1744,10 @@ harness: {
 - **Why a tool cannot run.** `agent.nativeHarness.tools()` lists each tool
   with `available` and a reason (`revoked`, `not_enabled`, `handler_missing`).
   Policy is separate: a tool the conversation's policy denies is not offered.
-- **Handlers.** Return any JSON value. Throw `FunctionError(code, message)` for
+- **Handlers.** The second argument contains `invocationId`, `channel`,
+  `turnId`, `tool`, `policyNames` and `signal`. `policyNames` comes from
+  the harness authorization snapshot. The names have no precedence by order.
+  Return a JSON value as the tool result. Throw `FunctionError(code, message)` for
   a failure the model should see. `signal` aborts when the harness stops
   waiting: the tool's deadline passed, the turn was interrupted, or the harness
   stopped. A value returned after that is ignored.
@@ -1554,6 +1768,76 @@ harness: {
   `toolInvocations(turn)` return each call's state. A call that was dispatched
   but has no recorded result (crash, lost connection, interrupt) is
   `interrupted` with `effect: "unknown"`. It is never run again automatically.
+
+#### Native MCP servers
+
+Configure native servers in `harness.config.mcpServers`. The harness
+supports stdio and Streamable HTTPS. `agent.nativeMcpStatus()` reports
+negotiated transports and per-server state. Restart results include
+the same MCP status snapshot. A stopped host reports its last snapshot
+as stale.
+
+The npm package installs the MCP SDK and Undici as optional dependencies.
+If an install omits them, the configured MCP entries report
+`state: "unavailable"`, with `reason: "discovery"` for stdio or
+`reason: "connect"` for HTTPS. These statuses describe the failed stage
+without exposing credential values. Install the optional dependencies to
+use MCP. Other native features still work without them.
+A failing MCP server leaves the harness running. A plain HTTP 500 on discovery marks that entry unavailable, and on a tool
+call the model sees one sanitized `mcp_uncertain` result with no replay. Other channels and servers keep working.
+
+```ts
+import type { AgentHarnessConfig } from "@qlairoslabs/acp-client";
+
+export function withNativeMcp(
+  config: AgentHarnessConfig["config"],
+  getAuthorization: () => Promise<string>,
+) {
+  return {
+    config: {
+      ...config,
+      defaultPolicy: "guest",
+      policies: {
+        owner: { fallback: "allow", tools: {}, mcp: "allow" },
+        guest: { fallback: "allow", tools: {}, mcp: "deny" },
+      },
+      mcpServers: {
+        docs: { transport: "stdio", command: "/app/bin/docs-mcp", args: [] },
+        account: { transport: "http", endpoint: "https://example.com/mcp",
+          headers: { Authorization: { runtime: true } } },
+      },
+      limits: { ...config.limits, mcpCallTimeoutMs: 5_000 },
+    },
+    mcpRuntimeHeaders: async () => ({ account: { Authorization: await getAuthorization() } }),
+  } satisfies Pick<AgentHarnessConfig, "config" | "mcpRuntimeHeaders">;
+}
+```
+
+Merge those fields into the Agent's `harness` settings. Only the trusted
+owner supplies `mcpRuntimeHeaders`. The callback runs for every
+executable open or create request, including retry, reconnect and restart.
+It can resolve refreshed credentials. Header names are case-insensitive.
+The encoded runtime headers are limited to 8 KiB total and 2 KiB per value.
+Larger material fails locally with `mcp_runtime_headers_too_large`.
+Missing or empty material disables that server entry before it connects,
+while other servers can still start. Keep credentials out of configuration,
+prompt content and metadata. Runtime header values are never persisted.
+
+On an attributed prompt, the trusted caller can select an existing policy
+for that input with `conversation.promptFrom({ participantId, text,
+nativePolicy: "guest" })`. Object-form `prompt` accepts `nativePolicy` too.
+When the caller omits it, the harness uses the channel's selected policy,
+then the session default. Omitting `nativePolicy` denies MCP only when that
+fallback policy has no MCP grant. An owner channel still needs an explicit guest
+policy on guest input. Participant kind, sender ID, display name and text
+never grant MCP access. Do not populate `nativePolicy` from participant input.
+
+The `mcp` grant covers all `mcp__` tools for that named policy. Every
+taken or inherited contributing policy must explicitly allow MCP. A
+mixed owner and guest turn, or a policy with no `mcp` value, denies it.
+The local deterministic fixtures verify this transport and policy wiring.
+Approval behavior in deployments using agents-tools or door integrations
+requires separate acceptance.
 
 Tool changes need a running harness: `revokeTool` and the others fail with
 `HarnessUnavailableError` while it is stopped.

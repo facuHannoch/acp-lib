@@ -2,7 +2,9 @@ import type { ContextLimits } from "../contracts/context.ts";
 import type { ActiveTurn, ChannelInput, ChannelNotice, SendResult, SessionAgent, TurnExecutor, TurnPort } from "../contracts/agent.ts";
 import type { EventSink, SessionEventSink } from "../contracts/events.ts";
 import type { ChannelControls, ChannelStatus, ControlResult, LifecycleResult, SessionStatus } from "../contracts/session.ts";
-import type { AcceptItem, SessionLifecycle, SessionStorage, StorageError, StorageResult, StorageSnapshot, StoredTurn } from "../contracts/storage.ts";
+import type { AcceptItem, SessionLifecycle, SessionStorage, StorageError, StorageResult, StorageSnapshot, StoredTurn, TimelineEntry } from "../contracts/storage.ts";
+import { attachmentFailureReason, parseAttachmentFailure } from "../contracts/attachments.ts";
+import { attachmentView } from "../contracts/attachments.ts";
 
 export interface ChannelScheduler {
   wakeCommittedChannel(channelId: string): void;
@@ -16,12 +18,12 @@ export interface ChannelScheduler {
 }
 
 /** Status is a pure reading of one snapshot plus this process's own state. */
-export function sessionStatus(view: Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">, stopped: boolean, incompatible = false): SessionStatus {
+export function sessionStatus(view: Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">, stopped: boolean, incompatible = false, readyChannels?: readonly string[]): SessionStatus {
   const working = view.turns.some(turn => turn.state.status === "running");
   // Input pending on a channel that cannot run (suspended, suspending) is waiting
   // for a resume, not execution.
   const open = new Set(view.channels.filter(channel => channel.lifecycle === "open").map(channel => channel.channelId));
-  const pending = view.items.some(item => item.milestone === "received" && open.has(item.channelId));
+  const pending = readyChannels ? readyChannels.length > 0 : view.items.some(item => item.milestone === "received" && open.has(item.channelId));
   const sessionRuns = view.session.lifecycle === "running";
   return {
     sessionId: view.session.sessionId, revision: view.revision, lifecycle: view.session.lifecycle,
@@ -48,7 +50,7 @@ export function sessionStatus(view: Pick<StorageSnapshot, "revision" | "session"
  * publishes each one after it happens, and keeps the per-process handles
  * (promises and abort controllers) that storage cannot hold. */
 export function createChannelScheduler(
-  storage: SessionStorage, execute: TurnExecutor, emit: EventSink = () => {}, emitSession: SessionEventSink = () => {}, limits?: ContextLimits,
+  storage: SessionStorage, execute: TurnExecutor, emit: EventSink = () => {}, emitSession: SessionEventSink = () => {}, limits?: ContextLimits, imageInput = false,
 ): ChannelScheduler {
   const live = new Map<string, { turnId: number; abort: AbortController; suspension: AbortController }>();
   // Channels that may have pending input. Only an optimization and an idle
@@ -70,13 +72,17 @@ export function createChannelScheduler(
   const status = () => {
     const read = storage.readExecution();
     if (!read.ok) throw new Error(read.error.message);
-    return sessionStatus(read.value, stopped, !compatible());
+    const guard = storage.unattendedGuard();
+    if (!guard.ok) throw new Error(guard.error.message);
+    const ready = guard.value === undefined ? undefined : storage.readReadyChannels(limits);
+    if (ready && !ready.ok) throw new Error(ready.error.message);
+    return sessionStatus(read.value, stopped, !compatible(), ready?.value.channels);
   };
   /** Channels whose pending input this process may start: open ones only. A
    * suspended channel's backlog waits for its own resume and is not "waiting"
    * here, so it never keeps the session from reporting idle. */
   function rescan() {
-    const current = storage.readReadyChannels();
+    const current = storage.readReadyChannels(limits);
     if (!current.ok) throw new Error(current.error.message);
     lifecycle = current.value.lifecycle;
     waiting.clear();
@@ -103,8 +109,15 @@ export function createChannelScheduler(
   const ended = (turn: StoredTurn, revision: number) => {
     if (turn.state.status !== "failed" && turn.state.status !== "interrupted") return;
     emit({ channel: turn.channelId, revision, event: { type: "turn_ended", turnId: String(turn.turnId), outcome: turn.state.status,
-      error: turn.state.reason, ...(turn.state.uncertainCallIds.length ? { uncertainCalls: turn.state.uncertainCallIds } : {}) } });
+      error: turn.state.reason, ...(parseAttachmentFailure(turn.state.reason) ? { attachmentFailure: parseAttachmentFailure(turn.state.reason) } : {}),
+      ...(turn.state.uncertainCallIds.length ? { uncertainCalls: turn.state.uncertainCallIds } : {}) } });
   };
+  const takenMessages = (entries: readonly TimelineEntry[]) => entries.flatMap(entry => {
+    if (entry.kind !== "participant_message" || !entry.itemId) return [];
+    const parts = entry.message.role === "user" ? entry.message.parts : undefined;
+    return [{ itemId: entry.itemId, messageId: `item:${entry.itemId}`, position: String(entry.seq),
+      ...(parts ? { parts: attachmentView(parts, storage.readManagedAttachment, { timeline: true }) } : {}) }];
+  });
 
   /** Start the channel's next turn if storage has one to start. */
   function pump(channelId: string) {
@@ -116,8 +129,7 @@ export function createChannelScheduler(
     if (!begun.ok || !begun.value) { if (begun.ok) waiting.delete(channelId); return; }
     waiting.delete(channelId);
     emit({ channel: channelId, revision: begun.revision, event: { type: "turn_started", turnId: String(begun.value.turn.turnId),
-      items: begun.value.items.map(item => item.itemId), messages: begun.value.entries.flatMap(entry =>
-        entry.kind === "participant_message" && entry.itemId ? [{ itemId: entry.itemId, messageId: `item:${entry.itemId}`, position: String(entry.seq) }] : []) } });
+      items: begun.value.items.map(item => item.itemId), messages: takenMessages(begun.value.entries) } });
     run({ channelId, turnId: begun.value.turn.turnId, resumed: false });
   }
 
@@ -137,8 +149,7 @@ export function createChannelScheduler(
         if (!taken.ok) { if (taken.error.code !== "not_running" && taken.error.code !== "channel_suspended") fenced(taken.error.message); return; }
         waiting.delete(channelId);
         if (taken.value.items.length) emit({ channel: channelId, revision: taken.revision,
-          event: { type: "turn_took", turnId: String(turnId), items: taken.value.items.map(item => item.itemId), messages: taken.value.entries.flatMap(entry =>
-        entry.kind === "participant_message" && entry.itemId ? [{ itemId: entry.itemId, messageId: `item:${entry.itemId}`, position: String(entry.seq) }] : []) } });
+          event: { type: "turn_took", turnId: String(turnId), items: taken.value.items.map(item => item.itemId), messages: takenMessages(taken.value.entries) } });
       },
       confirm(milestone) {
         const advanced = storage.confirmReceipts(turnId, milestone);
@@ -173,7 +184,8 @@ export function createChannelScheduler(
     void Promise.resolve().then(() => execute(turn, port)).then(() => {}, error => {
       // Record the failure unless stop already ended the turn; either way the
       // channel stays usable.
-      const outcome = error && typeof error === "object" && "outcome" in error && typeof error.outcome === "string" ? error.outcome : String(error);
+      const attachmentFailure = error && typeof error === "object" && "attachmentFailure" in error ? error.attachmentFailure as import("../contracts/attachments.ts").AttachmentFailure | undefined : undefined;
+      const outcome = attachmentFailure ? attachmentFailureReason(attachmentFailure) : error && typeof error === "object" && "outcome" in error && typeof error.outcome === "string" ? error.outcome : String(error);
       const failed = storage.finishTurn(turnId, { status: "failed", reason: outcome });
       release();
       if (failed.ok && failed.value.finished) { ended(failed.value.turn, failed.revision); settleChannel(channelId, failed.revision); }
@@ -199,11 +211,11 @@ export function createChannelScheduler(
       if (!known.ok || !known.value.items.some(stored => stored.itemId === item.itemId))
         return { accepted: false, code: "stopped", error: "This process has stopped accepting work" };
     }
-    const result = storage.acceptItem(item, limits?.maxInputBytes);
+    const result = storage.acceptItem(item, limits?.maxInputBytes, { imageInput });
     if (!result.ok) {
       const code = result.error.code;
       return { accepted: false, error: result.error.message, code: code === "invalid_input" || code === "item_conflict"
-        || code === "invalid_policy" || code === "incompatible" || code === "not_running" || code === "not_found" || code === "channel_suspended" || code === "channel_retired" ? code : "storage_failure" };
+        || code === "invalid_policy" || code === "incompatible" || code === "not_running" || code === "not_found" || code === "channel_suspended" || code === "channel_retired" || code === "unsupported_image" || code === "transfer_limit" ? code : "storage_failure" };
     }
     const { item: stored, duplicate } = result.value;
     if (!duplicate) {
@@ -326,7 +338,7 @@ export function createChannelScheduler(
     agent: {
       idle: () => live.size === 0 && (!compatible() || !started || stopped || lifecycle !== "running" || waiting.size === 0),
       send: (input: ChannelInput) => accept({ kind: "participant_message", channelId: input?.channelId, senderId: input?.participantId,
-        text: input?.text, ...(input?.policy == null ? {} : { explicitPolicy: input.policy }), ...(input?.itemId === undefined ? {} : { itemId: input.itemId }) }),
+        text: input?.text, ...(input?.parts === undefined ? {} : { parts: input.parts }), ...(input?.policy == null ? {} : { explicitPolicy: input.policy }), ...(input?.itemId === undefined ? {} : { itemId: input.itemId }) }),
       notifyExternal: notice => accept({ kind: "external_notice", itemId: notice.itemId, channelId: notice.channelId,
         senderId: notice.source ?? "host", externalSource: notice.source, inheritedPolicyNames: notice.policyNames, text: notice.text }),
       notify: (notice: ChannelNotice) => accept({ kind: "channel_notice", channelId: notice?.channelId,

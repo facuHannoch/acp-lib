@@ -187,7 +187,7 @@
       loadCalls.disabled = true;
       try {
         const data = await endpoint('/calls?id=' + encodeURIComponent(id));
-        if (version === viewVersion) { callDetails = { id, modelCalls: data.modelCalls }; fetchError = ''; }
+        if (version === viewVersion) { callDetails = { id, modelCalls: data.modelCalls, webUsage: data.webUsage }; fetchError = ''; }
       } catch (error) { if (version === viewVersion) fetchError = String(error); }
       finally { if (version === viewVersion) render(); }
     };
@@ -206,6 +206,12 @@
     for (const [turnId, requests] of turns) {
       main.append(node('h2', turnId === 'unknown' ? 'New turn' : 'Turn ' + turnId, 'turn-divider'));
       const calls = modelCalls.filter(call => call.turnId === String(turnId));
+      const webUsage = callDetails?.id === selected ? (callDetails.webUsage ?? []).filter(value => value.turnId === String(turnId)) : [];
+      for (const usage of webUsage) {
+        const details = node('details'); details.dataset.key = channel.id + ':web-usage:' + usage.invocationId;
+        details.open = expanded.has(details.dataset.key);
+        details.append(node('summary', 'Web usage · ' + usage.tool), json(usage.webUsage)); main.append(details);
+      }
       for (const call of calls) {
         const details = node('details');
         details.dataset.key = channel.id + ':model-call:' + call.callId;

@@ -18,12 +18,18 @@ export interface InitializeParams {
 }
 export interface ProtocolConfig {
   version: 1;
+  limits?: import("./config-permissions.ts").ManagedConfig["limits"];
+  mcpServers?: Record<string, import("./mcp.ts").McpServer>;
   system: string;
   model: import("./config-permissions.ts").ManagedModel;
+  webSearch?: import("./config-permissions.ts").ExaSearchConfig;
+  webFetch?: import("./config-permissions.ts").WebFetchConfig;
   defaultPolicy?: string;
   policies?: Record<string, import("./config-permissions.ts").ToolPolicy>;
 }
 export interface CreateParams {
+  /** Executable owning launcher material, never saved. */
+  mcpRuntimeHeaders?: import("./mcp.ts").McpRuntimeHeaders;
   sessionId: string;
   config?: ProtocolConfig;
   reminderChanges?: import("./reminders.ts").ReminderChange[];
@@ -41,10 +47,17 @@ export interface NotifyParams {
 }
 export interface PushParams {
   channel: string;
-  item: { id: string; kind: "user_message"; sender: string; content: { type: "text"; text: string }[]; policy?: string | null; delivery?: "queue"; wake?: true };
+  item: { id: string; kind: "user_message"; sender: string; content: import("./attachments.ts").InputPart[]; policy?: string | null; delivery?: "queue"; wake?: true };
 }
+export interface InitializeResult {
+  protocolVersion: 1;
+  harness: { version: string };
+  description: Description;
+}
+
 export interface Description {
   reminderLimits?: import("./reminders.ts").ReminderLimits;
+  attachmentLimits?: { fileBytes: number; chunkBytes: number; openUploads: number; uploadIdleMs: number };
   configOptions: unknown[]; commands: unknown[]; policies: string[];
   /** Advertise only implemented guarantees: `durable`/`true` are reported by a
    * server only once its acceptance commits to storage before acknowledging. */
@@ -54,7 +67,8 @@ export interface Description {
      * reject the field. */
     startupChannelChanges?: true;
     /** Decision 0021: tool catalogs, `functions/call` callbacks and invocation records. */
-    functions?: true; reminders?: true };
+    mcpServers?: { stdio: boolean; http: boolean; sse: false };
+    functions?: true; reminders?: true; routines?: true; unattendedTurnGuard?: true; managedAttachments?: true; orderedParts?: true };
 }
 
 // ---- Channel changes applied at open, decision 0020.
@@ -94,7 +108,7 @@ export interface ChannelChangeResult {
 export type DurableErrorCode =
   | "item_conflict" | "not_running" | "stopped" | "invalid_state" | "incompatible"
   | "owner_conflict" | "not_found" | "already_exists" | "busy"
-  | "invalid_archive" | "invalid_policy" | "transfer_limit" | "serialization_error" | "storage_failure"
+  | "invalid_archive" | "invalid_config" | "invalid_policy" | "transfer_limit" | "serialization_error" | "storage_failure"
   /** Decision 0014. The channel is suspending or suspended; a retry of accepted input still returns its recorded outcome. */
   | "channel_suspended"
   /** The channel ID was deleted; it is reserved for good. */
@@ -109,17 +123,20 @@ export interface ItemStatus {
   milestone: ItemMilestone; turnId?: string;
   policy?: import("./config-permissions.ts").ItemPolicy;
   externalSource?: string;
+  parts?: import("./attachments.ts").AttachmentViewPart[];
 }
 export interface TurnStatus {
   turnId: string; channel: string; items: string[];
   state: "running" | "suspended" | "completed" | "failed" | "interrupted";
   reason?: string;
+  attachmentFailure?: import("./attachments.ts").AttachmentFailure;
   /** Recorded calls with no recorded result; never replayed by the harness. */
   uncertainCalls?: string[];
 }
 /** `idle`, `suspended` and unresolved interrupted work are distinguishable:
  * see SessionStatus in the session contract for the exact derivation. */
 export interface StatusResult {
+  mcpServers?: Record<string, import("./mcp.ts").McpServerStatus>;
   sessionId: string; revision: number;
   lifecycle: "running" | "suspending" | "suspended";
   execution: "idle" | "working" | "suspending" | "suspended" | "stopped" | "incompatible";
@@ -164,6 +181,12 @@ export interface TransferLimits { chunkBytes: 524288; maxBytes: 268435456; idleM
 export type ArchiveLocation = { type: "path"; path: string } | { type: "transfer" };
 
 export interface DurableMethods extends ModelExecutionMethods, ReminderMethods, Omit<OperatorMethods, "session/create"> {
+  "attachment/begin": { params: { channel: string; filename: string; mediaType: string; bytes: number; sha256: string }; result: { uploadId: string; attachmentId: string; offset: number } };
+  "attachment/status": { params: { channel: string; uploadId: string }; result: { offset: number } };
+  "attachment/write": { params: { channel: string; uploadId: string; offset: number; data: string }; result: { offset: number } };
+  "attachment/finalize": { params: { channel: string; uploadId: string }; result: import("./attachments.ts").AttachmentMetadata };
+  "attachment/abort": { params: { channel: string; uploadId: string }; result: Record<string, never> };
+  "attachment/read": { params: { channel: string; id: string; offset: number }; result: { metadata: import("./attachments.ts").AttachmentMetadata; data: string; nextOffset?: number } };
   /** Open an existing session with runtime configuration. Returns the load
    * view; a second load on the same endpoint returns a fresh view only.
    * `channelChanges` (decision 0020) is validated as a whole, then applied
@@ -246,7 +269,7 @@ export interface DurableMethods extends ModelExecutionMethods, ReminderMethods, 
  * events. Delivered through `subscribeSession` on the transport and endpoint. */
 export interface RpcSessionNotification { jsonrpc: "2.0"; method: "session/event"; params: SessionEvent | import("./reminders.ts").ReminderSessionEvent }
 export interface Methods {
-  initialize: { params: InitializeParams; result: { protocolVersion: 1; harness: { version: string }; description: Description } };
+  initialize: { params: InitializeParams; result: InitializeResult };
   /** Validate without opening a session or starting execution. */
   "config/validate": { params: { config: unknown }; result: { valid: true } };
   "approval/respond": { params: { requestId: string; decision: import("./config-permissions.ts").ApprovalAnswer }; result: { accepted: true } };
@@ -262,7 +285,7 @@ export interface Methods {
 }
 export interface RpcRequest { jsonrpc: "2.0"; id: number; method: string; params: unknown }
 export type RpcResponse = { jsonrpc: "2.0"; id: number; result: unknown } |
-  { jsonrpc: "2.0"; id: number | null; error: { code: number; message: string; data: { code: string } } };
+  { jsonrpc: "2.0"; id: number | null; error: { code: number; message: string; data: { code: string; expectedOffset?: number } } };
 export interface RpcNotification { jsonrpc: "2.0"; method: "channel/event"; params: ChannelEvent }
 // ---- Requests from the harness to the host, decision 0021. IDs are numeric,
 // per connection, and separate from the IDs of host requests: direction tells

@@ -172,9 +172,9 @@ test("deleting a conversation with a reminders-only backend removes its wake in 
       },
     };
     await deleteConversationWithChannel(
-      { persistence, nativeHarness: null } as never,
-      "channel" as never,
-      { providerSession: "keep" } as never,
+      { persistence, nativeHarness: null } as unknown as Parameters<typeof deleteConversationWithChannel>[0],
+      "channel" as AgentConversationId,
+      { providerSession: "keep" } as unknown as Parameters<typeof deleteConversationWithChannel>[2],
     );
     expect(deleted).toBe(true);
     expect(await repository.list()).toEqual([]);
@@ -310,12 +310,12 @@ test("text edits, pause and resume do not drift default expiry", async () => {
 });
 
 test("explicit repeating anchors and expiry lengths enforce acceptance boundaries", () => {
-  for (const startAt of [99_999, 100_000, 219_999]) {
+  for (const startAt of [99_999, 100_000, 699_999]) {
     expect(() => normalizeReminderSchedule({ every: 600_000, startAt }, 100_000))
       .toThrow(expect.objectContaining({ code: "invalid_schedule" }));
   }
-  expect(normalizeReminderSchedule({ every: 600_000, startAt: 220_000 }, 100_000))
-    .toEqual({ every: 600_000, startAt: 220_000 });
+  expect(normalizeReminderSchedule({ every: 600_000, startAt: 700_000 }, 100_000))
+    .toEqual({ every: 600_000, startAt: 700_000 });
   for (const duration of [-1, 0]) {
     expect(() => reminderExpiryPolicy(duration)).toThrow(expect.objectContaining({ code: "invalid_input" }));
   }
@@ -516,4 +516,38 @@ test("an unreleased R7 schema 22 fails fast with a migration diagnostic", () => 
     CREATE TABLE reminder_changes(id TEXT, change_id INTEGER, value TEXT);
     CREATE TABLE reminder_cache(id TEXT, value TEXT)`);
   expect(() => migrateSqliteAgentSchema(database)).toThrow("unreleased R7 build");
+});
+
+test("schema 22 reads a pre-routine one-off journal JSON row unchanged", async () => {
+  const { database, repository } = setup();
+  try {
+    database.query("INSERT INTO reminder_journals VALUES (?, ?, ?)").run("legacy", "channel", 1);
+    database.query("INSERT INTO reminder_changes VALUES (?, ?, ?, ?)").run("legacy", 1, 1, JSON.stringify({
+      op: "create", changeId: 1, stagingOrder: 1, acceptedAt: 0, state: "pending",
+      reminder: { id: "legacy", conversationId: "channel", text: "old", status: "active",
+        schedule: { at: 180_000 }, scheduleAcceptedAt: 0, expiry: { at: 540_000, graceMs: 360_000 },
+        expiryPolicy: { kind: "default" } },
+    }));
+    expect(database.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 22 });
+    const [row] = await repository.list();
+    expect(reminderRequest(row!.changes[0]!)).toEqual({
+      reminderId: "legacy", changeId: 1, op: "create",
+      payload: { acceptedAt: new Date(0).toISOString(), channel: "channel", text: "old", schedule: { at: new Date(180_000).toISOString() } },
+    });
+  } finally { database.close(); }
+});
+
+test("memory exhausted discard is conversation-scoped and preserves change ID high water", async () => {
+  const repo = createMemoryReminderPersistence();
+  const reminder = { id: "frozen", conversationId: "owner", text: "old", schedule: { at: 180_000 },
+    status: "active", expiry: null, expiryPolicy: { kind: "unlimited" }, scheduleAcceptedAt: 0 } as const;
+  const change = (await repo.enqueue({ reminder, op: "create", acceptedAt: 0 }))!;
+  const entry = reminderRequest(change);
+  await repo.markMaybeSent(reminder.id, change.changeId, entry);
+  await repo.setStartupRetry({ sessionId: "session", entries: [entry], exhausted: true });
+  expect(await repo.discardExhausted(reminder.id, "other")).toBe(false);
+  expect((await repo.wake()).startupRetry?.entries).toEqual([entry]);
+  expect(await repo.discardExhausted(reminder.id, "owner")).toBe(true);
+  expect((await repo.list())[0]).toMatchObject({ highWater: change.changeId, changes: [] });
+  expect(await repo.enqueue({ reminder, op: "update", acceptedAt: 1 })).toMatchObject({ changeId: change.changeId + 1 });
 });

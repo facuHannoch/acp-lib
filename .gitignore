@@ -1,4 +1,6 @@
 .res/acp
+/.res/local/
+.env
 
 node_modules/
 .agents/.secrets/
@@ -12,3 +14,4 @@ node_modules/
 .agents/.artifacts/agent
 .agents/.secrets/agent
 .agents/.secrets/common
+.agents/sessions

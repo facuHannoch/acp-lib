@@ -115,7 +115,9 @@ export interface AgentHarnessConfig {
   readonly idleStopMs?: number;
   readonly idleStopWindowMs?: number;
   /** The harness configuration, sent on every open. */
-  readonly config: import("../native-harness/src/client.ts").ProtocolConfig;
+  readonly config: import("../native/reminders/routine-wire.ts").RoutineConfigInput;
+  /** Fresh secret material for each executable native harness open. */
+  readonly mcpRuntimeHeaders?: import("../native/mcp.ts").McpRuntimeHeadersProvider;
   /** The harness home, a path in the harness's environment. It must survive process restarts. */
   readonly home: string;
   /** How to start the harness server. Defaults to this package's harness in `serve --stdio` mode. */

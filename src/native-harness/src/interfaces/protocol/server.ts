@@ -1,3 +1,4 @@
+import { attachmentView } from "../../contracts/attachments.ts";
 import { OperatorFault, operatorMethods, operatorRead, readValue } from "./operator.ts";
 import type { ProtocolEndpoint, RpcRequest, RpcResponse, RpcNotification, RpcSessionNotification, ProtocolConfig, Description, Subscription, DurableErrorCode } from "../../contracts/protocol.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
@@ -18,15 +19,22 @@ import { ToolFault, createCallbackBridge, isToolMethod, toolMethods, toolRequest
 import { parseReminderBatch, parseReminderChange, parseReminderList, ReminderShapeError } from "../../runtime/reminder-validation.ts";
 import { REMINDER_LIMITS } from "../../util/reminder-schedule.ts";
 import type { ReminderChange, ReminderChangeResult, ReminderSessionEvent } from "../../contracts/reminders.ts";
+import type { createManagedAttachmentService } from "../../capabilities/attachments/service.ts";
+import { AttachmentServiceError } from "../../capabilities/attachments/service.ts";
+import { UploadError } from "../../capabilities/attachments/upload.ts";
+import { AttachmentReadError } from "../../capabilities/attachments/read.ts";
+import { AttachmentInputError, validateMixedParts } from "../../util/attachment-input.ts";
+import type { InputPart } from "../../contracts/attachments.ts";
+import { ATTACHMENT_LIMITS } from "../../contracts/attachments.ts";
 
 class Fault extends Error {
-  constructor(readonly tag: string, message: string, readonly rpc = -32602) { super(message); }
+  constructor(readonly tag: string, message: string, readonly rpc = -32602, readonly expectedOffset?: number) { super(message); }
 }
 /** Thrown by a session factory to report a typed storage or lifecycle refusal. */
 export class SessionOpenError extends Error {
   constructor(readonly code: DurableErrorCode, message: string) { super(message); }
 }
-export interface SessionRequest { mode: "create" | "open"; sessionId: string; config?: ProtocolConfig;
+export interface SessionRequest { mode: "create" | "open"; sessionId: string; config?: ProtocolConfig; mcpRuntimeHeaders?: unknown;
   /** Decision 0021: a catalog whose shape is valid. The factory checks its names
    * against its built-in tools and passes it to the session. */
   tools?: ToolCatalogInput }
@@ -39,6 +47,10 @@ export interface OpenedSession {
   commitConfig?(): void;
   /** One consistent logical copy, or `busy`. */
   exportArchive?(): StorageResult<SessionArchive>;
+  attachments?: ReturnType<typeof createManagedAttachmentService>;
+  imageInput?: boolean;
+  mcpStatus?(): Record<string, import("../../contracts/mcp.ts").McpServerStatus>;
+  stopMcp?(): Promise<void>;
 }
 export interface ProtocolServerOptions {
   durable?: boolean;
@@ -50,6 +62,9 @@ export interface ProtocolServerOptions {
   limits?: Partial<{ chunkBytes: number; maxBytes: number; idleMs: number }>;
   /** Decision 0021: the session factory accepts tool catalogs. */
   functions?: boolean;
+  attachments?: boolean;
+  mcpStdio?: boolean;
+  mcpHttps?: boolean;
 }
 
 const bad = (message: string): never => { throw new Fault("invalid_params", message); };
@@ -71,22 +86,24 @@ function count(value: unknown, fallback: number): number {
 }
 /** Capabilities describe this server instance: durable acceptance and load are
  * advertised only when its sessions are opened from durable storage. */
-export function describe(durable: boolean, archives = false, functions = false): Description {
+export function describe(durable: boolean, archives = false, functions = false, attachments = false): Description {
   return {
-    reminderLimits: REMINDER_LIMITS,
+    ...(attachments ? { attachmentLimits: { fileBytes: ATTACHMENT_LIMITS.fileBytes, chunkBytes: ATTACHMENT_LIMITS.chunkBytes, openUploads: ATTACHMENT_LIMITS.openUploads, uploadIdleMs: ATTACHMENT_LIMITS.uploadIdleMs } } : {}),
+    reminderLimits: { ...REMINDER_LIMITS, maxActiveRoutinesPerChannel: 20, maxRoutineCatchUp: 10 },
     configOptions: [], commands: [], policies: [],
-    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, reminders: true, ...(functions ? { functions: true as const } : {}),
+    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, reminders: true, routines: true, unattendedTurnGuard: true, ...(functions ? { functions: true as const } : {}), ...(attachments ? { managedAttachments: true as const, orderedParts: true as const } : {}),
       methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/open"] : []), ...operatorMethods, "session/status", "reminder/change", "reminder/get", "reminder/list",
         "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/notify", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
-        ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? toolMethods() : [])],
-      events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "approval_closed", "reminder_changed", "reminder_fired", "reminder_expired", "reminder_cancelled", "session/event"] },
+        ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? toolMethods() : []), ...(attachments ? ["attachment/begin", "attachment/write", "attachment/status", "attachment/finalize", "attachment/abort", "attachment/read"] : [])],
+      events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "approval_closed", "reminder_changed", "reminder_fired", "reminder_expired", "reminder_cancelled", "routine_disposition", "routine_migration_blocked", "session/event"] },
   };
 }
 
-export function createProtocolServer(open: (request: SessionRequest) => Promise<OpenedSession>, options: ProtocolServerOptions = {}): ProtocolEndpoint & { dispose(): void } {
+export function createProtocolServer(open: (request: SessionRequest) => Promise<OpenedSession>, options: ProtocolServerOptions = {}): ProtocolEndpoint & { dispose(): Promise<void> } {
   const limits = { ...TRANSFER_LIMITS, ...options.limits } as TransferLimits;
   const transfers = options.importArchive && options.transferDirectory ? createTransfers(options.transferDirectory, limits) : undefined;
-  const description = describe(!!options.durable, !!transfers, !!options.functions);
+  const description = describe(!!options.durable, !!transfers, !!options.functions, !!options.attachments);
+  if (options.mcpStdio) description.capabilities.mcpServers = { stdio: true, http: !!options.mcpHttps, sse: false };
   let initialized = false;
   let approvalConsumer = false;
   let opening = false;
@@ -109,7 +126,11 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   const catalogOf = (raw: unknown) => {
     if (raw === undefined) return undefined;
     if (!options.functions) bad("This server does not accept tool catalogs");
-    try { return parseCatalog(raw, []); } catch (error) { throw error instanceof CatalogError ? new Fault(error.code, error.message) : error; }
+    try {
+      const parsed = parseCatalog(raw, []);
+      if (parsed.catalog.some(tool => tool.name.startsWith("mcp__"))) bad("MCP tool names are reserved");
+      return parsed;
+    } catch (error) { throw error instanceof CatalogError ? new Fault(error.code, error.message) : error; }
   };
 
   async function attach(request: SessionRequest): Promise<OpenedSession> {
@@ -162,9 +183,9 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   }
   /** An open that fails after attaching releases the session. With a batch,
    * stop first: a resume in it may already have handed a turn to an executor. */
-  function abandon(opened: OpenedSession, batch: boolean) {
+  async function abandon(opened: OpenedSession, batch: boolean) {
     if (batch) { try { opened.session.stop("Open failed"); } catch { /* Storage may be the failure. */ } }
-    opened.close();
+    try { await opened.stopMcp?.(); } finally { opened.close(); }
   }
 
   /** Read one snapshot, then keep every later notification behind the response.
@@ -175,7 +196,10 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const reads = opened.session.operatorReads;
     if (!reads) throw new Fault("invalid_state", "Focused reads are unavailable");
     const { value, revision } = readValue(reads.readSession());
-    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision };
+    const image = opened.imageInput && (opened.session.reminders?.executable() ?? true)
+      ? { imageInput: true as const, imageLimits: { formats: ["image/png", "image/jpeg", "image/webp"], fileBytes: ATTACHMENT_LIMITS.fileBytes,
+        turnBytes: ATTACHMENT_LIMITS.imageBytesPerTurn, maxImages: ATTACHMENT_LIMITS.references, maxSide: ATTACHMENT_LIMITS.imageSide, maxPixels: ATTACHMENT_LIMITS.imagePixels } } : {};
+    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision, ...image, ...(opened.mcpStatus ? { mcpServers: opened.mcpStatus() } : {}) };
   }
 
   function holdAfterResponse(start?: () => void) {
@@ -192,8 +216,10 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const reminders = session.reminders;
     if (!reminders) return {};
     const page = readValue(reminders.listReminders({})).value;
+    const guard = reminders.executable() ? readValue(reminders.unattendedGuard()).value : undefined;
     return { reminderChanges: results, reminders: page.reminders, ...(page.next ? { remindersNext: page.next } : {}),
-      ...(reminders.executable() ? readValue(reminders.reminderWake()).value : {}) };
+      ...(reminders.executable() ? readValue(reminders.reminderWake()).value : {}),
+      ...(reminders.executable() ? { unattendedTurnGuard: guard === undefined ? null : { maxConsecutiveTurns: guard } } : {}) };
   }
 
   function prepareReminders(session: PersistentSession, batch: ReminderChange[]) {
@@ -234,7 +260,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { valid: true };
     }
     if (method === "session/create") {
-      keys(p, ["sessionId", "config", "participants", "channels", "channelChanges", "tools", "reminderChanges"]);
+      keys(p, ["sessionId", "config", "participants", "channels", "channelChanges", "tools", "reminderChanges", "mcpRuntimeHeaders"]);
       const reminderBatch = parseReminderBatch(p.reminderChanges);
       const tools = catalogOf(p.tools);
       const sessionId = text(p.sessionId);
@@ -253,7 +279,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       // effective configuration is known.
       const batch = p.channelChanges === undefined ? undefined : parseChannelChanges(p.channelChanges);
       if (batch && p.config?.policies) checkPolicies(batch, Object.keys(p.config.policies));
-      const opened = await attach({ mode: "create", sessionId, config: p.config, ...(tools ? { tools } : {}) });
+      const opened = await attach({ mode: "create", sessionId, config: p.config, mcpRuntimeHeaders: p.mcpRuntimeHeaders, ...(tools ? { tools } : {}) });
       let results: ChannelChangeResult[] | undefined;
       let reminderResult: ReturnType<typeof reminderView>;
       try {
@@ -264,14 +290,14 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         reminderResult = prepareReminders(opened.session, reminderBatch);
         current = opened;
         if (batch) startup = { batch, results: results! };
-      } catch (error) { abandon(opened, !!batch); throw error; }
+      } catch (error) { try { await abandon(opened, !!batch); } catch { /* Preserve startup failure. */ } throw error; }
       finally { opening = false; }
       if (batch?.length || opened.session.reminders) holdAfterResponse(() => { if (current === opened) opened.session.start(); });
       else opened.session.start();
       return { ...(opened.session.operatorReads ? ready(opened) : { sessionId }), ...reminderResult, ...(results ? { channelChanges: results } : {}) };
     }
     if (method === "session/open") {
-      keys(p, ["sessionId", "config", "channelChanges", "tools", "reminderChanges"]);
+      keys(p, ["sessionId", "config", "channelChanges", "tools", "reminderChanges", "mcpRuntimeHeaders"]);
       const reminderBatch = parseReminderBatch(p.reminderChanges);
       const tools = catalogOf(p.tools);
       const sessionId = text(p.sessionId);
@@ -280,13 +306,14 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       // the batch was applied by the open and is only reported again. A new
       // batch belongs to the live channel API.
       if (current) {
+        if (p.mcpRuntimeHeaders !== undefined) bad("Runtime material requires a new executable open");
         if (ready(current).sessionId !== sessionId) throw new Fault("already_exists", "One session per endpoint");
         if (batch && !sameBatch(startup?.batch ?? [], batch)) throw new Fault("invalid_state", "The session is already open; send newer channel changes through the channel methods");
         if (tools && !(startupTools && sameCatalog(startupTools, tools))) throw new Fault("invalid_state", "The session is already open with another tool catalog; use the tool methods");
         if (p.reminderChanges !== undefined && JSON.stringify(reminderBatch) !== JSON.stringify(reminderStartup?.batch ?? [])) throw new Fault("invalid_state", "The session is already open; send changes through reminder/change");
         return { ...ready(current), ...reminderView(current.session, reminderStartup?.results), ...(startup ? { channelChanges: startup.results } : {}) };
       }
-      const opened = await attach({ mode: "open", sessionId, config: p.config, ...(tools ? { tools } : {}) });
+      const opened = await attach({ mode: "open", sessionId, config: p.config, mcpRuntimeHeaders: p.mcpRuntimeHeaders, ...(tools ? { tools } : {}) });
       try {
         const finish = batch && await prepare(opened, batch);
         // From here to the end of the block nothing is awaited: the resumes, the
@@ -302,7 +329,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { ...result, ...reminderResult, ...(results ? { channelChanges: results } : {}) };
       }
       // Work was not started; release the session so no partial load is observable.
-      catch (error) { abandon(opened, !!batch); throw error; }
+      catch (error) { try { await abandon(opened, !!batch); } catch { /* Preserve startup failure. */ } throw error; }
       finally { opening = false; }
     }
     if (transfers && method.startsWith("transfer/")) {
@@ -321,7 +348,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
       else return bad("Import source must be a path or a transfer");
       const payload = decodeArchive(bytes, limits.maxBytes) as SessionFilePayload<SessionArchive>;
-      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6].includes(payload.archive?.archiveVersion))
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6, 7, 8].includes(payload.archive?.archiveVersion))
         throw new Fault("invalid_archive", "Invalid session file payload");
       try { validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { throw new Fault("invalid_archive", String(error)); }
       const sessionId = p.sessionId ?? payload.archive?.snapshot?.session?.sessionId;
@@ -350,6 +377,21 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         milestone: result.milestone, ...(result.turnId === undefined ? {} : { turnId: String(result.turnId) }) } };
     }
     if (!current) throw new Fault("not_ready", "Create or load a session first");
+    if (method.startsWith("attachment/")) {
+      const service = current.attachments;
+      if (!service) throw new Fault("incompatible", "Managed attachments are unavailable");
+      const channel = text(p.channel);
+      if (method === "attachment/begin") {
+        keys(p, ["channel", "filename", "mediaType", "bytes", "sha256"]);
+        return service.begin({ channel, filename: p.filename, mediaType: text(p.mediaType), bytes: p.bytes, sha256: text(p.sha256) });
+      }
+      if (method === "attachment/read") { keys(p, ["channel", "id", "offset"]); return service.read(channel, text(p.id), p.offset); }
+      const uploadId = text(p.uploadId);
+      if (method === "attachment/status") { keys(p, ["channel", "uploadId"]); return service.status(channel, uploadId); }
+      if (method === "attachment/write") { keys(p, ["channel", "uploadId", "offset", "data"]); return service.write(channel, uploadId, p.offset, text(p.data)); }
+      if (method === "attachment/finalize") { keys(p, ["channel", "uploadId"]); return service.finalize(channel, uploadId); }
+      if (method === "attachment/abort") { keys(p, ["channel", "uploadId"]); service.abort(channel, uploadId); return {}; }
+    }
     if (transfers && method === "session/export") {
       keys(p, ["to"]);
       const to = obj(p.to);
@@ -414,7 +456,11 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { channel: status, ...(method === "channel/create" ? { created: (result.value as { created: boolean }).created } : {}) };
     }
     if (method === "session/idle") { keys(p, []); return { idle: session.agent.idle() && session.status().execution !== "working" }; }
-    if (method === "session/status") { keys(p, []); return wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
+    if (method === "session/status") {
+      keys(p, []);
+      return { ...wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()),
+        ...(current.mcpStatus ? { mcpServers: current.mcpStatus() } : {}) };
+    }
     if (method === "session/suspend" || method === "session/resume") {
       keys(p, []);
       // Suspend answers only once `suspended` is committed, after in-flight
@@ -443,7 +489,12 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       if (!session.reminders) throw new Fault("invalid_state", "Conditional stop is unavailable");
       return session.reminders.conditionalStop(windowMs);
     }
-    if (method === "session/stop") { keys(p, []); return wireStatus(session.stop("Stopped by the host"), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
+    if (method === "session/stop") {
+      keys(p, []);
+      const status = session.stop("Stopped by the host");
+      await current.stopMcp?.();
+      return wireStatus(status, session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot());
+    }
     if (method === "session/model-calls") {
       keys(p, ["after", "limit"]);
       const after = p.after === undefined ? undefined : text(p.after);
@@ -477,18 +528,21 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     // One delivery behavior: the two legacy fields are checked, then ignored.
     if (item.kind !== "user_message" || (item.delivery !== undefined && item.delivery !== "queue") || (item.wake !== undefined && item.wake !== true)) bad("Only waking, queued user messages are supported");
     if (!Array.isArray(item.content) || !item.content.length) bad("Expected text parts");
-    const parts = item.content.map((value: unknown) => { const part = obj(value); keys(part, ["type", "text"]);
-      if (part.type !== "text") bad("Only text parts are supported"); return { type: "text", text: text(part.text) }; });
+    const mixed = item.content.some((value: unknown) => !!value && typeof value === "object" && (value as { type?: unknown }).type === "attachment");
+    const parts: InputPart[] = mixed ? validateMixedParts(item.content) : item.content.map((value: unknown) => { const part = obj(value); keys(part, ["type", "text"]);
+      if (part.type !== "text") bad("Only text parts are supported"); return { type: "text" as const, text: text(part.text) }; });
     // send returns once the item is committed to the inbox (Received) or
     // refused. It never waits for inference; the outcome arrives as events.
     const result = session.agent.send({ channelId: channel, participantId: sender, itemId: id, ...(item.policy == null ? {} : { policy: text(item.policy) }),
-      text: parts.map((part: { text: string }) => part.text).join("\n") });
+      text: parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n"), ...(mixed ? { parts } : {}) });
     if (!result.accepted) throw new Fault(result.code === "invalid_input" ? "invalid_params" : result.code, result.error);
-    const policy = session.operatorReads
-      ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]?.policy
-      : session.snapshot().items.find(value => value.itemId === id)?.policy;
+    const saved = session.operatorReads
+      ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]
+      : session.snapshot().items.find(value => value.itemId === id);
+    const policy = saved?.policy;
     return { accepted: true, duplicate: result.duplicate, item: { id, channel, kind: "participant_message", sender, milestone: result.milestone,
       ...(policy === undefined ? {} : { policy }),
+      ...(saved?.parts ? { parts: attachmentView(saved.parts, session.operatorReads?.readManagedAttachment, { ownerChannel: channel }) } : {}),
       ...(result.turnId === undefined ? {} : { turnId: String(result.turnId) }) } };
   }
   return {
@@ -500,10 +554,12 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { jsonrpc: "2.0", id: request.id, result };
       } catch (error) {
         const fault = error instanceof FrameLimit ? new Fault("transfer_limit", error.message)
-          : error instanceof ReminderShapeError ? new Fault("invalid_params", error.message)
+          : error instanceof ReminderShapeError || error instanceof AttachmentInputError ? new Fault(error instanceof AttachmentInputError ? error.code : "invalid_params", error.message)
+          : error instanceof UploadError ? new Fault(error.code, error.message, -32602, error.expectedOffset)
+          : error instanceof AttachmentReadError || error instanceof AttachmentServiceError ? new Fault(error.code, error.message)
           : error instanceof TransferFault || error instanceof SessionFileError || error instanceof OperatorFault || error instanceof ChannelChangeFault || error instanceof ToolFault ? new Fault(error.code, error.message) : error;
         return { jsonrpc: "2.0", id, error: { code: fault instanceof Fault ? fault.rpc : -32603,
-          message: String(fault), data: { code: fault instanceof Fault ? fault.tag : "internal_error" } } };
+          message: String(fault), data: { code: fault instanceof Fault ? fault.tag : "internal_error", ...(fault instanceof Fault && fault.expectedOffset !== undefined ? { expectedOffset: fault.expectedOffset } : {}) } } };
       }
     },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -512,6 +568,16 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     respond(response) { bridge.respond(response); },
     // A connection that is gone serves no handler and answers no callback.
     disconnect() { approvalConsumer = false; current?.session.approvals.disconnect(); current?.session.tools?.serve([]); bridge.disconnect(); },
-    dispose() { approvalConsumer = false; current?.session.approvals.disconnect(); bridge.disconnect(); transfers?.dispose(); current?.session.reminders?.releaseTimer(); current?.close(); current = undefined; },
+    async dispose() {
+      const opened = current;
+      current = undefined;
+      approvalConsumer = false;
+      opened?.session.approvals.disconnect();
+      bridge.disconnect();
+      transfers?.dispose();
+      opened?.session.reminders?.releaseTimer();
+      if (opened?.stopMcp) await opened.stopMcp();
+      opened?.close();
+    },
   };
 }

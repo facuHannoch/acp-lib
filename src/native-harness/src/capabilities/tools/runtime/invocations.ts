@@ -1,3 +1,4 @@
+import { webUsageView } from "../../../util/web-usage.ts";
 import type { StorageSnapshot } from "../../../contracts/storage.ts";
 import type { ToolInvocation } from "../../../contracts/tools.ts";
 
@@ -21,7 +22,9 @@ export function turnInvocations(view: StorageSnapshot, turnId: number, waiting: 
     if (entry.turnId !== turnId || entry.message.role !== "assistant") continue;
     for (const call of entry.message.calls) {
       const id = invocationId(turnId, call.id), result = results.get(call.id);
-      const base = { invocationId: id, channel: turn.channelId, turnId: String(turnId), toolCallId: call.id, tool: call.name, arguments: call.arguments };
+      const evidence = view.webDispatches?.find(value => value.turnId === turnId && value.callId === call.id)?.evidence;
+      const webUsage = webUsageView({ knownWebCall: !!evidence || result?.webNoDispatch === true, dispatched: !!evidence, evidence, committedUsage: result?.usage });
+      const base = { invocationId: id, channel: turn.channelId, turnId: String(turnId), toolCallId: call.id, tool: call.name, arguments: call.arguments, ...(webUsage ? { webUsage } : {}) };
       if (result) {
         // A result written before decision 0021, or by a built-in, is a success.
         const outcome = result.outcome ?? { status: "succeeded" as const };
