@@ -11,7 +11,7 @@ const failed = (code: WebError, usage: WebUsage = {}): WebResponse => ({ ok: fal
 const record = (v: unknown): Record<string, unknown> | undefined => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 const usageOf = (value: Record<string, unknown> | undefined): WebUsage => {
   const usage: WebUsage = {}, id = value?.requestId, cost = record(value?.costDollars)?.total;
-  if (typeof id === "string" && Buffer.byteLength(id) <= 256 && id.trim()) usage.requestId = id;
+  if (typeof id === "string" && Buffer.byteLength(id) <= 256 && id.trim() && !/[\u0000-\u001f\u007f]/u.test(id)) usage.requestId = id;
   if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) usage.usd = cost;
   return usage;
 };

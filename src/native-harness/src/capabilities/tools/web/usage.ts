@@ -19,3 +19,20 @@ export function webUsageView(input: { knownWebCall: boolean; dispatched: boolean
   }
   return result;
 }
+
+/** Untrusted archive/storage data must not manufacture paid classification. */
+export function validWebDispatch(value: unknown): value is WebDispatchEvidence {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  if (Object.keys(item).some(key => !["backend", "operation", "paid"].includes(key))) return false;
+  return (item.backend === "exa" && item.paid === true && (item.operation === "web_search" || item.operation === "web_fetch"))
+    || (item.backend === "http" && item.paid === false && item.operation === "web_fetch");
+}
+export function validCommittedWebUsage(value: unknown): value is CommittedWebUsage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const usage = value as Record<string, unknown>;
+  if (Object.keys(usage).some(key => !["requestId", "usd"].includes(key))) return false;
+  if (usage.requestId !== undefined && (typeof usage.requestId !== "string" || !usage.requestId.trim()
+    || Buffer.byteLength(usage.requestId) > 256 || /[\u0000-\u001f\u007f]/u.test(usage.requestId))) return false;
+  return usage.usd === undefined || (typeof usage.usd === "number" && Number.isFinite(usage.usd) && usage.usd >= 0);
+}

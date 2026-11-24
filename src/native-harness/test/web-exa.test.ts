@@ -181,3 +181,20 @@ test("registry freezes open-time settings and direct fetch carries no provider u
   const direct = await result.value[1]!.execute({ url: "https://example.com/" }, signal);
   expect(directDeadline).toBe(2000); expect(direct.usage).toEqual({});
 });
+
+test("untrusted provider request IDs are bounded and control-free", async () => {
+  for (const requestId of ["x".repeat(257), "id\nwith-control", "  "]) {
+    const result = await runExa({ operation: "web_search", args: { query: "x" }, key: "secret", transport: async () => ({ status: 200, body: { requestId, results: [] } }) });
+    expect(result.usage.requestId).toBeUndefined();
+  }
+});
+
+test("web usage facts reject invalid archive shapes and preserve explicit zero", async () => {
+  const { validCommittedWebUsage, validWebDispatch } = await import("../src/capabilities/tools/web/usage.ts");
+  expect(validWebDispatch({ backend: "exa", operation: "web_search", paid: true })).toBe(true);
+  expect(validWebDispatch({ backend: "exa", operation: "web_search", paid: false })).toBe(false);
+  expect(validWebDispatch({ backend: "http", operation: "web_search", paid: false })).toBe(false);
+  expect(validWebDispatch({ backend: "http", operation: "web_fetch", paid: false, credential: "x" })).toBe(false);
+  expect(validCommittedWebUsage({ requestId: "req", usd: 0 })).toBe(true);
+  for (const value of [{ usd: -1 }, { usd: NaN }, { requestId: "bad\nid" }, { usd: null }, { secret: "x" }]) expect(validCommittedWebUsage(value)).toBe(false);
+});
