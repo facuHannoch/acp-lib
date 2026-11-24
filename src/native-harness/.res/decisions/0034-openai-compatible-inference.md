@@ -23,6 +23,7 @@ the normalized address, with canonical dotted-decimal IPv4 or bracketed
 ::1 in the source URL for HTTP.
 
 Reject every redirect without following it, including same-origin redirects.
+The nonretryable provider failure is redirect_refused.
 Send the configured model in Chat Completions and reuse current message,
 tool, tool-choice, stream and usage handling where compatible. Do not send
 OpenRouter-specific headers. Resolve apiKeyEnv only at executable open,
@@ -45,6 +46,7 @@ byte. Save and import the normalized configuration using the existing
 managed-config and session archive paths. Storage, archive and envelope
 versions stay unchanged. Older strict readers refuse the new arm.
 Legacy configs and archives remain readable.
+A session saved with the new arm cannot be opened by an older binary.
 
 ## Gate
 

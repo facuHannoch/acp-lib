@@ -82,6 +82,8 @@ export interface ToolInvocation {
    * repeats such a call. `none`: it never dispatched. */
   effect?: "none" | "unknown";
   reference?: ResultReference;
+  /** Durable per-invocation provider usage, absent for legacy calls. */
+  webUsage?: import("./web.ts").WebUsageView;
 }
 
 /** What the turn is doing now, with the ID of the model call, approval request

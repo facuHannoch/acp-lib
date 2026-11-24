@@ -99,7 +99,7 @@ export interface TurnContext {
    * barrier resolves before the last cancellation check. */
   dispatchTool(call: ToolCall, execute: ExecuteTurnTool): Promise<{ content: string; dispatched: boolean;
     /** Decision 0021: recorded with the paired result of a dispatched call. */
-    outcome?: import("./tools.ts").ToolOutcome }>;
+    outcome?: import("./tools.ts").ToolOutcome; usage?: import("./web.ts").WebResultUsage }>;
   /** Take pending inbox items (messages and notices) into this turn. */
   drainNotices?(): void;
   finish?(): boolean;

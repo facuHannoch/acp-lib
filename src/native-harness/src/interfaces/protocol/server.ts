@@ -1,3 +1,4 @@
+import { attachmentView } from "../../contracts/attachments.ts";
 import { OperatorFault, operatorMethods, operatorRead, readValue } from "./operator.ts";
 import type { ProtocolEndpoint, RpcRequest, RpcResponse, RpcNotification, RpcSessionNotification, ProtocolConfig, Description, Subscription, DurableErrorCode } from "../../contracts/protocol.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
@@ -18,9 +19,16 @@ import { ToolFault, createCallbackBridge, isToolMethod, toolMethods, toolRequest
 import { parseReminderBatch, parseReminderChange, parseReminderList, ReminderShapeError } from "../../runtime/reminder-validation.ts";
 import { REMINDER_LIMITS } from "../../util/reminder-schedule.ts";
 import type { ReminderChange, ReminderChangeResult, ReminderSessionEvent } from "../../contracts/reminders.ts";
+import type { createManagedAttachmentService } from "../../capabilities/attachments/service.ts";
+import { AttachmentServiceError } from "../../capabilities/attachments/service.ts";
+import { UploadError } from "../../capabilities/attachments/upload.ts";
+import { AttachmentReadError } from "../../capabilities/attachments/read.ts";
+import { AttachmentInputError, validateMixedParts } from "../../util/attachment-input.ts";
+import type { InputPart } from "../../contracts/attachments.ts";
+import { ATTACHMENT_LIMITS } from "../../contracts/attachments.ts";
 
 class Fault extends Error {
-  constructor(readonly tag: string, message: string, readonly rpc = -32602) { super(message); }
+  constructor(readonly tag: string, message: string, readonly rpc = -32602, readonly expectedOffset?: number) { super(message); }
 }
 /** Thrown by a session factory to report a typed storage or lifecycle refusal. */
 export class SessionOpenError extends Error {
@@ -39,6 +47,8 @@ export interface OpenedSession {
   commitConfig?(): void;
   /** One consistent logical copy, or `busy`. */
   exportArchive?(): StorageResult<SessionArchive>;
+  attachments?: ReturnType<typeof createManagedAttachmentService>;
+  imageInput?: boolean;
 }
 export interface ProtocolServerOptions {
   durable?: boolean;
@@ -50,6 +60,7 @@ export interface ProtocolServerOptions {
   limits?: Partial<{ chunkBytes: number; maxBytes: number; idleMs: number }>;
   /** Decision 0021: the session factory accepts tool catalogs. */
   functions?: boolean;
+  attachments?: boolean;
 }
 
 const bad = (message: string): never => { throw new Fault("invalid_params", message); };
@@ -71,14 +82,15 @@ function count(value: unknown, fallback: number): number {
 }
 /** Capabilities describe this server instance: durable acceptance and load are
  * advertised only when its sessions are opened from durable storage. */
-export function describe(durable: boolean, archives = false, functions = false): Description {
+export function describe(durable: boolean, archives = false, functions = false, attachments = false): Description {
   return {
+    ...(attachments ? { attachmentLimits: { fileBytes: ATTACHMENT_LIMITS.fileBytes, chunkBytes: ATTACHMENT_LIMITS.chunkBytes, openUploads: ATTACHMENT_LIMITS.openUploads, uploadIdleMs: ATTACHMENT_LIMITS.uploadIdleMs } } : {}),
     reminderLimits: { ...REMINDER_LIMITS, maxActiveRoutinesPerChannel: 20, maxRoutineCatchUp: 10 },
     configOptions: [], commands: [], policies: [],
-    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, reminders: true, routines: true, unattendedTurnGuard: true, ...(functions ? { functions: true as const } : {}),
+    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, reminders: true, routines: true, unattendedTurnGuard: true, ...(functions ? { functions: true as const } : {}), ...(attachments ? { managedAttachments: true as const, orderedParts: true as const } : {}),
       methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/open"] : []), ...operatorMethods, "session/status", "reminder/change", "reminder/get", "reminder/list",
         "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/notify", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
-        ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? toolMethods() : [])],
+        ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? toolMethods() : []), ...(attachments ? ["attachment/begin", "attachment/write", "attachment/status", "attachment/finalize", "attachment/abort", "attachment/read"] : [])],
       events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "approval_closed", "reminder_changed", "reminder_fired", "reminder_expired", "reminder_cancelled", "routine_disposition", "routine_migration_blocked", "session/event"] },
   };
 }
@@ -86,7 +98,7 @@ export function describe(durable: boolean, archives = false, functions = false):
 export function createProtocolServer(open: (request: SessionRequest) => Promise<OpenedSession>, options: ProtocolServerOptions = {}): ProtocolEndpoint & { dispose(): void } {
   const limits = { ...TRANSFER_LIMITS, ...options.limits } as TransferLimits;
   const transfers = options.importArchive && options.transferDirectory ? createTransfers(options.transferDirectory, limits) : undefined;
-  const description = describe(!!options.durable, !!transfers, !!options.functions);
+  const description = describe(!!options.durable, !!transfers, !!options.functions, !!options.attachments);
   let initialized = false;
   let approvalConsumer = false;
   let opening = false;
@@ -175,7 +187,10 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const reads = opened.session.operatorReads;
     if (!reads) throw new Fault("invalid_state", "Focused reads are unavailable");
     const { value, revision } = readValue(reads.readSession());
-    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision };
+    const image = opened.imageInput && (opened.session.reminders?.executable() ?? true)
+      ? { imageInput: true as const, imageLimits: { formats: ["image/png", "image/jpeg", "image/webp"], fileBytes: ATTACHMENT_LIMITS.fileBytes,
+        turnBytes: ATTACHMENT_LIMITS.imageBytesPerTurn, maxImages: ATTACHMENT_LIMITS.references, maxSide: ATTACHMENT_LIMITS.imageSide, maxPixels: ATTACHMENT_LIMITS.imagePixels } } : {};
+    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision, ...image };
   }
 
   function holdAfterResponse(start?: () => void) {
@@ -323,7 +338,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
       else return bad("Import source must be a path or a transfer");
       const payload = decodeArchive(bytes, limits.maxBytes) as SessionFilePayload<SessionArchive>;
-      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6, 7].includes(payload.archive?.archiveVersion))
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6, 7, 8].includes(payload.archive?.archiveVersion))
         throw new Fault("invalid_archive", "Invalid session file payload");
       try { validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { throw new Fault("invalid_archive", String(error)); }
       const sessionId = p.sessionId ?? payload.archive?.snapshot?.session?.sessionId;
@@ -352,6 +367,21 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         milestone: result.milestone, ...(result.turnId === undefined ? {} : { turnId: String(result.turnId) }) } };
     }
     if (!current) throw new Fault("not_ready", "Create or load a session first");
+    if (method.startsWith("attachment/")) {
+      const service = current.attachments;
+      if (!service) throw new Fault("incompatible", "Managed attachments are unavailable");
+      const channel = text(p.channel);
+      if (method === "attachment/begin") {
+        keys(p, ["channel", "filename", "mediaType", "bytes", "sha256"]);
+        return service.begin({ channel, filename: p.filename, mediaType: text(p.mediaType), bytes: p.bytes, sha256: text(p.sha256) });
+      }
+      if (method === "attachment/read") { keys(p, ["channel", "id", "offset"]); return service.read(channel, text(p.id), p.offset); }
+      const uploadId = text(p.uploadId);
+      if (method === "attachment/status") { keys(p, ["channel", "uploadId"]); return service.status(channel, uploadId); }
+      if (method === "attachment/write") { keys(p, ["channel", "uploadId", "offset", "data"]); return service.write(channel, uploadId, p.offset, text(p.data)); }
+      if (method === "attachment/finalize") { keys(p, ["channel", "uploadId"]); return service.finalize(channel, uploadId); }
+      if (method === "attachment/abort") { keys(p, ["channel", "uploadId"]); service.abort(channel, uploadId); return {}; }
+    }
     if (transfers && method === "session/export") {
       keys(p, ["to"]);
       const to = obj(p.to);
@@ -479,18 +509,21 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     // One delivery behavior: the two legacy fields are checked, then ignored.
     if (item.kind !== "user_message" || (item.delivery !== undefined && item.delivery !== "queue") || (item.wake !== undefined && item.wake !== true)) bad("Only waking, queued user messages are supported");
     if (!Array.isArray(item.content) || !item.content.length) bad("Expected text parts");
-    const parts = item.content.map((value: unknown) => { const part = obj(value); keys(part, ["type", "text"]);
-      if (part.type !== "text") bad("Only text parts are supported"); return { type: "text", text: text(part.text) }; });
+    const mixed = item.content.some((value: unknown) => !!value && typeof value === "object" && (value as { type?: unknown }).type === "attachment");
+    const parts: InputPart[] = mixed ? validateMixedParts(item.content) : item.content.map((value: unknown) => { const part = obj(value); keys(part, ["type", "text"]);
+      if (part.type !== "text") bad("Only text parts are supported"); return { type: "text" as const, text: text(part.text) }; });
     // send returns once the item is committed to the inbox (Received) or
     // refused. It never waits for inference; the outcome arrives as events.
     const result = session.agent.send({ channelId: channel, participantId: sender, itemId: id, ...(item.policy == null ? {} : { policy: text(item.policy) }),
-      text: parts.map((part: { text: string }) => part.text).join("\n") });
+      text: parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n"), ...(mixed ? { parts } : {}) });
     if (!result.accepted) throw new Fault(result.code === "invalid_input" ? "invalid_params" : result.code, result.error);
-    const policy = session.operatorReads
-      ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]?.policy
-      : session.snapshot().items.find(value => value.itemId === id)?.policy;
+    const saved = session.operatorReads
+      ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]
+      : session.snapshot().items.find(value => value.itemId === id);
+    const policy = saved?.policy;
     return { accepted: true, duplicate: result.duplicate, item: { id, channel, kind: "participant_message", sender, milestone: result.milestone,
       ...(policy === undefined ? {} : { policy }),
+      ...(saved?.parts ? { parts: attachmentView(saved.parts, session.operatorReads?.readManagedAttachment, { ownerChannel: channel }) } : {}),
       ...(result.turnId === undefined ? {} : { turnId: String(result.turnId) }) } };
   }
   return {
@@ -502,10 +535,12 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { jsonrpc: "2.0", id: request.id, result };
       } catch (error) {
         const fault = error instanceof FrameLimit ? new Fault("transfer_limit", error.message)
-          : error instanceof ReminderShapeError ? new Fault("invalid_params", error.message)
+          : error instanceof ReminderShapeError || error instanceof AttachmentInputError ? new Fault(error instanceof AttachmentInputError ? error.code : "invalid_params", error.message)
+          : error instanceof UploadError ? new Fault(error.code, error.message, -32602, error.expectedOffset)
+          : error instanceof AttachmentReadError || error instanceof AttachmentServiceError ? new Fault(error.code, error.message)
           : error instanceof TransferFault || error instanceof SessionFileError || error instanceof OperatorFault || error instanceof ChannelChangeFault || error instanceof ToolFault ? new Fault(error.code, error.message) : error;
         return { jsonrpc: "2.0", id, error: { code: fault instanceof Fault ? fault.rpc : -32603,
-          message: String(fault), data: { code: fault instanceof Fault ? fault.tag : "internal_error" } } };
+          message: String(fault), data: { code: fault instanceof Fault ? fault.tag : "internal_error", ...(fault instanceof Fault && fault.expectedOffset !== undefined ? { expectedOffset: fault.expectedOffset } : {}) } } };
       }
     },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },

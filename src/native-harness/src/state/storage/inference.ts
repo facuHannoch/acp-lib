@@ -18,6 +18,8 @@ export interface ContextRows {
   contextTrigger(turnId: number): ContextRow | undefined;
   contextPreviousResponse(turnId: number): number;
   contextInputs(turnId: number, after: number, limit: number): ContextRow[];
+  /** Active-turn mixed inputs remain required through tool calls and resume. */
+  contextAttachmentInputs(turnId: number, limit: number): ContextRow[];
   contextActive(turnId: number, limit: number): ContextRow[];
   contextLocal(channelId: string, before: number, limit: number): ContextRow[];
   contextRecent(before: number, limit: number, legacy?: boolean): ContextRow[];
@@ -45,7 +47,10 @@ export function readInference(rows: ContextRows, input: Parameters<InferenceStor
   if (taken.length > limits.maxTakenItems ||
       taken.reduce((total, row) => total + (row.textBytes ?? 0), 0) > limits.maxTakenTextBytes ||
       (trigger?.textBytes ?? 0) > limits.maxInputBytes || taken.some(row => (row.textBytes ?? 0) > limits.maxInputBytes)) return overflow;
-  const requiredRows = trigger && trigger.seq !== taken[0]?.seq ? [trigger, ...taken] : taken;
+  const attachmentInputs = rows.contextAttachmentInputs(turnId, maxReadRecords + 1);
+  if (attachmentInputs.length > maxReadRecords) return overflow;
+  const requiredRows = [...new Map([...(trigger ? [trigger] : []), ...taken, ...attachmentInputs].map(row => [row.seq, row])).values()]
+    .sort((a, b) => a.seq - b.seq);
   const requiredBytes = requiredRows.reduce((total, row) => total + row.bytes, 0);
   if (requiredRows.length > maxReadRecords || requiredBytes > maxReadBytes) return overflow;
   const policies = rows.contextPolicies(turnId, maxReadRecords, maxReadBytes - requiredBytes);
@@ -61,14 +66,37 @@ export function readInference(rows: ContextRows, input: Parameters<InferenceStor
     return true;
   }
   const required = requiredRows.map(row => rows.contextEntry(row.seq));
-  const takenItemIds = required.slice(required.length - taken.length).map(entry => entry.itemId!);
+  const bySeq = new Map(required.map(entry => [entry.seq, entry]));
+  const takenItemIds = taken.map(row => bySeq.get(row.seq)!.itemId!);
   const requiredSeqs = new Set(requiredRows.map(row => row.seq));
+
+  // The latest web exchange must reach the next inference intact. Inspect the
+  // last assistant directly so a bounded suffix cannot silently omit its call.
+  const latest = rows.contextPreviousResponse(turnId);
+  if (latest) {
+    const assistant = rows.contextEntry(latest);
+    if (assistant.message.role === "assistant" && assistant.message.calls.some(call => call.name === "web_search" || call.name === "web_fetch")) {
+      const suffix = rows.contextActive(turnId, maxReadRecords + 1);
+      const first = suffix.find(row => row.seq === latest);
+      if (!first) return overflow;
+      const callIds = new Set(assistant.message.calls.map(call => call.id));
+      const resultRows = suffix.filter(row => row.seq > latest && row.kind === "other");
+      const resultEntries = resultRows.map(row => rows.contextEntry(row.seq)).filter(entry => entry.message.role === "tool" && callIds.has(entry.message.callId));
+      const ids = new Set(resultEntries.map(entry => entry.message.role === "tool" ? entry.message.callId : ""));
+      if (ids.size !== callIds.size || resultEntries.length !== callIds.size) return overflow;
+      const groupRows = [first, ...resultRows.filter(row => resultEntries.some(entry => entry.seq === row.seq))];
+      if (!charge(groupRows)) return overflow;
+      required.push(assistant, ...resultEntries);
+      for (const row of groupRows) requiredSeqs.add(row.seq);
+    }
+  }
 
   // The newest bounded suffix can start with orphaned tool results. Start a
   // group only at an assistant row and verify its entire result set after load.
   const groups: ContextRow[][] = [];
   let exchange: ContextRow[] | undefined;
   if (records && bytes) for (const row of rows.contextActive(turnId, maxReadRecords).reverse()) {
+    if (requiredSeqs.has(row.seq)) continue;
     if (row.kind === "assistant") { exchange = [row]; groups.push(exchange); }
     else if (row.kind === "other") exchange?.push(row);
     else if (!requiredSeqs.has(row.seq)) groups.push([row]);

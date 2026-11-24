@@ -2,6 +2,7 @@ import type { ChannelInput } from "../../contracts/agent.ts";
 import type { ChannelOutputs } from "../../contracts/output.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import { outputStream } from "./output.ts";
+import { validateMixedParts } from "../../util/attachment-input.ts";
 
 type LocalSession = Pick<PersistentSession, "agent" | "subscribe">;
 /** Lifecycle operations for the process owner's local socket only. */
@@ -67,15 +68,23 @@ export function createChannelHandler(session: LocalSession, outputs?: ChannelOut
     let input: ChannelInput;
     try {
       const body = await request.json() as ChannelInput | null;
-      if (!body || ![body.channelId, body.participantId, body.text].every(
+      if (!body || ![body.channelId, body.participantId].every(
         (value) => typeof value === "string" && value.trim().length > 0,
-      )) throw new Error("Expected channelId, participantId and text as nonempty strings");
-      input = { channelId: body.channelId, participantId: body.participantId, text: body.text };
+      )) throw new Error("Expected channelId and participantId as nonempty strings");
+      if (body.parts !== undefined) {
+        const parts = validateMixedParts(body.parts);
+        const text = parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+        if (body.text !== undefined && body.text !== text) throw new Error("Text does not match ordered parts");
+        input = { channelId: body.channelId, participantId: body.participantId, text, parts };
+      } else {
+        if (typeof body.text !== "string" || !body.text.trim()) throw new Error("Expected nonempty text");
+        input = { channelId: body.channelId, participantId: body.participantId, text: body.text };
+      }
     } catch (error) {
       return Response.json({ error: String(error) }, { status: 400 });
     }
     const accepted = session.agent.send(input);
-    if (!accepted.accepted) return Response.json({ error: accepted.error }, { status: accepted.code === "invalid_input" ? 400 : 503 });
+    if (!accepted.accepted) return Response.json({ error: accepted.error, code: accepted.code }, { status: accepted.code === "invalid_input" ? 400 : 409 });
     try { return Response.json({ answer: await reply(accepted.itemId) }); }
     catch (error) { return Response.json({ error: String(error) }, { status: 500 }); }
   };

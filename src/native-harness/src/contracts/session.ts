@@ -89,6 +89,10 @@ export interface PersistentSessionOptions {
   reminderClock?: import("./reminders.ts").ReminderClock;
   /** Local opt-in when there is no managed configuration. */
   timelineTools?: boolean;
+  /** Trusted assembly has verified the opted-in model and image validator. */
+  imageInput?: boolean;
+  /** Local web implementations created by trusted session assembly. */
+  webTools?: readonly import("./web.ts").CheckedWebRegistration[];
   systemPrompt: string;
   /** Optional assertion of the storage owner's validated config. Omission uses
    * the owner snapshot; legacy allow applies only when that snapshot is absent. */
@@ -123,7 +127,7 @@ export interface PersistentSession {
   };
   /** Read an oldest-first page of complete model-call summaries. */
   readModelCalls: SessionStorage["readCalls"];
-  operatorReads?: Pick<SessionStorage, "readSession" | "readExecution" | "readChannel" | "readTracked" | "readTimeline">;
+  operatorReads?: Pick<SessionStorage, "readSession" | "readExecution" | "readChannel" | "readTracked" | "readTimeline"> & Partial<Pick<SessionStorage, "readManagedAttachment">>;
   turnPhase?(turnId: number): import("./tools.ts").TurnPhase | undefined;
   /** Approval requests belong to this connection; disconnect closes them. */
   approvals: {

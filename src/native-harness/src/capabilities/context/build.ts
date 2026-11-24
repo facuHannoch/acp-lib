@@ -11,6 +11,10 @@ export function renderContextEntry(entry: ContextEntry): Message {
     role: "user",
     content: `External notice from ${entry.externalSource === undefined ? "host" : JSON.stringify(entry.externalSource)} to channel ${JSON.stringify(entry.channelId)}:\n${entry.message.content}`,
   };
+  if (entry.message.role === "tool") {
+    const { usage: _usage, webNoDispatch: _webNoDispatch, ...message } = entry.message;
+    return structuredClone(message);
+  }
   return structuredClone(entry.message);
 }
 
@@ -28,6 +32,7 @@ function unfinished(turns: readonly ContextTurnOutcome[]): string {
 export function buildSharedContext(entries: readonly ContextEntry[], systemPrompt: string, turns: readonly ContextTurnOutcome[] = []): Message[] {
   const shared = entries.map((entry) => {
     const { providerState: _opaque, ...message } = renderContextEntry(entry) as Message & { providerState?: unknown };
+    if (message.role === "tool") { delete message.usage; delete message.webNoDispatch; }
     return { seq: entry.seq, at: entry.at, channelId: entry.channelId, turnId: entry.turnId, from: entry.from,
       kind: entry.kind, sourceChannelId: entry.sourceChannelId, externalSource: entry.externalSource, message };
   });

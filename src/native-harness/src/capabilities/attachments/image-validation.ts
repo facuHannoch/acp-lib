@@ -1,0 +1,98 @@
+import { closeSync, constants, fstatSync, openSync, readSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
+import type { AttachmentMetadata } from "../../contracts/attachments.ts";
+import { ATTACHMENT_LIMITS } from "../../contracts/attachments.ts";
+import { UploadError } from "./upload.ts";
+
+const formats: Record<string, { demuxer: string; codec: string }> = {
+  "image/png": { demuxer: "png_pipe", codec: "png" },
+  "image/jpeg": { demuxer: "jpeg_pipe", codec: "mjpeg" },
+  "image/webp": { demuxer: "webp_pipe", codec: "webp" },
+};
+const toolEnvironment = () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C" });
+// Linux O_TMPFILE creates an unnamed inode; bytes never have a persistent path.
+const anonymousFileFlags = constants.O_RDWR | 0o20200000;
+const childLimits = ["--as=1073741824", "--cpu=20", "--nofile=32", "--"] as const;
+const toolOptions = { timeout: 3000, stdio: "ignore" as const, killSignal: "SIGKILL" as const, env: toolEnvironment() };
+/** Availability is per session: do not infer support from a model name. */
+export function imageValidationAvailable(): boolean {
+  if (process.platform !== "linux") return false;
+  try { const fd = openSync(tmpdir(), anonymousFileFlags, 0o600); closeSync(fd); } catch { return false; }
+  return spawnSync("prlimit", [...childLimits, "ffprobe", "-version"], toolOptions).status === 0
+    && spawnSync("prlimit", [...childLimits, "ffmpeg", "-version"], toolOptions).status === 0;
+}
+
+/** Always wait for close after killing a timed-out, cancelled or overproducing
+ * child. Neither command receives a filename or a network-capable protocol. */
+export function runImageTool(command: string, args: readonly string[], input: Uint8Array,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) { reject(new UploadError("invalid_attachment", "Image validation cancelled")); return; }
+    // Bun's child stdin pipes can be nonblocking: ffprobe treats EAGAIN as
+    // end of input. Give the child a seekable anonymous inode instead, with
+    // positional writes leaving its read offset at zero. There is no pathname
+    // to leak on crash and no input URL other than pipe:0.
+    let fd: number;
+    try {
+      fd = openSync(tmpdir(), anonymousFileFlags, 0o600);
+      try {
+        let offset = 0;
+        while (offset < input.length) {
+          const count = writeSync(fd, input, offset, input.length - offset, offset);
+          if (!count) throw new Error("short write");
+          offset += count;
+        }
+      } catch (error) { closeSync(fd); throw error; }
+    } catch { reject(new UploadError("invalid_attachment", "Image validator input is unavailable")); return; }
+    let child: ReturnType<typeof spawn>;
+    try { child = spawn("prlimit", [...childLimits, command, ...args], { stdio: [fd, "pipe", "pipe"], env: toolEnvironment() }); }
+    finally { closeSync(fd); }
+    const output: Buffer[] = []; let size = 0, failure: string | undefined;
+    const stop = (reason: string) => { failure ??= reason; child.kill("SIGKILL"); };
+    const timeout = setTimeout(() => stop("Image validation timed out"), options.timeoutMs ?? 15000);
+    const abort = () => stop("Image validation cancelled");
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
+    child.on("error", () => { failure ??= "Image validator is unavailable"; });
+    child.stdout!.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 1024 * 1024) stop("Image validator output exceeded limit"); else output.push(chunk); });
+    child.stderr!.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 1024 * 1024) stop("Image validator output exceeded limit"); });
+    child.on("close", code => {
+      clearTimeout(timeout); options.signal?.removeEventListener("abort", abort);
+      if (failure || code !== 0) reject(new UploadError("invalid_attachment", failure ?? "Image decoding failed"));
+      else resolve(Buffer.concat(output).toString("utf8"));
+    });
+  });
+}
+
+/** Probe dimensions before decoding. Only the three fixed demuxers are used;
+ * data arrives on stdin and the protocol whitelist permits only that pipe. */
+export async function validateManagedImage(path: string, metadata: AttachmentMetadata, signal?: AbortSignal): Promise<void> {
+  const format = formats[metadata.mediaType];
+  if (!format) throw new UploadError("invalid_attachment", "Only PNG, JPEG and WebP images are supported");
+  if (!Number.isSafeInteger(metadata.bytes) || metadata.bytes < 1 || metadata.bytes > ATTACHMENT_LIMITS.fileBytes)
+    throw new UploadError("invalid_attachment", "Invalid image length");
+  let data: Buffer;
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  catch { throw new UploadError("invalid_attachment", "Image file is unavailable"); }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size !== metadata.bytes) throw new UploadError("invalid_attachment", "Invalid image length");
+    data = Buffer.alloc(metadata.bytes); let offset = 0;
+    while (offset < data.length) { const count = readSync(fd, data, offset, data.length - offset, offset); if (!count) throw new UploadError("invalid_attachment", "Invalid image length"); offset += count; }
+    if (fstatSync(fd).size !== metadata.bytes) throw new UploadError("invalid_attachment", "Invalid image length");
+  }
+  finally { closeSync(fd); }
+  if (data.length !== metadata.bytes || data.length > ATTACHMENT_LIMITS.fileBytes) throw new UploadError("invalid_attachment", "Invalid image length");
+  const common = ["-v", "error", "-protocol_whitelist", "pipe", "-max_alloc", "268435456", "-f", format.demuxer, "-i", "pipe:0"];
+  const result = await runImageTool("ffprobe", [...common, "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json"], data, { signal });
+  let stream: { codec_name?: unknown; width?: unknown; height?: unknown } | undefined;
+  try { stream = JSON.parse(result).streams?.[0]; } catch { throw new UploadError("invalid_attachment", "Invalid image probe result"); }
+  const width = stream?.width, height = stream?.height;
+  if (stream?.codec_name !== format.codec || typeof width !== "number" || typeof height !== "number"
+    || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1
+    || width > ATTACHMENT_LIMITS.imageSide || height > ATTACHMENT_LIMITS.imageSide || width * height > ATTACHMENT_LIMITS.imagePixels)
+    throw new UploadError("invalid_attachment", "Image type or dimensions are invalid");
+  await runImageTool("ffmpeg", ["-v", "error", "-xerror", "-err_detect", "explode", "-threads", "1", ...common.slice(2), "-frames:v", "1", "-f", "null", "-"], data, { signal });
+}

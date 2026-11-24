@@ -1,0 +1,47 @@
+import { fetchDirect } from "./direct.ts";
+import { DirectHttpError } from "./direct-address.ts";
+import type { CheckedWebRegistration } from "../../../contracts/web.ts";
+export type { CheckedWebRegistration } from "../../../contracts/web.ts";
+import { resolveWebCredentials, type Validated, type WebConfig } from "./config.ts";
+import { WEB_FETCH, WEB_SEARCH, webDefinitions, webProblem } from "./definitions.ts";
+import { runExa, type ExaTransport, type WebResponse } from "./exa.ts";
+
+/** Adapter implementations are supplied by the trusted assembly, never config. */
+export type DirectFetch = (url: string, signal: AbortSignal, deadlineMs: number) => Promise<WebResponse>;
+/** Build once per executable open; credentials remain inside executor closures. */
+export function createWebRegistry(config: WebConfig, env: Readonly<Record<string, string | undefined>>,
+  providers: { exa: ExaTransport; http?: DirectFetch }): Validated<readonly CheckedWebRegistration[]> {
+  const credentials = resolveWebCredentials(config, env);
+  if (!credentials.ok) return credentials;
+  if (config.webFetch?.backend === "http" && !providers.http) return { ok: false, error: { code: "invalid_config", message: "HTTP fetch adapter is unavailable" } };
+  const registrations: CheckedWebRegistration[] = [];
+  if (config.webSearch) {
+    const options = structuredClone(config.webSearch), key = credentials.value.searchKey!;
+    registrations.push({ definition: webDefinitions.find(value => value.name === WEB_SEARCH)!, validate: args => webProblem(WEB_SEARCH, args),
+      dispatch: { backend: "exa", operation: "web_search", paid: true },
+      execute: (args, signal) => runExa({ operation: "web_search", args: args as { query: string }, key, transport: providers.exa,
+        maxResults: options.maxResults, excerptBytes: options.excerptBytes, deadlineMs: options.deadlineMs, signal }) });
+  }
+  if (config.webFetch) {
+    const options = structuredClone(config.webFetch);
+    registrations.push({ definition: webDefinitions.find(value => value.name === WEB_FETCH)!, validate: args => webProblem(WEB_FETCH, args),
+      dispatch: options.backend === "exa" ? { backend: "exa", operation: "web_fetch", paid: true } : { backend: "http", operation: "web_fetch", paid: false },
+      execute: (args, signal) => {
+        const problem = webProblem(WEB_FETCH, args);
+        if (problem) return Promise.resolve({ ok: false, code: "invalid_arguments", message: "Invalid web tool arguments", usage: {} });
+        return options.backend === "exa"
+          ? runExa({ operation: "web_fetch", args: args as { url: string }, key: credentials.value.fetchKey!, transport: providers.exa, deadlineMs: options.deadlineMs, signal })
+          : providers.http!((args as { url: string }).url, signal, options.deadlineMs ?? 15000).then(result => ({ ...result, usage: {} }));
+      } });
+  }
+  return { ok: true, value: registrations };
+}
+
+/** Production adapter; fixture transports remain assembly-only. */
+export const directWebFetch: DirectFetch = async (url, signal, deadlineMs) => {
+  try { return { ok: true, content: await fetchDirect(url, deadlineMs, signal), usage: {} }; }
+  catch (error) {
+    const known = error instanceof DirectHttpError;
+    return { ok: false, code: known ? error.code : "page_unavailable", message: known ? error.message : "Web destination could not be read.", usage: {} };
+  }
+};
