@@ -192,27 +192,34 @@ narrow crash window; the cold-start delay; the cache is last-confirmed state; `r
 Suggested slicing for briefs: R7 = steps 0-2 (store, model, validation: harness-free), R8 = steps 3-5 (wire, timer, idle), R9 =
 steps 6-8. Nothing starts until the user schedules it.
 
-## Open points to pin with the harness (Gate 1; none blocks R7)
+## Resolved by haurness-l (revision 5 answers, checked against alpha d788621) and what stays for Gate 1
 
-1. **Method names:** the contract text says `reminderChanges` go on the session "create and load"; the earlier planning answer said
-   the executable open `session/create|open` (not the legacy load). Which exact methods carry them?
-2. **`changeId` semantics:** it mirrors decision 0020 (a per-reminder version, echoed). Pin: a replay with the same `changeId` and
-   the same payload returns the recorded outcome; the same `changeId` with a different payload is a `conflict`; a lower `changeId`
-   than the recorded one is applied as a no-op or reported stale?
-3. **Pause and resume:** the ops are `create | update | cancel`, while `reminder_changed` mentions pause and resume: are they
-   `update` payloads?
-4. **Blocked reasons and events:** `not_found` (an update of something unknown) is missing from the reasons list; `expired`
-   (from `expiresAfter`) is missing from `reminder_cancelled.by` (or does an expired one fire late?). Pin the outcome and the
-   report for an expired reminder, and the `expiresAfter` default values.
-5. **Revision on the open:** does the open's response carry the `revision` for `nextDueAt` (the event does)?
-6. **The open's reminder view:** is it complete or bounded/paged (limits are 20 per channel, but many channels)?
-7. **Capability for the unattended guard:** separate flag, needed to enable consumer routines.
-8. **Repository naming:** the answers mention a `channels?` repository for the refusal check; the plan uses a new `reminders?`
-   repository (schema 22): refuse when the harness is stopped and `reminders?` is absent.
-9. **Sweep and retention** (earlier grounding): the page cap, the cursor lifetime, the invalidation code, and the session-lifetime
-   retention of recorded outcomes remain Gate 1.
+Resolved at planning level (the contract is still frozen only at Gate 1):
+1. **Methods:** `session/create` and `session/open` carry `reminderChanges`; `session/load` was stale spec wording.
+2. **Replay:** outcomes are keyed by (`reminderId`, `changeId`); the recorded id is checked first: identical returns the recorded
+   outcome; a changed payload is `blocked: conflict` with no replacement; an UNRECORDED LOWER version gets an explicit stale
+   refusal with no mutation, never an applied acknowledgement. acp-client must therefore treat a stale refusal as a defect
+   (it never sends a lower id than one it recorded as sent). Exact code and high-water rules: Gate 1.
+3. **Pause and resume:** `update` payloads expressing desired paused or active state; field spelling: Gate 1.
+4. **Reasons and expiry:** alpha already has `blocked: not_found` for an unknown update. Proposed expiry: a finite window elapsed
+   gives a terminal `expired` state with NO notice and NO fired event; `null` permits late delivery with its lateness; omitted
+   uses defaults (durations still open). Representation and event: Gate 1. Plan impact: acp-client shows `expired` as a terminal
+   state from the list and cache, not from an event it must wait for.
+5. **Revision:** the executable open carries the revision associated with `nextDueAt` (the open revision is reused only if both
+   reflect the same committed state).
+6. **Bounded open:** the open returns intent outcomes and wake state only; reminder records are reconciled through the bounded
+   list, and turns and items through the existing scoped reads. This CORRECTS my plan wording "open's view of each reminder":
+   steps 1 and 3 reconcile by the paged list (revision-bound cursors), not from an inline snapshot.
+7. **Unattended guard:** a separate negotiated capability is required for consumer routines; base reminders support alone does
+   not enable routines (step 6 gate). Exact flag: contract review.
+8. **Repository:** a dedicated optional `reminders?` repository is right; the stopped-create refusal depends on its absence, not
+   on `channels?`. Schema 22 is coordinated on this track.
+9. **Sweep and retention:** Gate 1 pins the cap, TTL and code; the design default is revision-bound cursors and session-lifetime
+   intent receipt retention.
 
-Questions resolved for the user and spec owners: defaults confirmed; text in the clear; only the SQLite owner arms the timer;
-stop keeps the wake and close clears the timer; `reminders_unavailable`; `expiresAfter` on both APIs. Still pending: the idle
-window floor and whether it is per Agent or global; whether the 15-minute consumer minimum should also apply to agent-created
-routines (the agent tool goes through the harness); and the `expiresAfter` defaults.
+Plan consequence (revision 5 text to read with this section): wherever steps 1, 3 and 7 say the open's per-reminder view is
+compared with the cache, read it as the bounded list sweep after the open; the open itself only supplies outcomes, `nextDueAt`
+and its revision.
+
+Pending with the user: the idle-window floor (per Agent or global); whether the 15-minute consumer minimum applies to
+agent-created routines; the `expiresAfter` default durations; whether to schedule R7.
