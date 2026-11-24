@@ -11,6 +11,7 @@ type ContextEntry = ContextRow & { entry: TimelineEntry };
 interface Data {
   bySeq: Map<number, ContextEntry>;
   retrievalReplies: Map<string, number>;
+  recentConversation: TimelineEntry[];
   retrievalIndex: Map<number, { bytes: number; words: Set<string> }>;
   byTurn: Map<number, ContextEntry[]>;
   inputs: Map<number, ContextEntry[]>;
@@ -23,7 +24,7 @@ interface Data {
   channels: Map<string, ChannelRow>; participants: Set<string>;
   items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[]; conversation: Map<string, TimelineEntry[]>; replies: Map<number, TimelineEntry[]>;
 }
-const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
+const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), recentConversation: [], byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
 const copy = <T>(value: T): T => structuredClone(value);
 const live = (turn: TurnRow) => turn.state.status === "running" || turn.state.status === "suspended";
 
@@ -74,8 +75,7 @@ function memoryTables(data: Data): Tables {
       return recent(data.entries, limit, before(data.entries, cursor)).map(row => header(data.bySeq.get(row.seq)!));
     },
     contextShared(channelId, limit) {
-      return recent(data.entries, limit).filter(row => row.channelId !== channelId &&
-        (row.kind === "participant_message" || (row.message.role === "assistant" && !!row.message.content)))
+      return recent(data.recentConversation, limit).filter(row => row.channelId !== channelId)
         .map(row => historicalHeader(data.bySeq.get(row.seq)!));
     },
     contextPolicies(turnId, limit, budget) {
@@ -251,7 +251,10 @@ function memoryTables(data: Data): Tables {
       if (kind === "input") indexed(data.inputs, saved.turnId, contextRow);
       if (kind === "assistant") indexed(data.assistants, saved.turnId, contextRow);
       const reply = entry.message.role === "assistant" && !!entry.message.content;
-      if (reply || entry.kind === "participant_message") indexed(data.conversation, entry.channelId, saved);
+      if (reply || entry.kind === "participant_message") {
+        indexed(data.conversation, entry.channelId, saved);
+        append(data.recentConversation, saved);
+      }
       if (reply) indexed(data.replies, entry.turnId, saved);
     },
     entriesOfTurn: turnId => copy(data.entries.filter(entry => entry.turnId === turnId)),

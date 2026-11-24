@@ -130,6 +130,7 @@ const CHAT = `kind = 'participant_message' OR (${REPLY})`;
 const installReadIndexes = (db: Database) => db.exec(`
   CREATE INDEX IF NOT EXISTS turns_by_channel ON turns(channel_id, turn_id);
   CREATE INDEX IF NOT EXISTS entries_conversation ON entries(channel_id, seq) WHERE ${CHAT};
+  CREATE INDEX IF NOT EXISTS entries_conversation_recent ON entries(seq) WHERE ${CHAT};
   CREATE INDEX IF NOT EXISTS entries_context_inputs ON entries(turn_id, seq) WHERE item_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS entries_context_assistants ON entries(turn_id, seq) WHERE ${ASSISTANT};
   CREATE INDEX IF NOT EXISTS entries_replies ON entries(turn_id, seq) WHERE ${REPLY};
@@ -286,12 +287,10 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       WHERE channel_id = ? AND seq < ? AND (${CHAT}) ORDER BY seq DESC LIMIT ?`),
     contextRecent: q(`SELECT ${contextHeader("'other'")} FROM entries AS e WHERE seq < ? ORDER BY seq DESC LIMIT ?`),
     contextRecentLegacy: q(`SELECT ${contextHeader("'other'", true)} FROM entries AS e WHERE seq < ? ORDER BY seq DESC LIMIT ?`),
-    contextShared: q(`WITH recent AS MATERIALIZED (SELECT seq, channel_id FROM entries ORDER BY seq DESC LIMIT ?)
+    contextShared: q(`WITH recent AS MATERIALIZED (
+        SELECT seq, channel_id FROM entries WHERE ${CHAT} ORDER BY seq DESC LIMIT ?)
       SELECT ${historyHeader()} FROM recent JOIN entries AS e ON e.seq = recent.seq
-      WHERE recent.channel_id <> ? AND EXISTS (
-        SELECT 1 FROM entries AS c INDEXED BY entries_conversation
-        WHERE c.channel_id = recent.channel_id AND c.seq = recent.seq AND (${CHAT}))
-      ORDER BY e.seq DESC`),
+      WHERE recent.channel_id <> ? ORDER BY e.seq DESC`),
     contextPolicySize: q(`SELECT count(*) AS count, coalesce(sum(bytes), 0) AS bytes FROM (
         SELECT octet_length(name) + 1 AS bytes FROM context_turn_policies WHERE turn_id = ? LIMIT ?
       )`),
