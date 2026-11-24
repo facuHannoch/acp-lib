@@ -24,7 +24,11 @@ work. Experiments live in [.res/sandbox/](.res/sandbox/).
 This directory is an independent TypeScript and Bun project (Bun >= 1.3.5), with
 its own package manifest, lockfile and TypeScript configuration. It does not
 depend on the parent acp-client package. Development dependencies are TypeScript
-and Bun types; there are no runtime dependencies.
+and Bun types. Managed image input additionally requires the optional local
+`ffmpeg` and `ffprobe` executables on `PATH`; general-file attachments do not.
+Image input is offered only when the model configuration explicitly opts in
+and both executables are available. Validation uses a bounded, cancellable
+local decode with only pipe input; missing tools and invalid images fail closed.
 
 From this directory:
 

@@ -148,7 +148,7 @@ test("new reminder state advances the detached archive base without downgrading 
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test("durable publication activates format 9 through the owning session and survives reopen", () => {
+test("durable publication activates format 9 through the owning session and survives reopen", async () => {
   const home = mkdtempSync(join(tmpdir(), "a1-owner-nine-")), path = join(home, "sqlite"), root = join(home, "media");
   try {
     copyFileSync(new URL("./fixtures/attachments-rh4/format-8.sqlite", import.meta.url), path);
@@ -157,7 +157,7 @@ test("durable publication activates format 9 through the owning session and surv
     const uploads = createUploadManager({ root, validateImage() { throw Error("unexpected image"); }, publishReady: metadata => { take(store.registerReadyAttachment(metadata)); } });
     const begin = uploads.begin({ channel: "a", filename: "fixture.txt", mediaType: "text/plain", bytes: data.length, sha256 });
     uploads.write("a", begin.uploadId, 0, data.toString("base64"));
-    const metadata = uploads.finalize("a", begin.uploadId);
+    const metadata = await uploads.finalize("a", begin.uploadId);
     expect(take(store.readSession()).formatVersion).toBe(9);
     expect(take(store.readManagedAttachment(metadata.id))?.metadata).toEqual(metadata);
     const input = { kind: "participant_message" as const, channelId: "a", senderId: "person", itemId: "with-file", text: "before\nafter",

@@ -27,7 +27,7 @@ import { HarnessClient, createInProcessTransport } from "./client.ts";
 import { chooseManagedConfig, managedSessionPaths } from "./runtime/config/paths.ts";
 import { resolveCredential } from "./runtime/config/managed.ts";
 import { createManagedAttachmentService } from "./capabilities/attachments/service.ts";
-import { UploadError } from "./capabilities/attachments/upload.ts";
+import { imageValidationAvailable, validateManagedImage } from "./capabilities/attachments/image-validation.ts";
 
 export interface ScriptedServerOptions {
   /** Directory of durable sessions, one SQLite file per session ID. */
@@ -59,6 +59,8 @@ export interface ScriptedServerOptions {
   limits?: Partial<{ chunkBytes: number; maxBytes: number; idleMs: number }>;
   /** Offline provider injection and destination environment for tests/hosts. */
   providerFactory?: (apiKey: string, model: string) => Model;
+  /** Test-only loopback fixture for observing the actual provider request. */
+  providerEndpoint?: string;
   environment?: Record<string, string | undefined>;
 }
 
@@ -85,6 +87,13 @@ function withFaults(storage: SessionStorage, hit: (point: string) => void): Sess
  * protocol. In memory by default; durable when given a home or an adapter. */
 const BUILTINS = [echoDefinition, recordDefinition, holdDefinition];
 export function createScriptedServer(options: ScriptedServerOptions = {}) {
+  let fixtureEndpoint: string | undefined;
+  if (options.providerEndpoint) {
+    const url = new URL(options.providerEndpoint);
+    if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw new Error("Provider fixture must use loopback HTTP");
+    fixtureEndpoint = url.href;
+  }
+  const providerFetch = fixtureEndpoint ? ((_: string | URL | Request, init?: RequestInit) => fetch(fixtureEndpoint!, init)) as unknown as typeof fetch : fetch;
   const models = new Map<string, ModelRequest[]>();
   const durable = !!(options.home || options.adapter);
   const hit = faults(options.fault);
@@ -103,9 +112,10 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const config = chooseManagedConfig({ mode, sidecar: paths?.config ?? noSidecar, inline, saved: stored?.ok ? stored.value : undefined });
     const script = config.model.protocol === "scripted" ? await (options.scenarioLoader ?? loadScenario)(config.model.script) : undefined;
     const credential = config.model.protocol === "openrouter" ? resolveCredential(config.model, options.environment ?? process.env) : undefined;
-    const compatibilityKey = script ? scriptedCompatibilityKey(script.modelDigest, config.system)
+    const imageInput = !!paths && !options.adapter && config.model.imageInput === true && (config.model.protocol === "scripted" || !options.providerFactory) && imageValidationAvailable();
+    const compatibilityKey = script ? scriptedCompatibilityKey(script.modelDigest, config.system + (config.model.imageInput === true ? "\n[image-input-enabled]" : ""))
       : createHash("sha256").update(JSON.stringify([config.system, config.model.protocol === "openrouter" && config.model.model,
-        [...BUILTINS, notifyChannelDefinition].map(tool => tool.name)])).digest("hex");
+        [...BUILTINS, notifyChannelDefinition].map(tool => tool.name), ...(config.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
     if (mode === "create" && paths) mkdirSync(paths.directory, { recursive: true });
     const opened = adapter.open({ mode, identity: { sessionId, compatibilityKey }, config, requiredScriptDigest: script?.modelDigest });
     if (!opened.ok) {
@@ -118,9 +128,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     }) : opened.value;
     let attachments: ReturnType<typeof createManagedAttachmentService> | undefined;
     try {
-      if (paths) attachments = createManagedAttachmentService(join(paths.directory, "media"), storage, () => {
-        throw new UploadError("invalid_attachment", "Image validation is unavailable");
-      });
+      if (paths && !options.adapter) attachments = createManagedAttachmentService(join(paths.directory, "media"), storage, validateManagedImage);
     } catch (error) { opened.value.close(); throw error; }
     const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
     const executeTool: ExecuteTool = async (call, signal) => {
@@ -135,7 +143,9 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, ...(catalog ? { catalog } : {}), configureTurn(turn) {
       if (config.model.protocol === "openrouter") {
         const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
-        if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "") });
+        if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "", providerFetch, undefined,
+          attachments ? { supported: imageInput, metadata(id) { const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined; },
+            read(metadata) { const chunks: Buffer[] = []; let offset = 0; do { const page = attachments!.read(turn.channelId, metadata.id, offset); chunks.push(Buffer.from(page.data, "base64")); offset = page.nextOffset ?? metadata.bytes; } while (offset < metadata.bytes); return Buffer.concat(chunks); } } : undefined) });
         return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
       }
       const model: Model = async () => { throw new Error("Scripted model requires a reserved attempt"); };
@@ -166,11 +176,11 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       } });
       return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
     } });
-    return { session, config, ...(attachments ? { attachments } : {}), close() { attachments?.close(); opened.value.close(); }, commitConfig() {
+    return { session, config, imageInput, ...(attachments ? { attachments } : {}), close() { attachments?.close(); opened.value.close(); }, commitConfig() {
       const saved = storage.saveConfig(config);
       if (!saved.ok && saved.error.code !== "incompatible") throw new SessionOpenError("storage_failure", saved.error.message);
     }, exportArchive: () => storage.exportArchive() };
-  }, { durable, functions: true, attachments: !!options.home, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
+  }, { durable, functions: true, attachments: !!options.home && !options.adapter, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
     importArchive(payload, sessionId) {
       let createdDirectory: string | undefined;
       try {

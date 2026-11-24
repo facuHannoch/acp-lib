@@ -12,6 +12,8 @@ export interface OpenResult {
   nextDueAt?: string | null;
   reminderRevision?: number;
   unattendedTurnGuard?: { maxConsecutiveTurns: number } | null;
+  imageInput?: true;
+  imageLimits?: { formats: string[]; fileBytes: number; turnBytes: number; maxImages: number; maxSide: number; maxPixels: number };
 }
 
 export interface ChannelObservation {
@@ -77,6 +79,7 @@ export interface LoadResultOpenParams {
  * Store adapters use the numeric bounds internally. Wire cursors are decoded
  * and checked by the protocol before invoking this port. */
 export interface OperatorStorageReads {
+  readManagedAttachment?(id: string): import("./storage.ts").StorageResult<{ metadata: import("./attachments.ts").AttachmentMetadata; timelineVisible: boolean } | undefined>;
   readChannel(channel: string): import("./storage.ts").StorageResult<{
     channel: Omit<import("./storage.ts").StoredChannel, "participantIds">;
     pendingCount: number;

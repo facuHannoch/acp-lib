@@ -123,7 +123,7 @@ export interface PersistentSession {
   };
   /** Read an oldest-first page of complete model-call summaries. */
   readModelCalls: SessionStorage["readCalls"];
-  operatorReads?: Pick<SessionStorage, "readSession" | "readExecution" | "readChannel" | "readTracked" | "readTimeline">;
+  operatorReads?: Pick<SessionStorage, "readSession" | "readExecution" | "readChannel" | "readTracked" | "readTimeline"> & Partial<Pick<SessionStorage, "readManagedAttachment">>;
   turnPhase?(turnId: number): import("./tools.ts").TurnPhase | undefined;
   /** Approval requests belong to this connection; disconnect closes them. */
   approvals: {

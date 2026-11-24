@@ -47,6 +47,7 @@ export interface OpenedSession {
   /** One consistent logical copy, or `busy`. */
   exportArchive?(): StorageResult<SessionArchive>;
   attachments?: ReturnType<typeof createManagedAttachmentService>;
+  imageInput?: boolean;
 }
 export interface ProtocolServerOptions {
   durable?: boolean;
@@ -185,7 +186,10 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const reads = opened.session.operatorReads;
     if (!reads) throw new Fault("invalid_state", "Focused reads are unavailable");
     const { value, revision } = readValue(reads.readSession());
-    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision };
+    const image = opened.imageInput && (opened.session.reminders?.executable() ?? true)
+      ? { imageInput: true as const, imageLimits: { formats: ["image/png", "image/jpeg", "image/webp"], fileBytes: ATTACHMENT_LIMITS.fileBytes,
+        turnBytes: ATTACHMENT_LIMITS.imageBytesPerTurn, maxImages: ATTACHMENT_LIMITS.references, maxSide: ATTACHMENT_LIMITS.imageSide, maxPixels: ATTACHMENT_LIMITS.imagePixels } } : {};
+    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision, ...image };
   }
 
   function holdAfterResponse(start?: () => void) {
@@ -510,7 +514,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     // send returns once the item is committed to the inbox (Received) or
     // refused. It never waits for inference; the outcome arrives as events.
     const result = session.agent.send({ channelId: channel, participantId: sender, itemId: id, ...(item.policy == null ? {} : { policy: text(item.policy) }),
-      text: parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n"), ...(mixed ? { parts, imageInput: false } : {}) });
+      text: parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n"), ...(mixed ? { parts, imageInput: current.imageInput === true } : {}) });
     if (!result.accepted) throw new Fault(result.code === "invalid_input" ? "invalid_params" : result.code, result.error);
     const policy = session.operatorReads
       ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]?.policy

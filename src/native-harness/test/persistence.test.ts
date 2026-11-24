@@ -132,17 +132,17 @@ test("load views that cannot fit one frame fail whole; message pages respect the
   const view = () => { const read = storage.snapshot(); if (!read.ok) throw new Error(read.error.message); return read.value; };
   const first = loadView(sessionStatus(view(), false), view(), 100);
   // Three 300 KB messages fit beside the fixed part; the rest are paged.
-  expect(first.messages.map(message => message.parts![0]!.text[0])).toEqual(["0", "1", "2"]);
+  expect(first.messages.map(message => message.parts![0]!.text![0])).toEqual(["0", "1", "2"]);
   expect(new TextEncoder().encode(JSON.stringify(first)).length).toBeLessThan(1024 * 1024);
   const before = view().revision;
   storage.appendMessage(turn.value.turn.turnId, { role: "assistant", content: "later", calls: [] });
   const rest = pageMessages(view(), before, Number(first.nextMessage), 100);
-  expect(rest.messages.map(message => message.parts![0]!.text[0])).toEqual(["3", "4"]);
+  expect(rest.messages.map(message => message.parts![0]!.text![0])).toEqual(["3", "4"]);
   expect(rest.nextMessage).toBeUndefined();
   // Oversized text is represented by a bounded-read reference.
   storage.appendMessage(turn.value.turn.turnId, { role: "assistant", content: "y".repeat(1024 * 1024), calls: [] });
   const prefix = pageMessages(view(), view().revision, 0, 100);
-  expect(prefix.messages.map(message => message.parts![0]!.text[0])).toEqual(["0", "1", "2"]);
+  expect(prefix.messages.map(message => message.parts![0]!.text![0])).toEqual(["0", "1", "2"]);
   const middle = pageMessages(view(), view().revision, Number(prefix.nextMessage), 100);
   expect(middle.messages.slice(0, 3).map(message => message.parts![0]!.text)).toEqual([`3${big}`, `4${big}`, "later"]);
   expect(middle.messages[3]).toMatchObject({ reference: true });

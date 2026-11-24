@@ -8,7 +8,7 @@ export class UploadError extends Error {
     readonly expectedOffset?: number) { super(message); }
 }
 
-type Upload = { metadata: AttachmentMetadata; path: string; fd: number; offset: number; lastUsed: number };
+type Upload = { metadata: AttachmentMetadata; path: string; fd: number; offset: number; lastUsed: number; validation?: AbortController };
 type Finalized = { channel: string; metadata: AttachmentMetadata };
 
 /** The session owner must serialize these methods with acceptance and cleanup.
@@ -18,7 +18,7 @@ type Finalized = { channel: string; metadata: AttachmentMetadata };
 export function createUploadManager(options: {
   root: string;
   now?: () => number;
-  validateImage: (path: string, metadata: AttachmentMetadata) => void;
+  validateImage: (path: string, metadata: AttachmentMetadata, signal: AbortSignal) => void | Promise<void>;
   publishReady: (metadata: AttachmentMetadata) => void;
 }) {
   mkdirSync(options.root, { recursive: true, mode: 0o700 });
@@ -26,13 +26,15 @@ export function createUploadManager(options: {
   const now = options.now ?? Date.now;
   const uploads = new Map<string, Upload>();
   const completed = new Map<string, Finalized>();
+  const finalizing = new Map<string, Promise<AttachmentMetadata>>();
   const discard = (id: string, upload: Upload) => {
     uploads.delete(id);
+    upload.validation?.abort();
     closeSync(upload.fd);
     rmSync(upload.path, { force: true });
   };
   const expire = () => {
-    for (const [id, upload] of uploads) if (now() - upload.lastUsed >= ATTACHMENT_LIMITS.uploadIdleMs) discard(id, upload);
+    for (const [id, upload] of uploads) if (!upload.validation && now() - upload.lastUsed >= ATTACHMENT_LIMITS.uploadIdleMs) discard(id, upload);
   };
   const get = (channel: string, id: string): Upload => {
     expire();
@@ -60,6 +62,7 @@ export function createUploadManager(options: {
     status(channel: string, uploadId: string) { return { offset: get(channel, uploadId).offset }; },
     write(channel: string, uploadId: string, offset: number, data: string) {
       const upload = get(channel, uploadId);
+      if (upload.validation) throw new UploadError("invalid_params", "Upload is finalizing");
       if (!Number.isSafeInteger(offset) || offset !== upload.offset) throw new UploadError("offset_mismatch", "Unexpected offset", upload.offset);
       if (typeof data !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data))
         throw new UploadError("invalid_params", "Invalid base64");
@@ -72,13 +75,16 @@ export function createUploadManager(options: {
       upload.offset += bytes.length;
       return { offset: upload.offset };
     },
-    finalize(channel: string, uploadId: string): AttachmentMetadata {
+    async finalize(channel: string, uploadId: string): Promise<AttachmentMetadata> {
       const prior = completed.get(uploadId);
       if (prior) {
         if (prior.channel !== channel) throw new UploadError("not_found", "Unknown upload");
         return { ...prior.metadata };
       }
       const upload = get(channel, uploadId);
+      const pending = finalizing.get(uploadId);
+      if (pending) return pending;
+      const work = (async () => {
       if (upload.offset !== upload.metadata.bytes) throw new UploadError("invalid_attachment", "Incomplete upload");
       const hash = createHash("sha256"), buffer = Buffer.alloc(64 * 1024);
       for (let pos = 0; pos < upload.offset;) {
@@ -87,7 +93,12 @@ export function createUploadManager(options: {
         hash.update(buffer.subarray(0, count)); pos += count;
       }
       if (hash.digest("hex") !== upload.metadata.sha256) throw new UploadError("invalid_attachment", "Digest mismatch");
-      if (upload.metadata.mediaType.startsWith("image/")) options.validateImage(upload.path, upload.metadata);
+      if (upload.metadata.mediaType.startsWith("image/")) {
+        const controller = new AbortController(); upload.validation = controller;
+        try { await options.validateImage(upload.path, upload.metadata, controller.signal); }
+        finally { upload.validation = undefined; }
+        if (controller.signal.aborted || uploads.get(uploadId) !== upload) throw new UploadError("invalid_attachment", "Image validation cancelled");
+      }
       fsyncSync(upload.fd);
       const target = join(options.root, upload.metadata.id);
       renameSync(upload.path, target);
@@ -99,6 +110,9 @@ export function createUploadManager(options: {
       options.publishReady(upload.metadata);
       completed.set(uploadId, { channel, metadata: upload.metadata });
       return { ...upload.metadata };
+      })();
+      finalizing.set(uploadId, work);
+      try { return await work; } finally { finalizing.delete(uploadId); }
     },
     abort(channel: string, uploadId: string) {
       const upload = uploads.get(uploadId);

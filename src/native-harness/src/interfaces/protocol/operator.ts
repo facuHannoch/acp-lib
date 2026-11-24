@@ -96,11 +96,16 @@ export function operatorRead(session: PersistentSession, method: string, p: Reco
     const base = { channel: entry.channelId, turnId: String(entry.turnId), actor, position: position(entry) };
     const message = entry.message;
     const content = participant && message.role === "user" ? message.content.slice(`Participant: ${JSON.stringify(entry.from)}\n\n`.length) : message.content;
+    const parts = participant && message.role === "user" && message.parts ? message.parts.map(part => {
+      if (part.type === "text") return part;
+      const found = storage.readManagedAttachment ? readValue(storage.readManagedAttachment(part.id)).value : undefined;
+      return found?.timelineVisible ? { ...part, metadata: found.metadata } : { ...part, unavailable: true as const };
+    }) : [{ type: "text" as const, text: content }];
     const identity = { ...base, messageId: messageId(entry), ...(participant ? { itemId: entry.itemId } : {}) };
     const activity = { ...base, ...(entry.kind === "external_notice" ? { itemId: entry.itemId, externalSource: entry.externalSource } : {}), ...(entry.sourceChannelId ? { sourceChannel: entry.sourceChannelId } : {}),
       kind: entry.kind ?? (message.role === "tool" ? "tool_result" : message.role === "assistant" && !message.content ? "tool_call" : "assistant_message"),
       ...(message.role === "assistant" || participant ? { messageId: messageId(entry) } : {}) };
-    let record: object = channel ? { ...identity, parts: [{ type: "text", text: content }] } : { ...activity, payload: message };
+    let record: object = channel ? { ...identity, parts } : { ...activity, payload: message.role === "user" && participant && message.parts ? { ...message, parts } : message };
     let bytes = Buffer.byteLength(JSON.stringify(record)) + 1;
     if (bytes > budget) {
       record = channel ? { ...identity, ...(participant ? { omitted: true } : { reference: true }) } : { ...activity, omitted: true,
