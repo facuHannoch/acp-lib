@@ -511,10 +511,24 @@ event on the conversation. One sequence for every backend:
 `queued` → `received` → `taken` → `delivered` → `seen`, or the end states `withdrawn` and `failed`.
 
 ```ts
-const handle = conversation.prompt("Hello");
-conversation.subscribe(({ event }) => {
-  if (event.kind === "message_status" && event.id === handle.id) showTicks(event.status);
-});
+import type { AgentConversation, MessageStatus } from "@qlairoslabs/acp-client";
+
+async function promptWithStatus(
+  conversation: AgentConversation,
+  text: string,
+  showTicks: (status: MessageStatus) => void,
+) {
+  const handle = conversation.prompt(text);
+  showTicks(handle.status);
+  const unsubscribe = conversation.subscribe(({ event }) => {
+    if (event.kind === "message_status" && event.id === handle.id) showTicks(event.status);
+  });
+  try {
+    return await handle;
+  } finally {
+    unsubscribe();
+  }
+}
 ```
 
 - **Native conversations** use the harness's milestones: `received` when its inbox accepted the
@@ -553,9 +567,11 @@ a reconnect, an advisory. Show it as a passing status, keyed by `noticeId`. An `
 notice is a failure the provider reported. Notices are stored as activity records, so they
 appear in the conversation's timeline. When a turn is judged stalled while the provider was
 retrying, its `stalled` error record says so in its `message` and carries the cause in
-`details.providerCode` (for example `rate_limited`). OpenCode and Grok don't send these
-notices. An update's other unknown `_meta` is kept on `session_info` and `usage` activities
-as `meta`.
+`details.providerCode` (for example `rate_limited`). Adapters that send neither
+recognized shape produce no `provider_notice`.
+Unmodeled `session_info_update` metadata and `usage_update` metadata are kept
+as `meta` on their respective activities. Extend exhaustive `ActivityEvent`
+switches to cover `provider_notice`.
 
 ### Append an assistant message without a turn
 

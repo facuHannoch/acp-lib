@@ -1,6 +1,19 @@
 # Operation lifecycle
 
-Released in 0.12.0 (it landed on `beta` while the package version still read 0.11.2).
+## Unreleased (0.13)
+
+- `PromptHandle.status` and the `message_status` conversation event report live
+  delivery progress per user message. Native uses harness milestones. ACP
+  infers progress from send and first output. Statuses are not restored after
+  restart.
+- The ACP client advertises JetBrains AIR session-failure support. AIR and
+  Codex fallback notices surface as `provider_notice` activities. Stalls during
+  reported retries carry the provider cause. Unmodeled session-info metadata
+  and usage metadata remain available as `meta` on their activity events.
+
+## 0.12.0
+
+It landed on `beta` while the package version still read 0.11.2.
 
 Provider turns, internal inference and adoption recaps now expose their current operation stage and
 last output time. Silent inference requests fail with `OperationStalledError` (`code: stalled`), carrying

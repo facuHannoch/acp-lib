@@ -4,8 +4,8 @@ For consumers of the published `@qlairoslabs/acp-client` 0.12.1, including
 `~agents` (`libs/agents/agents-core`). See the [consumer guide](CONSUMER_GUIDE.md)
 for complete examples.
 
-**Status.** These changes are on `alpha` as of `510e2a7`. The package version has
-not been bumped and 0.13 is not published. For a local trial, point a disposable
+**Status.** This note covers `alpha` through `fb20ed6`. The package version
+remains 0.12.1 and 0.13 is unpublished. For a local trial, point a disposable
 consumer checkout at a local archive of the target code and use a copy of the
 database. For example, use a `file:/absolute/path/to/acp-client-archive`
 dependency in the trial checkout or replace its local package link. Make the
@@ -27,8 +27,9 @@ archive's dependencies available before starting the consumer.
 
 ## Breaking changes for 0.12.1 consumers
 
-The verified package entry grows from 828 exports to 913 and retains all 828
-previous names. The package exports map and dependencies are unchanged.
+The package entry at `510e2a7` retained all 828 exports from 0.12.1 and
+had 913 exports. The package exports map and dependencies are unchanged
+through `fb20ed6`.
 `AgentController` remains a deprecated value and type alias of
 `HarnessController`.
 
@@ -41,9 +42,10 @@ previous names. The package exports map and dependencies are unchanged.
 | Launcher kind includes `"native-harness"`. | Handle the new kind in custom launcher unions and switches. Route it explicitly or reject it if unsupported. |
 | Custom persistence backends must supply `capabilities.channels: boolean`. | Use `channels: false` without a durable channel repository. The repository itself is optional. |
 | Adapter registration now accepts `AgentAdapter` (`Adapter \| NativeAdapter`). | Narrow `AgentAdapterRegistration.adapter`, entries in `AgentConfig.adapters`, and arguments to `AgentAdapterRegistry.register` before reading ACP fields such as `command`. `list()` still returns entries with an `Adapter`. |
-| `PromptHandle` gains required `withdrawAsync(): Promise<boolean>`. | Add the method to test doubles and other implementations of `PromptHandle`. |
+| `PromptHandle` gains required `withdrawAsync(): Promise<boolean>` and `readonly status: MessageStatus`. | Add both members to test doubles and other implementations of `PromptHandle`. |
 | ACP startup can be deferred or cancelled. | Handle `"deferred"` in reopen status switches and distinguish `ConnectionCancelledError` from an ordinary connection failure. |
 | `AgentConversationEvent` and `AgentSessionEvent` add permission events and `items_receipt`. `turn_started` now requires `cause`. | Update exhaustive switches and mocks that construct a turn-start event. |
+| `AgentSessionEvent` and `AgentConversationEvent` gain `message_status`; `ActivityEvent` gains `provider_notice`. | Update exhaustive event and activity switches. |
 | `AgentEvent` includes `WorkerEvent`. `AgentEventBus` gains required `subscribeWorkers`. | Update exhaustive switches and bus doubles. `AgentEventNotification` still defaults to committed-record notifications, so ordinary `subscribe` listeners retain their type. |
 | `MeteringProvenance.source` gains `"native_ledger"`. | Extend exhaustive provenance switches, even if the application currently uses ACP only. |
 
@@ -56,6 +58,25 @@ previous names. The package exports map and dependencies are unchanged.
 | Native stop, close, suspension and resume have backend-specific behavior. | Await channel operations, read typed error codes, and handle `NativeInputStoppedError` for submitted, untaken prompts on shutdown. |
 | Native turns produce metering evidence. | Read `nativeUsage` and partial coverage fields. Treat missing usage and pricing as unknown. |
 | Worker results have durable assignment and delivery state. | Read outcomes through the worker API and retry blocked native notices explicitly. |
+
+## Message status and provider notices
+
+Read `handle.status` for the latest state of an individual prompt and handle
+`message_status { id, status, turnId? }` for live updates. `turnId` is optional.
+Status is live only and history reads after a restart do not restore it.
+Native conversations use harness milestones. ACP approximates delivery at
+dispatch and marks a message seen at the first provider output. Use the
+prompt result to determine how its turn ended. Existing message events still
+work. See [Message status](CONSUMER_GUIDE.md#message-status).
+
+If you render activities, handle `provider_notice` for provider retries,
+warnings and reported failures. ACP clients now advertise version 1 of the
+JetBrains AIR `sessionFailure` extension in `clientCapabilities._meta`.
+Agents may send AIR notices in response to this advertisement. acp-client
+also recognizes the Codex ACP fallback shape. Raw activity callbacks can
+read optional `meta` on `session_info` and `usage` for unmodeled update
+metadata. Narrow the value before reading adapter-specific fields. See
+[Provider notices](CONSUMER_GUIDE.md#provider-notices-retries-warnings-and-failures).
 
 ## Permissions
 
@@ -156,6 +177,15 @@ Worker delivery stores the assignment identity and its outcome. An ACP
 destination receives an out-of-band message. A native destination receives a
 durable notice. Eligible notices can be retried without redispatching worker
 work. See the [orchestrator guide](CONSUMER_GUIDE.md#orchestrator-and-worker-delivery-experimental).
+
+## Other native harness changes
+
+The standalone native harness managed session config can opt into `timelineTools: true` to make
+`search_timeline` and `read_message` available under tool policy. Search can
+span channels in the same session. Model-call pagination now uses bounded
+page reads without loading full session history. The standalone development
+CLI also has new controls for instructions and debug tools. See the
+[native harness guide](src/native-harness/README.md).
 
 ## agents-core specifically
 
