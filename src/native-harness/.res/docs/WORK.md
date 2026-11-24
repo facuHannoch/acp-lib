@@ -14,7 +14,8 @@ amendment is proposed.
 | [Channel controls](11-19-channel-controls/SPEC.md) | Accepted | Behavior approved at `4d58629`, with closure and documentation at `3428258` on `aiagent/cod1a-native-channel-controls`. |
 | [Configuration and permissions](11-19-config-permissions/SPEC.md) | Accepted | Behavior approved at `626783e`, with closure at `28c6faf` on `aiagent/cod1a-config-permissions`. |
 | [Model execution](model-execution/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `02c96de`, with closure at `49f2974` on `aiagent/cod1a-model-execution`. |
-| [Model execution 0002 · Accounting](model-execution/0002-AMENDMENT-accounting/SPEC.md) | Draft for review | Ground against the final R5 revision before contract approval. Cod1a and Clad1a are the proposed draft and review owners when scheduled. |
+| [Model execution 0002 · Accounting](model-execution/0002-AMENDMENT-accounting/SPEC.md) | Draft for review | Report-only. Ground against final R5 before contract approval. Missing accounting evidence never blocks channel work. |
+| [Model execution 0003 · Model catalog and live selection](model-execution/0003-DESIGN-model-selection/SPEC.md) | Proposed for v1 | Start with the catalog and turn binding contract, then provider execution, live storage and SDK acceptance. [Plan](model-execution/0003-DESIGN-model-selection/PLAN.md). |
 | [acp-client integration contract](acp-client-integration/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `7133c5c`; `acp-client-integration` includes the corrected [closure log](acp-client-integration/0001-DESIGN/11-20-LOG.md) at `b9a96b8`. |
 | [Tools and host callbacks](tools-and-callbacks/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `f4eff94`, with the [closure log](tools-and-callbacks/0001-DESIGN/LOG.md) at `c1c3e88` on `tools-and-callbacks`. |
 | [Tools and callbacks 0002 · Callback policy names](tools-and-callbacks/0002-AMENDMENT-callback-policy/SPEC.md) | Accepted | Behavior approved at `aca1fe5`, closure at `4056d79`, integrated into `aiagent/haurness-l`. Orchestrator worker-rule acceptance remains separate. |
@@ -23,12 +24,17 @@ amendment is proposed.
 | [Channel messaging 0001 · External notices](channel-messaging/0001-DESIGN-external-notices/SPEC.md) | Generic Gate 2 accepted | Generic behavior approved at `f522072`, closure at `713a76a`. Worker delivery must prove recovery from a committed final ACP worker record and the uncertainty fallback. |
 | [Web tools 0001 · Search and page fetching](web-tools/0001-DESIGN/SPEC.md) | Proposed for M2 | Define the rest of the initial tool set before starting implementation. |
 | [Shell execution 0001 · Shell tool](shell-execution/0001-DESIGN/SPEC.md) | Proposed for M2 | Define the rest of the initial tool set first. Foreground execution precedes runner-managed background jobs. |
-| [Timeline retrieval 0001 · Search and read](timeline-retrieval/0001-DESIGN/SPEC.md) | Proposed for M2 | Build alongside bounded context with shared visibility across native channels in v1. |
+| [Timeline retrieval 0001 · Search and read](timeline-retrieval/0001-DESIGN/SPEC.md) | Gate 1 accepted | Runtime approved at `67072c5`, closure at `6be4a76`, integrated into `alpha` at `f0eb7d8`. |
 | [Bounded context 0001 · Inference context](bounded-context/0001-DESIGN/SPEC.md) | Gate 1 drafted | Review [decision 0026](../decisions/0026-bounded-context.md) before bounded storage reads in Gate 2. |
-| [Attachments 0001 · Files and image input](attachments/0001-DESIGN/SPEC.md) | Proposed for v1 | Start with managed files and image input. Add the consumer-managed adapter on the same contract. |
+| [Attachments 0001 · Files and image input](attachments/0001-DESIGN/SPEC.md) | Proposed for v1 | Parallel candidate while routines are in flight. Review the attachment contract first. [Plan](attachments/0001-DESIGN/PLAN.md). |
 | [Tools and callbacks 0003 · Attachment tools](tools-and-callbacks/0003-DESIGN-attachment-tools/SPEC.md) | Proposed for v1 | `copy_attachment` and `share_attachment` build on the attachment store, tool lifecycle, and shell runner. |
+| [Tools and callbacks 0004 · Reminder and routine tools](tools-and-callbacks/0004-DESIGN-reminder-tools/SPEC.md) | R-H1 assigned | Cod1a drafts the one-off wire contract from `723d438` and Clad1a reviews. Approval unlocks acp-client R8 wire work. [Plan](tools-and-callbacks/0004-DESIGN-reminder-tools/PLAN.md). |
+| [MCP client 0001 · Server tools](mcp-client/0001-DESIGN/SPEC.md) | Proposed for v1 | Start with the SDK probe and contract, then stdio, HTTPS and launcher acceptance. [Plan](mcp-client/0001-DESIGN/PLAN.md). |
 
 ## Priorities
+
+The [tool implementation plan](tools-and-callbacks/PLAN.md) tracks the order,
+dependencies and acceptance gates for the initial tool set.
 
 First, give acp-client a harness it can develop and test against offline:
 
@@ -49,8 +55,7 @@ After the checkpoint, build bounded context and image input, and test whether
 the existing cross-channel notice path meets v1 needs. V1 offers no
 cross-channel privacy guarantee. Shared identity for external conversations
 is deferred.
-Skills, MCP, and the broader standalone CLI follow the integration work.
-Skills are the preferred first follow-up among those three.
+The MCP client is planned for v1. Skills and broader standalone CLI work remain follow-ups.
 
 [Node-level resource coordination](todos/11-21-TODO-node-resource-coordination.md)
 is a deferred optimization after the usable-harness milestone and profiling.
