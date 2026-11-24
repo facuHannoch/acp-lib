@@ -241,25 +241,37 @@ test("joint a superseded cold timer and the real harness wall timer yield one fi
     const channel = await agent.conversations.create({ title: "timer race" });
     const events = s.rig.watch(channel);
     const host = agent.nativeHarness!;
-    // The historical acceptance anchor makes a near deadline legal without waiting two real minutes.
-    const due = Date.now() + 1_500;
-    const acceptedAt = due - 180_000;
-    await agent.persistence.reminders!.enqueue({ op: "create", acceptedAt, reminder: {
-      id: "timer-race", conversationId: channel.id, text: "run once", status: "active",
-      schedule: { at: due }, scheduleAcceptedAt: acceptedAt, expiryPolicy: { kind: "default" }, expiry: null,
-    } });
-    await until(() => s.clock.pending.size === 1);
+    // Capture a queued cold callback, then withdraw its provisional reminder before opening.
+    const provisional = await channel.reminders.create(pending("superseded cold wake"));
+    await until(() => s.clock.pending.size === 1, "provisional cold timer arms");
     const staleWake = [...s.clock.pending.values()][0]!.task;
+    await channel.reminders.cancel(provisional.id);
     await host.start();
     expect(s.clock.delays).toEqual([]);
-    const reported = (await agent.persistence.reminders!.wake()).reported;
-    expect(reported).toMatchObject({ revision: 1, nextDueAt: due });
-    const raced = new Promise<void>(resolve => setTimeout(() => {
-      s.clock.time = Date.now();
+
+    // Start the real wall timer on an already running harness. Record revision 1
+    // directly so a fast fire can advance to revision 2 before the next read.
+    const client = s.peer.current!.client;
+    const deadlines: Array<{ revision: number; nextDueAt: string | null }> = [];
+    const unsubscribe = client.onReminderWake(({ revision, nextDueAt }) => deadlines.push({ revision, nextDueAt }));
+    const due = Date.now() + 1_500;
+    const raced = Promise.withResolvers<void>();
+    const raceTimer = setTimeout(() => {
+      s.clock.time = due;
       staleWake();
-      resolve();
-    }, Math.max(0, due - Date.now())));
-    await Promise.all([raced, until(() => events.some(event => event.kind === "reminder_fired"), "real harness timer")]);
+      raced.resolve();
+    }, Math.max(0, due - Date.now()));
+    try {
+      expect(await client.changeReminder({ reminderId: "timer-race", changeId: 1, op: "create", payload: {
+        channel: channel.id, text: "run once", schedule: { at: iso(due) }, acceptedAt: iso(due - 180_000),
+      } })).toMatchObject({ outcome: "applied" });
+      await Promise.all([raced.promise, until(() => deadlines.some(({ revision }) => revision === 2)
+        && events.some(event => event.kind === "reminder_fired"), "real harness fire and deadline advance")]);
+      expect(deadlines).toEqual([{ revision: 1, nextDueAt: iso(due) }, { revision: 2, nextDueAt: null }]);
+    } finally {
+      clearTimeout(raceTimer);
+      unsubscribe();
+    }
     expect(events.filter(event => event.kind === "reminder_fired")).toHaveLength(1);
     expect(host.launches).toBe(1);
     await host.reminderSync!.settled();
