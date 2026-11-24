@@ -41,6 +41,7 @@ export type { ConversationTimelineItem } from "./persistence/timeline-reconcile.
 export * from "./audit/index.ts";
 
 export { Agent } from "./agent.ts";
+export { channelSettingsLive, type NativeChannelSettings, type NativeRestartOptions, type NativeRestartPreview, type NativeRestartResult, type NativeToolSetting } from "./agent/native-operations.ts";
 export type {
   AgentConfig,
   AgentConversationManager,

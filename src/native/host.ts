@@ -85,7 +85,8 @@ const REQUIRED_METHODS = ["session/open", "channel/observe", "channel/reconcile"
 export class NativeHarnessHost {
   readonly sessionId: string;
   readonly records: NativeHostRecords;
-  readonly #config: NativeHarnessHostConfig;
+  #config: NativeHarnessHostConfig;
+  #restartTransition?: Promise<void>;
   readonly #log: Logger;
   reminderSync?: ReminderSync;
   reminderWake?: ReminderWakeSupervisor;
@@ -121,7 +122,7 @@ export class NativeHarnessHost {
       || this.#changes.busy || [...this.#ports.values()].some(port => port.busy());
   }
 
-  #idleStop(window: number, stillIdle: () => boolean): Promise<ConditionalStopResult> {
+  #idleStop(window: number, stillIdle: () => boolean, onStopped?: () => void): Promise<ConditionalStopResult> {
     if (this.#idling) return this.#idling;
     const connection = this.#connection;
     if (this.#stoppingExplicitly || !connection || !stillIdle() || this.#localBusy()) return Promise.resolve({ stopped: false, reason: "busy" });
@@ -130,6 +131,7 @@ export class NativeHarnessHost {
       await this.reminderSync?.settled();
       if (result.stopped && this.#connection === connection) {
         this.#connection = null;
+        onStopped?.();
         this.#approvals.stop();
         for (const port of this.#ports.values()) port.disconnected();
         try { await connection.kill(); } finally { this.#setState("stopped"); }
@@ -301,8 +303,72 @@ export class NativeHarnessHost {
     }
   }
 
+  async waitForIdle(signal?: AbortSignal): Promise<void> {
+    for (;;) {
+      signal?.throwIfAborted();
+      if (!this.#localBusy() && !this.#starting && !this.#stoppingExplicitly) {
+        const connection = this.#connection;
+        if (!connection) return;
+        const status = await connection.client.status();
+        signal?.throwIfAborted();
+        if (connection === this.#connection && !this.#localBusy() &&
+          (status.execution === "idle" || status.execution === "suspended") && status.channels.every(
+          channel => !channel.activeTurn && !channel.waitingForResume && channel.pending.length === 0,
+        )) return;
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 25));
+    }
+  }
+
+  async restartForAgent(options: import("../agent/native-operations.ts").NativeRestartOptions,
+    interrupted: { channel: string; turnId: string }[]): Promise<void> {
+    const { signal, when = "idle" } = options;
+    signal?.throwIfAborted();
+    let configured = false;
+    const configure = () => {
+      if (configured) return;
+      configured = true;
+      if (options.functions !== undefined) {
+        this.#functions?.dispose();
+        this.#functions = null;
+      }
+      this.#config = { ...this.#config, ...(options.config ? { config: options.config } : {}),
+        ...(options.functions !== undefined ? { functions: options.functions ?? undefined } : {}) };
+    };
+    if (when === "idle") {
+      for (;;) {
+        await this.waitForIdle(signal);
+        if (!this.#connection) break;
+        if ((await this.#idleStop(0, () => !signal?.aborted, configure)).stopped) break;
+        await new Promise<void>(resolve => setTimeout(resolve, 25));
+      }
+      configure();
+    } else {
+      const transition = async () => {
+        await this.#starting;
+        const connection = this.#connection;
+        if (connection) {
+          const { channels } = await connection.client.status();
+          await Promise.all(channels.map(async ({ channel, activeTurn }) => {
+            if (activeTurn?.state === "running" && await this.interrupt(channel, activeTurn.turnId, "agent_restart")) {
+              interrupted.push({ channel, turnId: activeTurn.turnId });
+            }
+          }));
+        }
+        await this.stop();
+        configure();
+      };
+      const pending = this.#restartTransition = transition();
+      try { await pending; }
+      finally { if (this.#restartTransition === pending) this.#restartTransition = undefined; }
+    }
+    signal?.throwIfAborted();
+    await this.restart();
+  }
+
   /** Starts the harness if it is not running. Concurrent callers share one start. */
   ensureStarted(): Promise<void> {
+    if (this.#restartTransition) return this.#restartTransition.then(() => this.ensureStarted());
     if (this.#idling) return this.#idling.catch(() => {}).then(() => this.ensureStarted());
     if (this.#wakeFailure) { this.#wakeFailure = null; this.#restarts.length = 0; }
     this.reminderIdle?.activity();
@@ -678,6 +744,7 @@ export class NativeHarnessHost {
    * definite refusal (suspended or retired channel, unknown policy, a conflicting id) rejects it.
    */
   async push(input: Omit<Submission, "state">): Promise<ItemStatus> {
+    if (this.#restartTransition) await this.#restartTransition;
     this.records.saveSubmission({ ...input, state: "saved" });
     const waiter = this.#waiters.get(input.id) ?? deferred<ItemStatus>();
     this.#waiters.set(input.id, waiter);
@@ -760,6 +827,7 @@ export class NativeHarnessHost {
    * the harness.
    */
   async changeChannel(channel: string, desire: ChannelDesire): Promise<ChannelChangeOutcome> {
+    if (this.#restartTransition) await this.#restartTransition;
     if (this.#idling) await this.ensureStarted();
     this.reminderIdle?.activity();
     const result = await this.#changes.change(channel, desire, this.#state === "running");

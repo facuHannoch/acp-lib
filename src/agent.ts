@@ -1,3 +1,5 @@
+import { channelSettingsLive, type NativeChannelSettings, type NativeRestartOptions, type NativeRestartPreview, type NativeRestartResult, type NativeToolSetting } from "./agent/native-operations.ts";
+import type { AgentConversationId } from "./agent-ids.ts";
 import { createAgentReminderService, type ReminderService } from "./native/reminders/service.ts";
 import { resolveProviderStart } from "./conversation-startup.ts";
 import { withDelegationTools } from "./orchestrator/native-delegation.ts";
@@ -160,13 +162,15 @@ export class Agent {
     if (config.orchestrator) validateOrchestrator(config.orchestrator, persistence, resolveConversationRecordCapture(config.capture).message);
     this.persistence = persistence;
     this.adapters = adapters;
+    const orchestration = config.orchestrator;
+    if (orchestration) this.wrapNativeFunctions = functions => withDelegationTools(functions, orchestration,
+      () => this.orchestrator!, () => this.conversations);
     const channels = config.harness ? protectedChannels(persistence) : undefined;
     this.nativeHarness = config.harness
       ? new NativeHarnessHost({
         sessionId: id,
         ...config.harness,
-        ...(config.orchestrator ? { functions: withDelegationTools(config.harness.functions, config.orchestrator,
-          () => this.orchestrator!, () => this.conversations) } : {}),
+        ...(this.wrapNativeFunctions ? { functions: this.wrapNativeFunctions(config.harness.functions) } : {}),
         ...(config.harness.launcher ?? config.conversationDefaults?.launcher
           ? { launcher: config.harness.launcher ?? config.conversationDefaults!.launcher }
           : {}),
@@ -470,9 +474,101 @@ export class Agent {
     this.eventBus.publish(records);
   }
 
+  private nativeOperationHost(): NativeHarnessHost {
+    if (this.closed) throw new Error("Agent is closed");
+    if (!this.nativeHarness) throw new Error("Agent has no native harness");
+    return this.nativeHarness;
+  }
+
+  async previewNativeRestart(): Promise<NativeRestartPreview> {
+    this.nativeOperationHost();
+    const conversationIds: AgentConversationId[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.conversations.list({ cursor });
+      for (const conversation of page.conversations) {
+        if (!conversation.deletedAt && conversation.controllerKind === "native") conversationIds.push(conversation.agentConversationId);
+      }
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+    return { conversationIds, conversationCount: conversationIds.length };
+  }
+
+  private readonly nativeOperationsLifetime = new AbortController();
+
+  waitForNativeIdle(options: { signal?: AbortSignal } = {}): Promise<void> {
+    return this.nativeOperationHost().waitForIdle(options.signal ? AbortSignal.any([options.signal, this.nativeOperationsLifetime.signal]) : this.nativeOperationsLifetime.signal);
+  }
+
+  private readonly wrapNativeFunctions?: (functions: NonNullable<AgentConfig["harness"]>["functions"]) => NonNullable<AgentConfig["harness"]>["functions"];
+  private nativeRestart?: Promise<NativeRestartResult>;
+  private readonly nativeRestartListeners = new Set<(result: NativeRestartResult) => void>();
+
+  subscribeNativeRestart(listener: (result: NativeRestartResult) => void): () => void {
+    this.nativeRestartListeners.add(listener);
+    return () => { this.nativeRestartListeners.delete(listener); };
+  }
+
+  restartNative(options: NativeRestartOptions = {}): Promise<NativeRestartResult> {
+    if (this.nativeRestart) return this.nativeRestart;
+    const host = this.nativeOperationHost();
+    return this.nativeRestart = (async () => {
+      const preview = await this.previewNativeRestart();
+      const interruptedTurns: { channel: string; turnId: string }[] = [];
+      let result: NativeRestartResult;
+      try {
+        const signal = options.signal ? AbortSignal.any([options.signal, this.nativeOperationsLifetime.signal]) : this.nativeOperationsLifetime.signal;
+        const functions = options.functions !== undefined && this.wrapNativeFunctions
+          ? this.wrapNativeFunctions(options.functions ?? undefined) : options.functions;
+        await host.restartForAgent({ ...options, signal, functions }, interruptedTurns);
+        result = { ...preview, kind: "restarted", interruptedTurns, conversations: preview.conversationIds.map(id =>
+          ({ id, outcome: host.channel(id) ? "reconnected" : "deferred" })) };
+      } catch (error) {
+        result = { ...preview, kind: "restart_failed", interruptedTurns, error,
+          conversations: preview.conversationIds.map(id => ({ id, outcome: "failed" })) };
+      }
+      for (const listener of this.nativeRestartListeners) {
+        try { listener(result); } catch { /* Observers cannot change the restart outcome. */ }
+      }
+      return result;
+    })().finally(() => { this.nativeRestart = undefined; });
+  }
+
+  readonly channelSettingsLive = channelSettingsLive;
+
+  async applyNativeChannelSettings(id: AgentConversationId, settings: NativeChannelSettings) {
+    const host = this.nativeOperationHost();
+    const conversation = await this.conversations.get(id);
+    if (!conversation || conversation.deletedAt || conversation.controllerKind !== "native") {
+      return { state: "unsupported", code: "not_native_conversation" } as const;
+    }
+    const unsupported = Object.keys(settings).filter(key => !channelSettingsLive.channel.some(field => field === key));
+    if (unsupported.length) return { state: "unsupported", code: "channel_settings_not_live", fields: unsupported } as const;
+    const { displayName, policy, lifecycle } = settings;
+    if ([displayName, policy].some(value => value !== undefined && value !== null && typeof value !== "string")
+      || (lifecycle !== undefined && !["open", "suspended", "retired"].includes(lifecycle))) {
+      return { state: "unsupported", code: "invalid_channel_settings" } as const;
+    }
+    if (displayName === undefined && policy === undefined && lifecycle === undefined) return { state: "applied" } as const;
+    return host.changeChannel(id, { ...(displayName === undefined ? {} : { displayName }),
+      ...(policy === undefined ? {} : { policy }), ...(lifecycle === undefined ? {} : { lifecycle }) });
+  }
+
+  applyNativeToolSetting(name: string, setting: NativeToolSetting) {
+    const host = this.nativeOperationHost();
+    switch (setting) {
+      case "enable": return host.enableTool(name);
+      case "remove": return host.removeTool(name);
+      case "revoke": return host.revokeTool(name);
+      case "restore": return host.restoreTool(name);
+    }
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.nativeOperationsLifetime.abort(new Error("Agent is closed"));
+    await this.nativeRestart;
     this.nativeHarness?.closeReminderSupervisors();
     this.manager.cancelStarts();
     let shutdownError: unknown;

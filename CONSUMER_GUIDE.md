@@ -1543,6 +1543,66 @@ The harness can refuse with `busy` or `next_due_soon`. A refusal leaves
 the session running. Work that arrives after a successful idle stop can
 start it again.
 
+### Restart the native agent and apply live settings
+
+Use `await agent.previewNativeRestart()` to get `conversationCount` and
+`conversationIds` for a confirmation dialog. The preview includes active
+native conversation records, including ones whose harness channel is created
+on first use. ACP conversations are outside its scope.
+
+```ts
+const preview = await agent.previewNativeRestart();
+const result = await agent.restartNative({ when: "idle", config: nextHarnessConfig });
+```
+
+`when: "idle"` waits for active turns, approvals and queued native input
+across the agent, then uses the harness's atomic idle stop. Use
+`waitForNativeIdle({ signal })` to wait without restarting. An idle wait is
+a snapshot and new input can arrive after it resolves. Suspended work
+with queued input can keep the wait pending. Supply an abort signal when
+the user can cancel the wait. `when: "now"` requests interruption of
+running turns and restarts the shared native process. The harness retains
+its durable queue and reminder wake. Closing the Agent cancels idle waits.
+
+The executable open takes the replacement `config` and optional
+`functions` catalog. Omit either to keep the Agent's current setting.
+Pass `functions: null` to clear application-supplied functions.
+The harness applies its normal configuration precedence and compatibility
+checks, including a managed configuration sidecar when present. The
+Agent uses the new settings for subsequent opens in the same process.
+Persist application configuration separately if future Agent instances
+need to supply it.
+
+`subscribeNativeRestart(listener)` returns an unsubscribe function.
+The listener receives the same `restarted` or `restart_failed` result
+as the caller, with interrupted harness turn IDs and per-conversation
+outcomes. A `reconnected` channel was reconciled by the replacement
+open. A `deferred` conversation has no channel in that open and can
+materialize on use. On failure the result includes the error. Native
+conversation handles retain their identity and subscriptions.
+
+Read `agent.channelSettingsLive` for channel-scoped edits, session-wide
+tool controls and settings to defer to an executable open.
+
+- `applyNativeChannelSettings(id, { displayName, policy, lifecycle })`
+  uses the ordered channel change path. A running harness applies it
+  live. A stopped harness stores it for its next open. `policy` selects
+  an existing named policy. A policy-only change keeps the channel
+  name. Pass `null` to clear a name or policy. The lifecycle values
+  `"suspended"`, `"open"` and `"retired"` map to suspend, resume and
+  delete. To delete the local conversation and its records as well,
+  use `agent.conversations.delete(id)`.
+- `applyNativeToolSetting(name, operation)` enables or removes runtime
+  tools, or revokes or restores revocable tools. It requires a running
+  harness. The operations affect the whole session. Per-channel access
+  can be restricted by the channel's named policy.
+- Named policy definitions, the default policy, model, system prompt and
+  tool catalog take effect on executable open. The native wire has no
+  participant-roster edit for an existing channel. An open alone cannot
+  replace that roster, so hold or refuse that edit. Unsupported
+  channel fields return `channel_settings_not_live` with the field
+  names, without applying any part of the patch.
+
 ### Native turn metering
 
 Agent-owned native conversations meter turns by default (`best_effort`). The
