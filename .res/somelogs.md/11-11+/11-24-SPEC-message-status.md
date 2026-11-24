@@ -74,7 +74,7 @@ From a pass over the code (2026-11-24):
 ## First version
 
 - Live only: no persistence. A reopened conversation doesn't restore statuses; history keeps what it has today.
-- Native: the controller forwards its receipts and turn takes as statuses instead of keeping them internal.
+- Native: the existing `items_receipt` and turn events also advance the status; their own meanings are unchanged.
 - Tests: one sequence per backend (native via the fake harness, ACP via a fixture agent), a withdraw, a failed turn,
   and a combined prompt.
 
