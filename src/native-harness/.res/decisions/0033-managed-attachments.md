@@ -52,10 +52,13 @@ implementation and conformance changes follow independent approval.
    item checks lifecycle and all references before committing; failure commits
    nothing. Lost acknowledgements are recovered by retry or tracked item read.
    No duplicate lookup may bypass the original channel/sender authorization.
-4. Initialize advertises managed upload/download, ordered parts, limits and a
-   separate `imageInput` capability only when the selected configured model
-   path explicitly supports these image formats. Omission means unsupported.
-   Scripted fixtures must explicitly opt in. A new image push against a text-only
+4. Initialize advertises managed upload/download, ordered parts and protocol-wide
+   transfer ceilings independent of the model. Successful session/create and
+   executable session/open advertise `imageInput` and effective image limits
+   only when that session's configured model path explicitly supports the
+   allowed image formats. Omission means unsupported. Capability evidence is
+   scoped to the current session and connection. Scripted fixtures must
+   explicitly opt in. A new image push against a text-only
    configuration fails `unsupported_image` before inbox acceptance. General
    files remain usable there. Do not infer vision from a model name.
 
@@ -194,6 +197,9 @@ provider request order and download after reopen. Exercise web general-file
 upload/download, unsupported image, missing files, races, export/import,
 limits, old archives and absence of bytes in diagnostic surfaces. Run both
 package typechecks and full suites and extend the cumulative stdio rehearsal.
+Verify vision and non-vision sessions see the same initialize surface, but
+only an explicitly enabled model path advertises imageInput at create/open;
+include explicit scripted opt-in and text-only admission rejection.
 Exercise image → tool → second inference and checkpoint/reopen/resume with
 the same image in each provider request; cover FIFO budget deferral to a new
 turn. Test cross-channel access before acceptance, pending acceptance, after
