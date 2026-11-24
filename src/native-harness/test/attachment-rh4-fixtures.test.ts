@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { createSqliteStorageAdapter } from "../src/state/storage/sqlite.ts";
 import { sqliteAttachmentTables } from "../src/state/storage/attachment-tables.ts";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { createUploadManager } from "../src/capabilities/attachments/upload.ts";
+import { readAttachment } from "../src/capabilities/attachments/read.ts";
 import type { StorageResult, SessionArchive } from "../src/contracts/storage.ts";
 function take<T>(result: StorageResult<T>): T { if (!result.ok) throw Error(JSON.stringify(result.error)); return result.value; }
 const identity = { sessionId: "a1-rh4-fixture", compatibilityKey: "test" };
@@ -141,5 +144,29 @@ test("new reminder state advances the detached archive base without downgrading 
       expect(take(store.readSession()).formatVersion).toBe(9);
       expect(take(store.exportArchive()).archiveVersion).toBe(7);
     } finally { take(store.close()); }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("durable publication activates format 9 through the owning session and survives reopen", () => {
+  const home = mkdtempSync(join(tmpdir(), "a1-owner-nine-")), path = join(home, "sqlite"), root = join(home, "media");
+  try {
+    copyFileSync(new URL("./fixtures/attachments-rh4/format-8.sqlite", import.meta.url), path);
+    const adapter = createSqliteStorageAdapter(path), store = take(adapter.open({ mode: "open", identity, config }));
+    const data = Buffer.from("managed fixture bytes"), sha256 = createHash("sha256").update(data).digest("hex");
+    const uploads = createUploadManager({ root, validateImage() { throw Error("unexpected image"); }, publishReady: metadata => { take(store.registerReadyAttachment(metadata)); } });
+    const begin = uploads.begin({ channel: "a", filename: "fixture.txt", mediaType: "text/plain", bytes: data.length, sha256 });
+    uploads.write("a", begin.uploadId, 0, data.toString("base64"));
+    const metadata = uploads.finalize("a", begin.uploadId);
+    expect(take(store.readSession()).formatVersion).toBe(9);
+    expect(take(store.readManagedAttachment(metadata.id))?.metadata).toEqual(metadata);
+    uploads.close(); take(store.close());
+    const reopened = take(adapter.open({ mode: "open", identity, config }));
+    try {
+      expect(take(reopened.readSession()).formatVersion).toBe(9);
+      const lookup = (id: string) => { const saved = take(reopened.readManagedAttachment(id)); return saved && { ...saved, timelineReadable: true }; };
+      expect(Buffer.from(readAttachment({ root, channel: "a", id: metadata.id, offset: 0, lookup }).data, "base64")).toEqual(data);
+      expect(take(reopened.exportArchive()).archiveVersion).toBe(7);
+      expect(take(reopened.readSession()).formatVersion).toBe(9);
+    } finally { take(reopened.close()); }
   } finally { rmSync(home, { recursive: true, force: true }); }
 });

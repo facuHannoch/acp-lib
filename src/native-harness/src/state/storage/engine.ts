@@ -49,7 +49,7 @@ export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], item
  * `transaction` atomic (all writes of a throwing callback are undone). */
 export interface Tables extends ContextRows {
   /** SQLite attachment metadata, absent in adapters without managed bytes. */
-  attachments?: Pick<ReturnType<typeof import("./attachment-tables.ts").sqliteAttachmentTables>, "baseFormat" | "advanceBaseFormat" | "hasRetained">;
+  attachments?: ReturnType<typeof import("./attachment-tables.ts").sqliteAttachmentTables>;
   reminders: ReminderTables;
   retrievalCandidates(terms: readonly string[], channel: string | undefined, limit: number): Array<{ seq: number; bytes: number }>;
   retrievalEntry(seq: number): TimelineEntry | undefined;
@@ -581,6 +581,27 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }
   }
   return {
+    registerReadyAttachment: metadata => run(meta => {
+      if (!tables.attachments) fail("incompatible", "Managed attachments are unavailable in this store");
+      if (!metadata || typeof metadata.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(metadata.id)
+        || !text(metadata.channel) || !text(metadata.filename) || !metadata.filename.isWellFormed()
+        || Buffer.byteLength(metadata.filename) > 255 || /[\u0000-\u001f\u007f-\u009f]/u.test(metadata.filename)
+        || typeof metadata.mediaType !== "string" || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(metadata.mediaType) || metadata.mediaType.length > 127
+        || !Number.isSafeInteger(metadata.bytes) || metadata.bytes <= 0 || metadata.bytes > 20 * 1024 * 1024
+        || !/^[a-f0-9]{64}$/.test(metadata.sha256)) fail("invalid_input", "Invalid attachment metadata");
+      channelOf(metadata.channel);
+      const attachments = tables.attachments!;
+      if (attachments.get(metadata.id)) fail("already_exists", "Attachment ID already exists");
+      attachments.publish(metadata, now());
+      meta.formatVersion = 9;
+      seq(meta);
+    }),
+    readManagedAttachment: id => run(() => {
+      const attachments = tables.attachments;
+      if (!attachments || !text(id)) return undefined;
+      const row = attachments.get(id);
+      return row ? { metadata: row.metadata, timelineVisible: attachments.isTimelineVisible(id) } : undefined;
+    }, true),
     startCall: (turnId, itemIds) => run(meta => {
       if (!/^[1-9]\d*$/.test(turnId) || !Number.isSafeInteger(Number(turnId))) fail("invalid_input", "Invalid turn ID");
       const turn = running(Number(turnId));

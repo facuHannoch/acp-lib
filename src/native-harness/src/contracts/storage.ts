@@ -302,6 +302,11 @@ export interface ReminderStorage {
 }
 
 export interface SessionStorage extends ModelCallStore, ReminderStorage, TimelineRetrievalReads, OperatorStorageReads, InferenceStorageReads, InspectionStorageReads {
+  /** Owner-only publication fence. The managed-byte owner calls this only
+   * after it has verified and durably published the immutable bytes. */
+  registerReadyAttachment(metadata: import("./attachments.ts").AttachmentMetadata): StorageResult<void>;
+  /** Owner-scoped metadata and timeline visibility; bytes are read separately. */
+  readManagedAttachment(id: string): StorageResult<{ metadata: import("./attachments.ts").AttachmentMetadata; timelineVisible: boolean } | undefined>;
   readSession(): StorageResult<StoredSession>;
   readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
   readReadyChannels(intake?: IntakeLimit): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
