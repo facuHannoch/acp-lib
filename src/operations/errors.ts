@@ -14,6 +14,11 @@ export class OperationStalledError extends Error {
   followedBy?: readonly string[];
   metering?: OperationMeteringRecord;
   cancel?: "acknowledged" | "forced";
+  /**
+   * The provider's last notice before the stall, when it was retrying or warning (a 429, say): the
+   * likely cause, which the recorded error names instead of a bare "stopped producing output".
+   */
+  notice?: { readonly title: string; readonly category: string; readonly code?: string };
 
   constructor(readonly operationId: string, readonly phase: StallPhase) {
     super(`Provider operation stalled (${phase}).`);

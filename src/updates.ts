@@ -21,6 +21,7 @@ import type {
   ResponseChunk,
 } from "./types.ts";
 import { acpToPart } from "./media/acp.ts";
+import { providerNoticeFromMeta } from "./provider-notices.ts";
 
 /** A response delta preserving its ACP message id, or null for any other update. */
 export function extractResponseChunk(
@@ -118,10 +119,21 @@ export function toActivityEvent(update: schema.SessionUpdate): ActivityEvent | n
         used: Number(u.used ?? 0),
         size: Number(u.size ?? 0),
         ...(u.cost != null ? { cost: u.cost } : {}),
+        // Kept raw: adapters attach details here (claude-agent-acp: `_claude/rateLimit`).
+        ...(u._meta != null ? { meta: u._meta } : {}),
       };
 
-    case "session_info_update":
-      return { kind: "session_info", title: u.title ?? null, updatedAt: u.updatedAt ?? null };
+    case "session_info_update": {
+      // Adapters report warnings, retries and failures in this update's `_meta` (provider-notices.ts).
+      const notice = providerNoticeFromMeta(u._meta);
+      if (notice) return notice;
+      return {
+        kind: "session_info",
+        title: u.title ?? null,
+        updatedAt: u.updatedAt ?? null,
+        ...(u._meta != null ? { meta: u._meta } : {}),
+      };
+    }
 
     default:
       return {

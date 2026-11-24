@@ -1,3 +1,4 @@
+import type { ProviderNoticeActivity } from "./provider-notices.ts";
 import type { ResolvedPart } from "./media/parts.ts";
 // Core shared types — the OUTPUT contract.
 // These are what every client (AcpClient, and later PtyClient) produces, so callers
@@ -207,9 +208,14 @@ export type ActivityEvent =
   /** The agent switched session mode. */
   | { kind: "mode"; modeId: string }
   /** Context-window accounting. `used`/`size` are tokens. */
-  | { kind: "usage"; used: number; size: number; cost?: unknown }
-  /** The agent retitled the session or bumped its activity timestamp. */
-  | { kind: "session_info"; title?: string | null; updatedAt?: string | null }
+  | { kind: "usage"; used: number; size: number; cost?: unknown; meta?: unknown }
+  /**
+   * The agent retitled the session or bumped its activity timestamp. `meta` keeps the update's
+   * `_meta` when it carried one this library doesn't model, so adapter-specific signals aren't lost.
+   */
+  | { kind: "session_info"; title?: string | null; updatedAt?: string | null; meta?: unknown }
+  /** A warning, retry or failure the provider reported in an update's `_meta` (`provider-notices.ts`). */
+  | ProviderNoticeActivity
   /** Config options changed; also reflected in `client.configOptions`. */
   | { kind: "config"; configOptions: unknown }
   /** A session update we don't model. The raw notification payload is attached. */

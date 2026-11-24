@@ -464,6 +464,9 @@ export class ActivityAggregator {
       case "config":
       case "session_info":
         return this.minted(event.kind);
+      case "provider_notice":
+        // Revisions of one notice share an id, so they update one activity.
+        return this.minted(`notice-${event.noticeId}`);
       default:
         return this.minted(`${event.kind}-${this.nextCount(event.kind)}`);
     }

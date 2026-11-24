@@ -33,6 +33,7 @@ import type {
 } from "../persistence/provider-attachment.ts";
 
 import type { ManagerSettings } from "./manager-settings.ts";
+import { sanitizeConversationErrorMessage } from "../persistence/error-records.ts";
 import {
   updateConversationIdentity,
   persistConversationObservations,
@@ -69,7 +70,13 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     const written = await writeConversationError(this.agent, this.settings, {
       agentConversationId: this.conversationId, attemptId: input.operationId,
       operationId: input.operationId, source: "operation", code: "stalled", recoverability: "retryable",
-      message: "The provider stopped producing output.", details: { phase: input.error.phase },
+      message: input.error.notice
+        ? sanitizeConversationErrorMessage(`The provider stopped producing output while retrying: ${input.error.notice.title}`)
+        : "The provider stopped producing output.",
+      details: {
+        phase: input.error.phase,
+        ...(input.error.notice ? { providerCode: input.error.notice.code ?? input.error.notice.category } : {}),
+      },
     });
     if (written.recordingError) throw written.recordingError;
   }

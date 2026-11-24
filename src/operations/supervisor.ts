@@ -58,6 +58,7 @@ export class OperationSupervisor {
   private readonly timers: Timers;
   private readonly startedAt: number;
   private lastOutputAt: number | null = null;
+  private lastNotice?: { title: string; category: string; code?: string };
   private permissions = 0;
   private cancellation?: { reason: CancelReason; requestedAt: number };
   private stage: OperationActivity["stage"] = "waiting";
@@ -157,7 +158,9 @@ export class OperationSupervisor {
   }
 
   private stalled(): OperationStalledError {
-    return this.markCancel(new OperationStalledError(this.options.operationId, this.stallPhase!));
+    const error = new OperationStalledError(this.options.operationId, this.stallPhase!);
+    if (this.lastNotice) error.notice = this.lastNotice;
+    return this.markCancel(error);
   }
 
   private markCancel(error: OperationStalledError): OperationStalledError {
@@ -182,6 +185,14 @@ export class OperationSupervisor {
     this.lastOutputAt = this.timers.now();
     if (output.kind === "permission_started") this.permissions++;
     if (output.kind === "permission_ended") this.permissions = Math.max(0, this.permissions - 1);
+    // A retry or warning in progress is remembered until real output follows, to name a stall's cause.
+    if (output.kind === "update" && output.activity?.kind === "provider_notice") {
+      const notice = output.activity;
+      this.lastNotice = notice.severity === "error" ? undefined
+        : { title: notice.title, category: notice.category, ...(notice.code ? { code: notice.code } : {}) };
+    } else if (output.kind === "update") {
+      this.lastNotice = undefined;
+    }
     if (output.kind === "update" && output.activity) {
       const settled = this.tools.observe(output.activity, this.lastOutputAt);
       if (settled && !this.tools.inFlight) this.options.onToolBoundary?.();

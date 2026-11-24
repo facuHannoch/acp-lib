@@ -4,6 +4,7 @@ import { AcpClient } from "../src/client.ts";
 import { AgentSession } from "../src/agent-session.ts";
 import { prepareLaunch, type AcpLauncher } from "../src/launcher.ts";
 import { SessionManager } from "../src/session-manager.ts";
+import { AIR_CLIENT_CAPABILITY_META } from "../src/provider-notices.ts";
 
 const AGENT = resolve(import.meta.dir, "../smoke-tests/test5-operations/operations-agent.ts");
 const BUN = Bun.which("bun")!;
@@ -48,6 +49,7 @@ describe("AcpLauncher", () => {
       expect(capabilities.client).toEqual({
         terminal: false,
         fs: { readTextFile: false, writeTextFile: false },
+        _meta: AIR_CLIENT_CAPABILITY_META,
       });
     } finally {
       await client.stop();
@@ -136,6 +138,7 @@ describe("AcpLauncher", () => {
       expect(capabilities.client).toEqual({
         terminal: false,
         fs: { readTextFile: true, writeTextFile: false },
+        _meta: AIR_CLIENT_CAPABILITY_META,
       });
     } finally {
       await client.stop();

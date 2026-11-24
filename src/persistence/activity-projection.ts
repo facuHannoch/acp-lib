@@ -39,6 +39,7 @@ export function persistenceEventFromActivity(
     case "plan":
     case "plan_update":
     case "plan_removed":
+    case "provider_notice":
       return {
         kind: "activity",
         activity: {

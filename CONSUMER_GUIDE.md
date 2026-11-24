@@ -503,6 +503,37 @@ kept as evidence and is not deleted; recovery or a future fresh-session operatio
 supersedes it. A `session/load` failure that is recoverable and has a usable checkpoint
 still recovers, with the error recorded before the recovery action.
 
+### Provider notices: retries, warnings and failures
+
+Harnesses report retries, warnings and failures in an update's `_meta`, not as ACP errors.
+acp-client reads two shapes and turns them into one `provider_notice` activity:
+
+- the JetBrains AIR session-failure extension, which acp-client now advertises in
+  `clientCapabilities._meta` (`jetbrains.air`, version 1, `sessionFailure`): codex-acp and
+  claude-agent-acp then send typed notices with an id, a revision, a category, a severity,
+  a title and suggested actions;
+- codex-acp's own fallback, `_meta.codex.error`, for a Codex that doesn't use AIR.
+
+```ts
+handlers.onActivity = (activity) => {
+  if (activity.kind !== "provider_notice") return;
+  // activity.severity: "info" | "warning" | "error"
+  // activity.category: "limit" | "service" | "connection" | "access" | "request" | …
+  // activity.code (when known: "rate_limited", "auth_required", …), activity.title,
+  // activity.actions: "retry" | "login" | "new_session"
+  // activity.noticeId + activity.revision: later revisions of one notice replace it
+};
+```
+
+A `warning` or `info` notice ends nothing: a retry in progress ("Rate limited, retrying"),
+a reconnect, an advisory. Show it as a passing status, keyed by `noticeId`. An `error`
+notice is a failure the provider reported. Notices are stored as activity records, so they
+appear in the conversation's timeline. When a turn is judged stalled while the provider was
+retrying, its `stalled` error record says so in its `message` and carries the cause in
+`details.providerCode` (for example `rate_limited`). OpenCode and Grok don't send these
+notices. An update's other unknown `_meta` is kept on `session_info` and `usage` activities
+as `meta`.
+
 ### Append an assistant message without a turn
 
 `conversations.appendAssistantMessage()` adds a completed assistant message the provider

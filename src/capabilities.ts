@@ -30,6 +30,8 @@ export interface Capabilities {
 export interface ClientCapabilities {
   fs: { readTextFile: boolean; writeTextFile: boolean };
   terminal: boolean;
+  /** Extensions advertised to the agent: the JetBrains AIR session-failure capability (provider-notices.ts). */
+  _meta?: Record<string, unknown>;
 }
 
 export interface AgentCapabilities {
