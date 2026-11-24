@@ -214,7 +214,7 @@ export class NativeController implements ConversationController, ChannelPort {
   }
   subscribeUsageUpdate(_listener: UsageListener): () => void { return () => undefined; }
   get currentSessionId(): string | null { return this.#host.sessionId; }
-  get conversationCapabilities(): ConversationCapabilities { return nativeConversationCapabilities(this.#host.reminderSync?.supported, this.#host.reminderSync?.routineAdmission.available); }
+  get conversationCapabilities(): ConversationCapabilities { return nativeConversationCapabilities(this.#host.reminderSync?.supported, this.#host.reminderSync?.routineAdmission.available, this.#host.capabilities?.mcpServers); }
 
   receiptOf(messageId: string): "delivered" | "seen" | undefined { return this.#receipts.get(messageId); }
 
@@ -250,6 +250,7 @@ export class NativeController implements ConversationController, ChannelPort {
         channel: this.#channel,
         sender: message.participantId ?? this.#config.defaultSender ?? "user",
         text: message.text,
+        ...(message.nativePolicy === undefined ? {} : { policy: message.nativePolicy }),
       });
     }
   }

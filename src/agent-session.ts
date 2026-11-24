@@ -1,3 +1,5 @@
+import { NativeController } from "./native/controller.ts";
+import type { NativeInputPolicy } from "./native/mcp.ts";
 import { protocolMethod } from "./persistence/protocol-method.ts";
 import { ReminderError } from "./native/reminders/schedule.ts";
 // AgentConversation — one durable conversation and the library's compatibility front
@@ -262,6 +264,8 @@ export interface AgentConversationPromptInput {
   readonly delivery?: PromptDelivery;
   /** Awaited before dispatch with this prompt's message ID. A rejection prevents dispatch. */
   readonly beforeDispatch?: (messageId: string) => Promise<void>;
+  /** Existing native policy selected by the trusted caller for this input. */
+  readonly nativePolicy?: NativeInputPolicy;
 }
 
 export interface AgentConversationAttributedPromptInput extends AgentConversationPromptInput {
@@ -1877,7 +1881,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       ? this.enqueuePrompt(input, "prompt", handlers, attachments)
       : this.enqueuePrompt(
           promptInputText(input), "prompt", input.handlers, input.attachments,
-          undefined, input.consumerMetadata, input.delivery, promptParts(input), input.beforeDispatch,
+          undefined, input.consumerMetadata, input.delivery, promptParts(input), input.beforeDispatch, input.nativePolicy,
         );
   }
 
@@ -1915,7 +1919,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       if (!input.participantId.trim()) return this.rejectedPrompt(new Error("participant id cannot be blank"));
       return this.enqueuePrompt(
         promptInputText(input), "prompt", input.handlers, input.attachments,
-        input.participantId.trim(), input.consumerMetadata, input.delivery, promptParts(input), input.beforeDispatch,
+        input.participantId.trim(), input.consumerMetadata, input.delivery, promptParts(input), input.beforeDispatch, input.nativePolicy,
       );
     }
     const participantId = input;
@@ -1939,6 +1943,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     delivery?: PromptDelivery,
     messageParts?: readonly MessagePart[],
     beforeDispatch?: AgentConversationPromptInput["beforeDispatch"],
+    nativePolicy?: NativeInputPolicy,
   ): PromptHandle {
     const id = this.mintTurnId();
     const promise = new Promise<AgentSessionPromptResult>((resolve, reject) => {
@@ -1949,6 +1954,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
       let stableConsumerMetadata: PersistenceJsonValue | undefined;
       try {
         this.assertPromptable();
+        if (nativePolicy !== undefined && !(this.controller instanceof NativeController)) {
+          throw new Error("nativePolicy requires a native conversation");
+        }
         stableConsumerMetadata = snapshotConsumerMetadata(consumerMetadata, Boolean(this.ownerLifecycle));
       } catch (error) {
         reject(error);
@@ -1969,6 +1977,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         attachments,
         messageParts,
         beforeDispatch,
+        ...(nativePolicy === undefined ? {} : { nativePolicy }),
         resolve: (result) => {
           this.acceptedMessages.delete(id);
           // Settled as cancelled before any turn took it: withdrawn (the tracker ignores it once taken).

@@ -522,6 +522,7 @@ export class NativeHarnessHost {
     signal.throwIfAborted();
 
     const status = await client.status();
+    if (status.mcpServers === undefined && opened.mcpServers !== undefined) status.mcpServers = opened.mcpServers;
     signal.throwIfAborted();
     const view: LoadResult = { status, items: [], turns: [], messages: [] };
     const submissions = this.records.submissions();
@@ -857,6 +858,15 @@ export class NativeHarnessHost {
     const live = await this.#client().status();
     this.#lastStatus = live;
     return live;
+  }
+
+  async mcpStatus(): Promise<import("./mcp.ts").NativeMcpStatus> {
+    const { session, stale } = await this.operatorStatus();
+    return this.mcpSnapshot(stale, session);
+  }
+
+  mcpSnapshot(stale = this.#state !== "running", session = this.#lastStatus): import("./mcp.ts").NativeMcpStatus {
+    return { capabilities: this.#capabilities?.mcpServers, servers: session?.mcpServers, stale };
   }
 
   async operatorStatus() {

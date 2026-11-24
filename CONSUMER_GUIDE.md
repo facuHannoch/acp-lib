@@ -1769,41 +1769,63 @@ harness: {
   but has no recorded result (crash, lost connection, interrupt) is
   `interrupted` with `effect: "unknown"`. It is never run again automatically.
 
-Native conversations do not support attaching ACP `mcpServers`. To use an
-MCP tool, connect the MCP client in your host application and register a
-native function that calls it. Supply the tool description and input schema
-and allow the wrapper by its registered name in `harness.config.policies`.
+#### Native MCP servers
+
+Configure native servers in `harness.config.mcpServers`. The harness
+supports stdio and Streamable HTTPS. `agent.nativeMcpStatus()` reports
+negotiated transports and per-server state. Restart results include
+the same MCP status snapshot. A stopped host reports its last snapshot
+as stale.
 
 ```ts
-import { FunctionError, type NativeFunctionsConfig } from "@qlairoslabs/acp-client";
+import type { AgentHarnessConfig } from "@qlairoslabs/acp-client";
 
-export function orderTools(
-  callMcpTool: (name: string, args: Record<string, unknown>, signal: AbortSignal) =>
-    Promise<{ content: unknown[]; isError?: boolean }>,
-): NativeFunctionsConfig {
+export function withNativeMcp(
+  config: AgentHarnessConfig["config"],
+  getAuthorization: () => Promise<string>,
+) {
   return {
-    tools: {
-      lookup: {
-        description: "Look up an order",
-        parameters: {
-          type: "object",
-          properties: { id: { type: "string" } },
-          required: ["id"],
-          additionalProperties: false,
-        },
-        async handler(args, { signal }) {
-          const result = await callMcpTool("lookup_order", args, signal);
-          if (result.isError) throw new FunctionError("mcp_tool_error", "Order lookup failed");
-          return result.content;
-        },
+    config: {
+      ...config,
+      defaultPolicy: "guest",
+      policies: {
+        owner: { fallback: "allow", tools: {}, mcp: "allow" },
+        guest: { fallback: "allow", tools: {}, mcp: "deny" },
       },
+      mcpServers: {
+        docs: { transport: "stdio", command: "/app/bin/docs-mcp", args: [] },
+        account: { transport: "http", endpoint: "https://example.com/mcp",
+          headers: { Authorization: { runtime: true } } },
+      },
+      limits: { ...config.limits, mcpCallTimeoutMs: 5_000 },
     },
-  };
+    mcpRuntimeHeaders: async () => ({ account: { Authorization: await getAuthorization() } }),
+  } satisfies Pick<AgentHarnessConfig, "config" | "mcpRuntimeHeaders">;
 }
 ```
 
-Pass the returned object as `harness.functions`. The host owns the MCP
-connection lifecycle and forwards cancellation through its client library.
+Merge those fields into the Agent's `harness` settings. Only the trusted
+owner supplies `mcpRuntimeHeaders`. The callback runs for every
+executable open or create request, including retry, reconnect and restart.
+It can resolve refreshed credentials. Header names are case-insensitive.
+Missing or empty material disables that server entry before it connects,
+while other servers can still start. Keep credentials out of configuration,
+prompt content and metadata. Runtime header values are never persisted.
+
+On an attributed prompt, the trusted caller can select an existing policy
+for that input with `conversation.promptFrom({ participantId, text,
+nativePolicy: "guest" })`. Object-form `prompt` accepts `nativePolicy` too.
+When the caller omits it, the harness uses the channel's selected policy,
+then the session default. An owner channel still needs an explicit guest
+policy on guest input. Participant kind, sender ID, display name and text
+never grant MCP access. Do not populate `nativePolicy` from participant input.
+
+The `mcp` grant covers all `mcp__` tools for that named policy. Every
+taken or inherited contributing policy must explicitly allow MCP. A
+mixed owner and guest turn, or a policy with no `mcp` value, denies it.
+The local deterministic fixtures verify this transport and policy wiring.
+Approval behavior in deployments using agents-tools or door integrations
+requires separate acceptance.
 
 Tool changes need a running harness: `revokeTool` and the others fail with
 `HarnessUnavailableError` while it is stopped.

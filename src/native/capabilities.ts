@@ -1,6 +1,6 @@
 import type { ConversationCapabilities } from "../conversation-controller/capabilities.ts";
 
-export function nativeConversationCapabilities(reminders = true, routines = false): ConversationCapabilities {
+export function nativeConversationCapabilities(reminders = true, routines = false, mcp?: import("./mcp.ts").NativeMcpStatus["capabilities"]): ConversationCapabilities {
   return {
     nativeSteering: true,
     reminders,
@@ -11,7 +11,7 @@ export function nativeConversationCapabilities(reminders = true, routines = fals
     backend: {
       loadSession: false, forkSession: false, listSessions: false,
       media: { image: false, audio: false, file: false },
-      mcpServers: { stdio: false, http: false, sse: false },
+      mcpServers: mcp ?? { stdio: false, http: false, sse: false },
     },
   };
 }

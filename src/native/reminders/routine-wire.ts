@@ -17,5 +17,5 @@ export interface ReminderNegotiation {
 }
 
 export type RoutineConfigInput = Omit<ProtocolConfig, "limits"> & {
-  limits?: { unattendedTurns: number | "unlimited" };
+  limits?: Omit<NonNullable<ProtocolConfig["limits"]>, "unattendedTurns"> & { unattendedTurns?: number | "unlimited" };
 };

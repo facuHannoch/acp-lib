@@ -48,14 +48,15 @@ export class RoutineAdmission {
   configForOpen(config: RoutineConfigInput | undefined): RoutineConfig | undefined {
     if (!config) return;
     const { limits, ...rest } = config;
-    const configured = limits?.unattendedTurns;
-    if (configured === undefined) return rest;
+    const { unattendedTurns: configured, ...otherLimits } = limits ?? {};
+    const retained = Object.keys(otherLimits).length ? { ...rest, limits: otherLimits } : rest;
+    if (configured === undefined) return retained;
     const value = configured === "unlimited" ? Number.MAX_SAFE_INTEGER : configured;
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
       throw new ReminderError("invalid_config", 'unattendedTurns must be a positive safe integer or "unlimited"');
     }
     if (!this.supported) throw new HarnessIncompatibleError("The native harness must support routines and unattendedTurnGuard to configure unattendedTurns");
-    return this.bound === value ? rest : { ...rest, limits: { unattendedTurns: value } };
+    return this.bound === value ? retained : { ...rest, limits: { ...otherLimits, unattendedTurns: value } };
   }
 
   opened(opened: ReminderWireOpen): void {

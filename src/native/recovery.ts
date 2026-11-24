@@ -1,3 +1,4 @@
+import { executableMcpOpen, type McpRuntimeHeadersProvider } from "./mcp.ts";
 import { activatesRoutine, RoutineAdmission } from "./reminders/routine-guard.ts";
 import type { ReminderChange } from "../persistence/reminders.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
@@ -51,7 +52,7 @@ export async function readCompleteMessage(client: HarnessClient, messageId: stri
 
 /** The catalog and startup edits are installed before recovered work can start. */
 export async function openOrCreate(
-  client: HarnessClient, config: { sessionId: string; config?: RoutineConfigInput },
+  client: HarnessClient, config: { sessionId: string; config?: RoutineConfigInput; mcpRuntimeHeaders?: McpRuntimeHeadersProvider },
   batch: PendingChannelChange[], tools: Parameters<HarnessClient["openSession"]>[0]["tools"], signal: AbortSignal, reminders?: ReminderSync,
 ) {
   const admission = reminders?.routineAdmission ?? new RoutineAdmission();
@@ -71,10 +72,12 @@ export async function openOrCreate(
         sessionId: config.sessionId, config: admission.configForOpen(config.config), ...changes,
         ...(staged.length ? { reminderChanges: staged } : {}),
       };
+      const send = (request: typeof params) => executableMcpOpen(config.mcpRuntimeHeaders, signal, material => {
+        const executable = { ...request, ...(material === undefined ? {} : { mcpRuntimeHeaders: material }) };
+        return create ? client.createSession({ ...executable, participants: [], channels: {} }) : client.openSession(executable);
+      });
       try {
-        return create
-          ? await client.createSession({ ...params, participants: [], channels: {} })
-          : await client.openSession(params);
+        return await send(params);
       } catch (error) {
         const code = codeOf(error);
         if (staged.length && code === "storage_failure") {
@@ -103,9 +106,7 @@ export async function openOrCreate(
         const { reminderChanges: _rejected, ...unbatched } = params;
         let result: ReminderWireOpen;
         try {
-          result = create
-            ? await client.createSession({ ...unbatched, participants: [], channels: {} })
-            : await client.openSession(unbatched);
+          result = await send(unbatched);
         } catch (retryError) {
           await reminders!.restoreStaged(originals);
           throw retryError;

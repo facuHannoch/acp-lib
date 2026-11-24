@@ -520,7 +520,8 @@ export class Agent {
         const functions = options.functions !== undefined && this.wrapNativeFunctions
           ? this.wrapNativeFunctions(options.functions ?? undefined) : options.functions;
         await host.restartForAgent({ ...options, signal, functions }, interruptedTurns);
-        result = { ...preview, kind: "restarted", interruptedTurns, conversations: preview.conversationIds.map(id =>
+        const mcp = host.mcpSnapshot();
+        result = { ...preview, kind: "restarted", interruptedTurns, mcp, conversations: preview.conversationIds.map(id =>
           ({ id, outcome: host.channel(id) ? "reconnected" : "deferred" })) };
       } catch (error) {
         result = { ...preview, kind: "restart_failed", interruptedTurns, error,
@@ -532,6 +533,8 @@ export class Agent {
       return result;
     })().finally(() => { this.nativeRestart = undefined; });
   }
+
+  nativeMcpStatus() { return this.nativeOperationHost().mcpStatus(); }
 
   readonly channelSettingsLive = channelSettingsLive;
 

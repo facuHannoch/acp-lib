@@ -36,4 +36,5 @@ export type NativeRestartResult = NativeRestartPreview & {
   readonly interruptedTurns: readonly { channel: string; turnId: string }[];
   readonly conversations: readonly { id: AgentConversationId; outcome: "reconnected" | "deferred" | "failed" }[];
   readonly error?: unknown;
+  readonly mcp?: import("../native/mcp.ts").NativeMcpStatus;
 };

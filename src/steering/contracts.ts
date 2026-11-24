@@ -1,3 +1,4 @@
+import type { NativeInputPolicy } from "../native/mcp.ts";
 import type { AgentSessionPromptResult } from "../agent-conversation-contracts.ts";
 import type { PersistenceJsonValue } from "../persistence/backend.ts";
 import type { Attachment, PromptHandlers } from "../types.ts";
@@ -69,6 +70,7 @@ export type MessageEvent =
 
 /** One original message of a combined prompt. */
 export interface CombinedMessage {
+  readonly nativePolicy?: NativeInputPolicy;
   readonly beforeDispatch?: (messageId: string) => Promise<void>;
   readonly messageParts?: readonly MessagePart[];
   readonly attachments?: readonly Attachment[];
@@ -93,6 +95,7 @@ export interface SteeringPrompt {
   participantId?: string;
   consumerMetadata?: PersistenceJsonValue;
   handlers?: PromptHandlers;
+  readonly nativePolicy?: NativeInputPolicy;
   readonly beforeDispatch?: CombinedMessage["beforeDispatch"];
   attachments?: Attachment[];
   messageParts?: readonly MessagePart[];
