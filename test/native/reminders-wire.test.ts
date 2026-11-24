@@ -280,11 +280,13 @@ test("routine and malformed legacy schedule entries contribute neither wake nor 
     for (const [id, schedule] of [
       ["routine", { every: 600_000, startAt: 600_000 }],
       ["legacy", { at: "1970-01-01T00:05:00.000Z" }],
-    ] as const) await repo.enqueue({ op: "create", acceptedAt: 0, reminder: {
-      id, conversationId: s.channel, text: id, status: "active", schedule: schedule as never,
-      expiryPolicy: { kind: "default" }, expiry: null,
-    } });
-    expect((await repo.wake()).effectiveAt).toBeNull();
+    ] as const) {
+      await repo.enqueue({ op: "create", acceptedAt: 0, reminder: {
+        id, conversationId: s.channel, text: id, status: "active", schedule: schedule as never,
+        expiryPolicy: { kind: "default" }, expiry: null,
+      } });
+      expect((await repo.wake()).effectiveAt).toBeNull();
+    }
     expect(await s.sync.stage()).toEqual([]);
     expect((await repo.list()).map(row => row.changes[0]?.state)).toEqual(["blocked", "blocked"]);
   } finally { await s.backend.close(); }
