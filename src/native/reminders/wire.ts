@@ -68,7 +68,7 @@ export function reminderRequest(change: ReminderChange, limits = defaultReminder
   const { id, conversationId, text, schedule, expiryPolicy, status, policyNames, scheduleAcceptedAt } = change.reminder;
   const includes = (field: NonNullable<ReminderChange["fields"]>[number]) =>
     change.op === "create" || (change.op === "update" && change.fields?.includes(field) === true);
-  if (!id || !Number.isSafeInteger(change.changeId) || change.changeId < 1) throw new Error("Invalid reminder identity");
+  if (typeof id !== "string" || !id.trim() || !Number.isSafeInteger(change.changeId) || change.changeId < 1) throw new Error("Invalid reminder identity");
   const identity = { reminderId: id, changeId: change.changeId, op: change.op };
   if (change.op === "cancel") return { ...identity, payload: {} };
   if (!("at" in schedule)) throw new ReminderError("routines_unavailable", "Routine reminders are unavailable");
@@ -76,10 +76,12 @@ export function reminderRequest(change: ReminderChange, limits = defaultReminder
   if (includes("schedule") && (!Number.isSafeInteger(anchor) || !Number.isSafeInteger(schedule.at)
     || schedule.at - anchor < limits.oneShotLeadMs)) throw new Error("Invalid reminder schedule anchor");
   if (includes("text") && (typeof text !== "string" || !text.trim())) throw new Error("Invalid reminder text");
-  if (change.op === "create" && (!conversationId || (policyNames && (
+  if (change.op === "create" && (typeof conversationId !== "string" || !conversationId.trim() || (policyNames !== undefined && (
+    !Array.isArray(policyNames) ||
     new Set(policyNames).size !== policyNames.length || policyNames.some(name => typeof name !== "string" || !name.trim())
   )))) throw new Error("Invalid reminder destination or policies");
   if (change.op === "update" && includes("status") && status !== "active" && status !== "paused") throw new Error("Invalid reminder state");
+  if (includes("expiry") && !["default", "duration", "unlimited"].includes(expiryPolicy?.kind)) throw new Error("Invalid reminder expiry policy");
   const expiresAfter = expiryPolicy.kind === "duration" ? expiryPolicy.milliseconds : expiryPolicy.kind === "unlimited" ? null : undefined;
   if (includes("expiry") && typeof expiresAfter === "number" &&
     (!Number.isSafeInteger(expiresAfter) || expiresAfter < limits.minGraceMs || expiresAfter > limits.maxGraceMs)) {

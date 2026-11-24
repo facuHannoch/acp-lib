@@ -47,6 +47,7 @@ export interface ReminderJournal {
   readonly highWater: number;
   readonly confirmed?: Reminder;
   readonly observation?: number;
+  readonly receiptVersion?: number;
   readonly changes: readonly ReminderChange[];
 }
 
@@ -206,10 +207,12 @@ export class StoredReminderPersistence implements ReminderPersistence {
         });
       } else {
         const confirmed = journal.confirmed;
-        const newer = !confirmed || (journal.observation ?? 0) === entry.observedAtSend;
+        const newer = !confirmed || ((journal.observation ?? 0) === entry.observedAtSend
+          && changeId >= (journal.receiptVersion ?? 0));
         this.store.save({
           ...journal,
           confirmed: newer ? receipt.confirmed : confirmed,
+          receiptVersion: newer ? changeId : journal.receiptVersion,
           changes: sent?.at(-1) === entry
             ? journal.changes.filter((change) => change.changeId > changeId)
             : journal.changes.map((change) => change === entry ? { ...change, state: "applied" } : change),
@@ -253,7 +256,7 @@ export class StoredReminderPersistence implements ReminderPersistence {
         this.store.save({
           ...row,
           changes: row.changes.map(change => change.state === "maybe_sent" ? { ...change, state: "pending", observedAtSend: undefined } : change),
-          ...(row.confirmed ? { confirmed: { ...row.confirmed, unreconciled: true } } : {}),
+          ...(row.confirmed ? { confirmed: { ...row.confirmed, unreconciled: true }, receiptVersion: undefined } : {}),
         });
       }
       this.recompute({ sessionId, revision: 0, nextDueAt: null });

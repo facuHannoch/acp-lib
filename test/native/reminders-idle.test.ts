@@ -167,3 +167,20 @@ test("the owned conversation receives separate live intent and wire events", asy
     expect((await s.agent.persistence.reminders!.list())[0]?.confirmed).toMatchObject({ text: "wire", status: "completed" });
   } finally { await s.fixture.clean(); }
 });
+
+test("an older first receipt cannot replace a newer receipt while another change is outstanding", async () => {
+  const s = await setup();
+  try {
+    const conversation = await s.agent.conversations.create();
+    const item = await conversation.reminders.create({ text: "first", schedule: { in: 180_000 } });
+    const repo = s.agent.persistence.reminders!;
+    await repo.markMaybeSent(item.id, 1);
+    await conversation.reminders.update(item.id, { text: "second" });
+    await repo.markMaybeSent(item.id, 2);
+    await conversation.reminders.update(item.id, { text: "third" });
+    await repo.markMaybeSent(item.id, 3);
+    await repo.acknowledge(item.id, 2, { confirmed: { ...item, text: "second" } });
+    await repo.acknowledge(item.id, 1, { confirmed: { ...item, text: "first" } });
+    expect((await repo.list())[0]?.confirmed?.text).toBe("second");
+  } finally { await s.fixture.clean(); }
+});

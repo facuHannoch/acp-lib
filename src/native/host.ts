@@ -100,8 +100,7 @@ export class NativeHarnessHost {
     return this.ensureStarted();
   }
   async changeReminder(change: WireChange) {
-    if (this.#idling) await this.ensureStarted();
-    this.reminderIdle?.activity();
+    await this.ensureStarted();
     return this.reminderSync?.dispatch(this.#client(), change);
   }
   async refreshReminders(channel?: string, id?: string) {

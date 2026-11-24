@@ -11,7 +11,7 @@ export const REMINDER_SCHEMA = `
     change_id INTEGER NOT NULL, staging_order INTEGER NOT NULL UNIQUE, value TEXT NOT NULL, PRIMARY KEY (id, change_id)
   );
   CREATE TABLE IF NOT EXISTS reminder_cache (
-    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, observation INTEGER NOT NULL, value TEXT NOT NULL
+    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, observation INTEGER NOT NULL, receipt_version INTEGER, value TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS reminder_staging_clock (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS reminder_suspensions (conversation_id TEXT PRIMARY KEY);
@@ -26,7 +26,7 @@ type ValueRow = { value: string };
 
 export function createSqliteReminderPersistence(database: Database, write: Runner, read: Runner, changed: () => void = () => {}): ReminderPersistence {
   const journalFrom = (row: JournalRow): ReminderJournal => {
-    const cache = database.query<ValueRow & { observation: number }, [string]>("SELECT value, observation FROM reminder_cache WHERE id = ?").get(row.id);
+    const cache = database.query<ValueRow & { observation: number; receipt_version: number | null }, [string]>("SELECT value, observation, receipt_version FROM reminder_cache WHERE id = ?").get(row.id);
     const changes = database.query<ValueRow, [string]>(
       "SELECT value FROM reminder_changes WHERE id = ? ORDER BY change_id",
     ).all(row.id);
@@ -34,7 +34,7 @@ export function createSqliteReminderPersistence(database: Database, write: Runne
       id: row.id,
       conversationId: row.conversation_id,
       highWater: row.high_water,
-      ...(cache ? { confirmed: JSON.parse(cache.value) as Reminder, observation: cache.observation } : {}),
+      ...(cache ? { confirmed: JSON.parse(cache.value) as Reminder, observation: cache.observation, receiptVersion: cache.receipt_version ?? undefined } : {}),
       changes: changes.map(({ value }) => JSON.parse(value) as ReminderChange),
     };
   };
@@ -62,8 +62,8 @@ export function createSqliteReminderPersistence(database: Database, write: Runne
         ).run(journal.id, change.changeId, change.stagingOrder, JSON.stringify(change));
       }
       if (journal.confirmed) {
-        database.query(`INSERT INTO reminder_cache VALUES (?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET value = excluded.value, observation = excluded.observation`).run(journal.id, journal.conversationId, journal.observation ?? 0, JSON.stringify(journal.confirmed));
+        database.query(`INSERT INTO reminder_cache VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET value = excluded.value, observation = excluded.observation, receipt_version = excluded.receipt_version`).run(journal.id, journal.conversationId, journal.observation ?? 0, journal.receiptVersion ?? null, JSON.stringify(journal.confirmed));
       }
     },
     remove: (id) => { database.query("DELETE FROM reminder_cache WHERE id = ?").run(id); database.query("DELETE FROM reminder_journals WHERE id = ?").run(id); },
