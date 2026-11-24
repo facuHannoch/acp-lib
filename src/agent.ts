@@ -1,4 +1,4 @@
-import { remindersForAgent } from "./native/reminders/service.ts";
+import { ReminderService } from "./native/reminders/service.ts";
 import { resolveProviderStart } from "./conversation-startup.ts";
 import { withDelegationTools } from "./orchestrator/native-delegation.ts";
 import { AcpWorkerDelivery } from "./orchestrator/acp-delivery.ts";
@@ -115,7 +115,7 @@ export class Agent {
    * for every native conversation of this Agent. Null otherwise.
    */
   readonly nativeHarness: NativeHarnessHost | null;
-  get reminders() { return remindersForAgent(this); }
+  readonly reminders: ReminderService;
   readonly conversations: AgentConversationManager;
   /** @internal Delegation routes use this pool. */
   readonly orchestrator?: Orchestrator;
@@ -173,6 +173,7 @@ export class Agent {
         ...(config.conversationDefaults?.logger ? { logger: config.conversationDefaults.logger } : {}),
       }, channels, persistence.workerDelivery)
       : null;
+    this.reminders = new ReminderService({ ...config.reminders, persistence, running: () => this.nativeHarness?.state === "running" });
     this.audit = audit;
     const logger = config.conversationDefaults?.logger ?? noopLogger;
     this.eventBus = new CommittedRecordEventBus({

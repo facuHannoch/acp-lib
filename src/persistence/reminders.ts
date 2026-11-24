@@ -20,6 +20,7 @@ export interface ReminderChangeInput {
   readonly reminder: Reminder;
   readonly acceptedAt: number;
   readonly op: "create" | "update" | "cancel";
+  readonly fields?: readonly ("text" | "schedule" | "expiry" | "status" | "policyNames")[];
 }
 
 export interface ReminderChange extends ReminderChangeInput {
@@ -54,7 +55,20 @@ export interface ReminderStorage {
 
 type Runner = <T>(operation: () => T) => Promise<T>;
 
-export class ReminderPersistence {
+export interface ReminderPersistence {
+  readonly durable: boolean;
+  list(): Promise<readonly ReminderJournal[]>;
+  wake(): Promise<ReminderWakeIndex>;
+  updateDeadline(deadline: ReminderDeadline, replaceSession?: boolean): Promise<ReminderDeadlineDecision>;
+  setConversationSuspended(conversationId: string, suspended: boolean): Promise<void>;
+  deleteConversation(conversationId: string): Promise<void>;
+  enqueue(change: ReminderChangeInput): Promise<ReminderChange | undefined>;
+  markMaybeSent(id: string, changeId: number): Promise<ReminderChange | undefined>;
+  acknowledge(id: string, changeId: number, outcome: { confirmed: Reminder } | { reason: string }): Promise<boolean>;
+  discardBlocked(id: string): Promise<void>;
+}
+
+export class StoredReminderPersistence implements ReminderPersistence {
   constructor(
     readonly durable: boolean,
     private readonly store: ReminderStorage,
@@ -88,9 +102,9 @@ export class ReminderPersistence {
     });
   }
 
-  updateDeadline(deadline: ReminderDeadline): Promise<ReminderDeadlineDecision> {
+  updateDeadline(deadline: ReminderDeadline, replaceSession = false): Promise<ReminderDeadlineDecision> {
     return this.write(() => {
-      const result = compareReminderDeadline(this.store.wake().reported, deadline);
+      const result = compareReminderDeadline(this.store.wake().reported, deadline, replaceSession);
       if (result === "accepted") this.recompute(deadline);
       return result;
     });
@@ -126,10 +140,13 @@ export class ReminderPersistence {
       const next: ReminderChange | undefined = coalesce && latest.op === "create" && change.op === "cancel"
         ? undefined
         : { ...change, op: coalesce && latest.op === "create" ? "create" : change.op, changeId, state: "pending" };
-      if (next) changes.push(next);
+      const queued = next && coalesce && latest.fields && next.fields && next.op === "update"
+        ? { ...next, fields: [...new Set([...latest.fields, ...next.fields])] }
+        : next;
+      if (queued) changes.push(queued);
       this.store.save({ ...journal, highWater: changeId, changes });
       this.recompute();
-      return structuredClone(next);
+      return structuredClone(queued);
     });
   }
 
@@ -193,7 +210,7 @@ export function createMemoryReminderPersistence(): ReminderPersistence {
   const suspended = new Set<string>();
   let wake: ReminderWakeIndex = { reported: null, effectiveAt: null };
   const run: Runner = async (operation) => operation();
-  return new ReminderPersistence(false, {
+  return new StoredReminderPersistence(false, {
     get: (id) => structuredClone(journals.get(id)),
     list: () => structuredClone([...journals.values()]),
     save: (journal) => { journals.set(journal.id, structuredClone(journal)); },

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { ReminderPersistence, type Reminder, type ReminderChange, type ReminderJournal, type ReminderWakeIndex } from "./reminders.ts";
+import { StoredReminderPersistence, type ReminderPersistence, type Reminder, type ReminderChange, type ReminderJournal, type ReminderWakeIndex } from "./reminders.ts";
 
 export const REMINDER_SCHEMA = `
   CREATE TABLE IF NOT EXISTS reminder_journals (
@@ -37,7 +37,7 @@ export function createSqliteReminderPersistence(database: Database, write: Runne
       changes: changes.map(({ value }) => JSON.parse(value) as ReminderChange),
     };
   };
-  return new ReminderPersistence(true, {
+  return new StoredReminderPersistence(true, {
     get(id) {
       const row = database.query<JournalRow, [string]>("SELECT * FROM reminder_journals WHERE id = ?").get(id);
       return row ? journalFrom(row) : undefined;

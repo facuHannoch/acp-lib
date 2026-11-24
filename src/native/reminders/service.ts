@@ -38,14 +38,19 @@ export interface ReminderServiceOptions {
 
 export function reminderRequest(change: ReminderChange) {
   const { id, conversationId, text, schedule, expiry, status, policyNames } = change.reminder;
+  const includes = (field: NonNullable<ReminderChange["fields"]>[number]) =>
+    change.op === "create" || (change.op === "update" && (change.fields?.includes(field) ?? true));
   return {
     reminderId: id,
     changeId: change.changeId,
     op: change.op,
     payload: {
-      conversationId, text, schedule, status, acceptedAt: change.acceptedAt, attribution: "host",
-      ...(policyNames === undefined ? {} : { policyNames }),
-      ...(expiry?.kind === "harness_default" ? {} : { expiresAfter: expiry?.kind === "duration" ? expiry.milliseconds : expiry }),
+      conversationId, acceptedAt: change.acceptedAt, attribution: "host",
+      ...(includes("text") ? { text } : {}),
+      ...(includes("schedule") ? { schedule } : {}),
+      ...(includes("status") ? { status } : {}),
+      ...(policyNames === undefined || !includes("policyNames") ? {} : { policyNames }),
+      ...(!includes("expiry") || expiry?.kind === "harness_default" ? {} : { expiresAfter: expiry?.kind === "duration" ? expiry.milliseconds : expiry }),
     },
   };
 }
@@ -130,7 +135,13 @@ export class ReminderService {
         }).length >= this.limits.perChannel) {
           throw new ReminderError("limit_exceeded", "Too many reminders for this channel");
         }
-        const pending = await repo.enqueue({ reminder, acceptedAt, op });
+        const fields: NonNullable<ReminderChange["fields"]>[number][] = [];
+        if (edit.text !== undefined) fields.push("text");
+        if (edit.schedule !== undefined) fields.push("schedule");
+        if (edit.schedule !== undefined || edit.expiresAfter !== undefined) fields.push("expiry");
+        if (status !== undefined) fields.push("status");
+        if (edit.policyNames !== undefined) fields.push("policyNames");
+        const pending = await repo.enqueue({ reminder, acceptedAt, op, fields });
         const change = pending && live ? await repo.markMaybeSent(id, pending.changeId) : pending;
         return { reminder, change };
       });
@@ -165,14 +176,4 @@ export class ReminderService {
       },
     };
   }
-}
-
-const services = new WeakMap<object, ReminderService>();
-export function remindersForAgent(agent: { persistence: PersistenceBackend; nativeHarness: { state: string } | null }): ReminderService {
-  let service = services.get(agent);
-  if (!service) {
-    service = new ReminderService({ persistence: agent.persistence, running: () => agent.nativeHarness?.state === "running" });
-    services.set(agent, service);
-  }
-  return service;
 }

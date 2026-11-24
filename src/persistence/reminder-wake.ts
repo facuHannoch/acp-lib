@@ -10,8 +10,10 @@ export type ReminderDeadlineDecision = "accepted" | "unchanged" | "stale" | "mis
 export function compareReminderDeadline(
   current: ReminderDeadline | null,
   incoming: ReminderDeadline,
+  replaceSession = false,
 ): ReminderDeadlineDecision {
-  if (current === null || current.sessionId !== incoming.sessionId) return "accepted";
+  if (current === null) return "accepted";
+  if (current.sessionId !== incoming.sessionId) return replaceSession ? "accepted" : "stale";
   if (incoming.revision > current.revision) return "accepted";
   if (incoming.revision < current.revision) return "stale";
   return current.nextDueAt === incoming.nextDueAt ? "unchanged" : "mismatch";

@@ -69,7 +69,10 @@ test("only a new session replaces the deadline fence", async () => {
     expect(await repository.updateDeadline({ ...deadline, revision: 9 })).toBe("stale");
     expect(await repository.updateDeadline({ ...deadline, nextDueAt: 43 })).toBe("mismatch");
     expect((await repository.wake()).effectiveAt).toBe(42);
-    expect(await repository.updateDeadline({ sessionId: "two", revision: 1, nextDueAt: null })).toBe("accepted");
+    const replacement = { sessionId: "two", revision: 1, nextDueAt: null };
+    expect(await repository.updateDeadline(replacement)).toBe("stale");
+    expect(await repository.updateDeadline(replacement, true)).toBe("accepted");
+    expect(await repository.updateDeadline(deadline)).toBe("stale");
     expect((await repository.wake()).effectiveAt).toBeNull();
   } finally {
     database.close();
@@ -181,6 +184,51 @@ test("schedule edits preserve expiry policy and resume preserves an overdue sche
     const resumed = await channel.resume(item.id);
     expect(resumed.schedule).toEqual(moved.schedule);
     expect(resumed.expiry).toEqual(moved.expiry);
+  } finally {
+    database.close();
+  }
+});
+
+test("blocked entries stay visible and correcting or discarding them preserves the clock", async () => {
+  const { database, repository, channel } = setup();
+  try {
+    const item = await channel.create({ text: "check", schedule: { in: 120_000 } });
+    await repository.markMaybeSent(item.id, 1);
+    await repository.acknowledge(item.id, 1, { reason: "invalid_policy" });
+    expect(await channel.get(item.id)).toMatchObject({ state: "blocked", reason: "invalid_policy" });
+    expect((await repository.wake()).effectiveAt).toBeNull();
+    await channel.update(item.id, { text: "corrected" });
+    expect((await repository.list())[0]?.changes.map(({ state, changeId }) => [state, changeId]))
+      .toEqual([["blocked", 1], ["pending", 2]]);
+    await channel.discardBlocked(item.id);
+    expect((await repository.list())[0]?.highWater).toBe(2);
+    expect(await channel.get(item.id)).toMatchObject({ state: "pending", text: "corrected" });
+  } finally {
+    database.close();
+  }
+});
+
+test("the cap and authorization are checked before journaling", async () => {
+  const { database, repository } = setup();
+  try {
+    const service = new ReminderService({
+      repository,
+      now: () => 0,
+      authorize: (id) => id !== "denied",
+    });
+    const input = { text: "check", schedule: { in: 120_000 } };
+    await expect(service.conversation("denied", true, () => {}).create(input))
+      .rejects.toMatchObject({ code: "unauthorized" });
+    await expect(service.conversation("acp", false, () => {}).create(input))
+      .rejects.toMatchObject({ code: "reminders_unsupported" });
+    const channel = service.conversation("channel", true, () => {});
+    for (let i = 0; i < 20; i++) await channel.create(input);
+    await expect(channel.create(input)).rejects.toMatchObject({ code: "limit_exceeded" });
+    expect(await repository.list()).toHaveLength(20);
+    const first = await service.list({ limit: 13 });
+    const second = await service.list({ after: first.nextCursor!, limit: 13 });
+    expect(new Set([...first.items, ...second.items].map(({ id }) => id)).size).toBe(20);
+    expect(second.nextCursor).toBeNull();
   } finally {
     database.close();
   }
