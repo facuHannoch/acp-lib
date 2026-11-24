@@ -125,6 +125,16 @@ Expose compact dispositions on a post-commit channel
 reason }` with reason `missed | catch_up_limit | overlap | expired | coalesced`.
 Ordinary queued notices still emit 0031 reminder_fired.
 
+Routine expiry emits only routine_disposition with reason expired. The
+disposition may describe one occurrence or a compact range. There is no
+per-occurrence reminder_expired for routines. Decision 0031 still emits
+reminder_expired for a one-off. An expired disposition consumes its
+occurrences but does not establish that the routine is terminal.
+Read the authoritative reminder row for remainingCount, nextRunAt and
+state. At the runtime gate, assert one compact expired range with no
+per-occurrence expiry events, and a final counted expiry that leaves an
+authoritative terminal row with remainingCount zero and nextRunAt null.
+
 ## Unattended guard
 
 The owning host or standalone operator enables the guard through immutable
