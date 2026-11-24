@@ -1,3 +1,4 @@
+import { deferred, launchNativeConnection, type Deferred } from "./connection.ts";
 import { NativeUsageLedger } from "../metering/native/ledger.ts";
 import { summarizeModelUsage } from "./usage.ts";
 import { NativeWorkerDelivery } from "./worker-delivery.ts";
@@ -22,8 +23,7 @@ import { takenSender } from "./delegation-sender.ts";
  * by channel id (the conversation id) and receive that channel's events and reconciled view.
  */
 import {
-  HarnessClient,
-  createStdioTransport,
+  type HarnessClient,
   type ChannelChangeResult,
   type ChannelEvent,
   type ChannelStatusResult,
@@ -38,7 +38,7 @@ import {
 } from "../native-harness/src/client.ts";
 import { openOrCreate, readCompleteMessage, recoverChannel, recoverStoppedReplies } from "./recovery.ts";
 import { createNativeFunctionHost, type NativeFunctionHost, type NativeFunctionsConfig } from "./functions.ts";
-import { prepareNativeLaunch, onceDispose, type AcpLauncher } from "../launcher.ts";
+import type { AcpLauncher } from "../launcher.ts";
 import { noopLogger, type Logger } from "../logger.ts";
 import type { ChannelDesire, ChannelPersistence, PendingChange } from "../persistence/channels.ts";
 import { createMemoryHostRecords, fileHasPendingChannelChanges, submissionRecords, type NativeHostRecords, type Submission } from "./records.ts";
@@ -122,16 +122,7 @@ export interface NativeHarnessHostConfig {
   readonly connect?: () => Promise<NativeConnection>;
 }
 
-const HARNESS_MAIN = new URL("../native-harness/src/interfaces/cli/main.ts", import.meta.url).pathname;
 const REQUIRED_METHODS = ["session/open", "channel/observe", "channel/reconcile", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/message/read"];
-
-interface Deferred<T> { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void }
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void, reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
-  promise.catch(() => undefined); // observed by whoever awaits it; never an unhandled rejection
-  return { promise, resolve, reject };
-}
 
 export class NativeHarnessHost {
   readonly sessionId: string;
@@ -332,7 +323,7 @@ export class NativeHarnessHost {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const opening = (async () => {
-        connection = await (this.#config.connect ?? (() => this.#launch()))();
+        connection = await (this.#config.connect ?? (() => launchNativeConnection(this.#config, this.#log)))();
         this.launches += 1;
         if (deadline.signal.aborted) {
           await connection.kill();
@@ -371,43 +362,6 @@ export class NativeHarnessHost {
     } finally {
       clearTimeout(timer);
     }
-  }
-
-  async #launch(): Promise<NativeConnection> {
-    const command = this.#config.command ?? [process.execPath, HARNESS_MAIN, "serve", "--stdio", "--home", this.#config.home];
-    const launch = await prepareNativeLaunch(this.#config.launcher, { command, env: this.#config.env, cwd: this.#config.cwd });
-    const dispose = onceDispose(launch.dispose);
-    let child: ReturnType<typeof Bun.spawn<"pipe", "pipe", "pipe">>;
-    try {
-      child = Bun.spawn(launch.command, { cwd: launch.spawnCwd, env: launch.spawnEnv, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    } catch (error) {
-      await dispose();
-      throw new HarnessUnavailableError(`the native harness could not be started: ${String(error)}`, { cause: error, code: "start_failed" });
-    }
-    void (async () => {
-      // Diagnostics only: the protocol is on stdout.
-      const text = await new Response(child.stderr).text().catch(() => "");
-      if (text.trim()) this.#log.warn("native_harness_stderr", { text: text.slice(-4000) });
-    })();
-    const transport = createStdioTransport({
-      readable: child.stdout,
-      exited: child.exited,
-      async write(bytes) { child.stdin.write(bytes); await child.stdin.flush(); },
-      async end() { await child.stdin.end(); },
-    });
-    const closed = deferred<void>();
-    transport.onClose(() => closed.resolve());
-    void child.exited.then(() => { closed.resolve(); void dispose(); });
-    const client = new HarnessClient(transport, this.#config.requestTimeoutMs ?? 30_000);
-    return {
-      client,
-      closed: closed.promise,
-      async kill() {
-        client.close(); // closes the harness's input: it stops, recording running turns interrupted
-        const forced = setTimeout(() => child.kill("SIGKILL"), 2000);
-        try { await child.exited; } finally { clearTimeout(forced); }
-      },
-    };
   }
 
   /** Handlers first, then initialize, then load (or create) with the pending channel changes; then reconcile. */
