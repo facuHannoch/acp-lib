@@ -80,7 +80,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   };
   const config = owner.value ?? { version: 1 as const, system: options.systemPrompt, model: { protocol: "scripted" as const, script: "legacy" },
     defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow" as const, tools: {} } } };
-  if (options.imageInput && config.model.imageInput !== true) throw new Error("Image input requires explicit model configuration");
+  if (options.imageInput && (config.model.protocol === "openai-compatible" || config.model.imageInput !== true)) throw new Error("Image input requires explicit model configuration");
   // ---- Tools, decision 0021. The catalog's definitions come from the open;
   // the revoked set mirrors storage; the executor belongs to the connection.
   const revoked = options.catalog ? store.readRevokedTools() : undefined;
