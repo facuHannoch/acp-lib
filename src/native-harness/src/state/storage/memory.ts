@@ -1,4 +1,4 @@
-import { historicalRetrievalProjection, retrievalMessage, timelineTokens, timelineBytes } from "../../util/timeline-text.ts";
+import { historicalCandidate, historicalRetrievalProjection, retrievalMessage, timelineTokens, timelineBytes } from "../../util/timeline-text.ts";
 import { byteLength, entryOverhead, type ContextRow } from "./inference.ts";
 import { checkScriptIdentity } from "./script-identity.ts";
 import type { SessionStorageAdapter, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
@@ -11,7 +11,8 @@ type ContextEntry = ContextRow & { entry: TimelineEntry };
 interface Data {
   bySeq: Map<number, ContextEntry>;
   retrievalReplies: Map<string, number>;
-  recentConversation: TimelineEntry[];
+  historicalCandidates: TimelineEntry[];
+  retrievalCalls: Map<number, Set<string>>;
   retrievalIndex: Map<number, { bytes: number; words: Set<string> }>;
   byTurn: Map<number, ContextEntry[]>;
   inputs: Map<number, ContextEntry[]>;
@@ -24,7 +25,7 @@ interface Data {
   channels: Map<string, ChannelRow>; participants: Set<string>;
   items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[]; conversation: Map<string, TimelineEntry[]>; replies: Map<number, TimelineEntry[]>;
 }
-const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), recentConversation: [], byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
+const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], bySeq: new Map(), retrievalReplies: new Map(), retrievalIndex: new Map(), historicalCandidates: [], retrievalCalls: new Map(), byTurn: new Map(), inputs: new Map(), assistants: new Map(), turnPolicies: new Map(), conversation: new Map(), replies: new Map() });
 const copy = <T>(value: T): T => structuredClone(value);
 const live = (turn: TurnRow) => turn.state.status === "running" || turn.state.status === "suspended";
 
@@ -75,7 +76,8 @@ function memoryTables(data: Data): Tables {
       return recent(data.entries, limit, before(data.entries, cursor)).map(row => header(data.bySeq.get(row.seq)!));
     },
     contextShared(channelId, limit) {
-      return recent(data.recentConversation, limit).filter(row => row.channelId !== channelId)
+      return recent(data.historicalCandidates, limit).filter(row => row.channelId !== channelId &&
+        (row.kind === "participant_message" || (row.message.role === "assistant" && !!row.message.content)))
         .map(row => historicalHeader(data.bySeq.get(row.seq)!));
     },
     contextPolicies(turnId, limit, budget) {
@@ -239,6 +241,19 @@ function memoryTables(data: Data): Tables {
           words: new Set(timelineTokens(searchable.text).map(word => word.folded)) });
         log(() => { data.retrievalIndex.delete(saved.seq); });
       }
+      if (historicalCandidate(saved.message, id => {
+        let calls = data.retrievalCalls.get(saved.turnId);
+        if (!calls) {
+          calls = new Set();
+          data.retrievalCalls.set(saved.turnId, calls);
+          log(() => { data.retrievalCalls.delete(saved.turnId); });
+        }
+        if (!calls.has(id)) {
+          const registered = calls;
+          registered.add(id);
+          log(() => { registered.delete(id); });
+        }
+      }, id => data.retrievalCalls.get(saved.turnId)?.has(id) ?? false)) append(data.historicalCandidates, saved);
       append(data.entries, saved);
       const kind = saved.message.role === "assistant" ? "assistant" : saved.itemId !== undefined ? "input" : "other";
       const bytes = entryOverhead + byteLength(JSON.stringify(saved.message)) +
@@ -253,7 +268,6 @@ function memoryTables(data: Data): Tables {
       const reply = entry.message.role === "assistant" && !!entry.message.content;
       if (reply || entry.kind === "participant_message") {
         indexed(data.conversation, entry.channelId, saved);
-        append(data.recentConversation, saved);
       }
       if (reply) indexed(data.replies, entry.turnId, saved);
     },

@@ -58,3 +58,15 @@ export function historicalRetrievalProjection(message: TimelineEntry["message"])
   if (message.role !== "assistant" || !message.calls.some(call => isTimelineTool(call.name))) return message;
   return { ...message, calls: message.calls.filter(call => !isTimelineTool(call.name)) };
 }
+
+/** Register retrieval calls and decide whether this row spends a historical
+ * candidate slot. Other activity keeps its existing recent-range semantics. */
+export function historicalCandidate(
+  message: TimelineEntry["message"], register: (callId: string) => void, contains: (callId: string) => boolean,
+): boolean {
+  if (message.role === "tool") return !contains(message.callId);
+  if (message.role !== "assistant") return true;
+  const retrieval = message.calls.filter(call => isTimelineTool(call.name));
+  for (const call of retrieval) register(call.id);
+  return !!message.content || !retrieval.length || retrieval.length !== message.calls.length;
+}

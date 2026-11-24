@@ -1,4 +1,4 @@
-import { historicalRetrievalProjection, encodedTimelineToken, retrievalMessage, timelineBytes, timelineIndexText } from "../../util/timeline-text.ts";
+import { historicalCandidate, historicalRetrievalProjection, encodedTimelineToken, retrievalMessage, timelineBytes, timelineIndexText } from "../../util/timeline-text.ts";
 import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import { entryOverhead, type ContextRow } from "./inference.ts";
 import { checkScriptIdentity } from "./script-identity.ts";
@@ -130,7 +130,6 @@ const CHAT = `kind = 'participant_message' OR (${REPLY})`;
 const installReadIndexes = (db: Database) => db.exec(`
   CREATE INDEX IF NOT EXISTS turns_by_channel ON turns(channel_id, turn_id);
   CREATE INDEX IF NOT EXISTS entries_conversation ON entries(channel_id, seq) WHERE ${CHAT};
-  CREATE INDEX IF NOT EXISTS entries_conversation_recent ON entries(seq) WHERE ${CHAT};
   CREATE INDEX IF NOT EXISTS entries_context_inputs ON entries(turn_id, seq) WHERE item_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS entries_context_assistants ON entries(turn_id, seq) WHERE ${ASSISTANT};
   CREATE INDEX IF NOT EXISTS entries_replies ON entries(turn_id, seq) WHERE ${REPLY};
@@ -149,9 +148,11 @@ function refreshRetrieval(db: Database, entries: () => TimelineEntry[]): void {
     INSERT OR IGNORE INTO meta VALUES ('timelineRetrievalV1Dirty', '1');
     UPDATE meta SET value = '1' WHERE key = 'timelineRetrievalV1Dirty'
       AND (NOT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'timeline_retrieval_v1')
-        OR NOT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'retrieval_history_projection'));
+        OR NOT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'retrieval_history_candidates'));
     CREATE VIRTUAL TABLE IF NOT EXISTS timeline_retrieval_v1 USING fts5(tokens, channel UNINDEXED, bytes UNINDEXED, tokenize = ascii);
     CREATE TABLE IF NOT EXISTS retrieval_history_projection (seq INTEGER PRIMARY KEY, message TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS retrieval_history_candidates (seq INTEGER PRIMARY KEY, channel_id TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS retrieval_history_calls (turn_id INTEGER NOT NULL, call_id TEXT NOT NULL, PRIMARY KEY(turn_id, call_id)) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS reverse_entry_reply_ids ON entry_reply_ids(message_id);
     CREATE TRIGGER IF NOT EXISTS timeline_retrieval_insert AFTER INSERT ON entries
       BEGIN UPDATE meta SET value = '1' WHERE key = 'timelineRetrievalV1Dirty'; END;
@@ -163,11 +164,16 @@ function refreshRetrieval(db: Database, entries: () => TimelineEntry[]): void {
   const dirty = db.prepare("SELECT value FROM meta WHERE key = 'timelineRetrievalV1Dirty'");
   try { if ((dirty.get() as { value: string }).value === "0") return; }
   finally { dirty.finalize(); }
-  db.exec("DELETE FROM timeline_retrieval_v1; DELETE FROM retrieval_history_projection");
+  db.exec("DELETE FROM timeline_retrieval_v1; DELETE FROM retrieval_history_projection; DELETE FROM retrieval_history_candidates; DELETE FROM retrieval_history_calls");
   const insert = db.prepare("INSERT INTO timeline_retrieval_v1(rowid, tokens, channel, bytes) VALUES (?, ?, ?, ?)");
   const history = db.prepare("INSERT INTO retrieval_history_projection VALUES (?, ?)");
+  const candidate = db.prepare("INSERT INTO retrieval_history_candidates VALUES (?, ?)");
+  const register = db.prepare("INSERT OR IGNORE INTO retrieval_history_calls VALUES (?, ?)");
+  const contains = db.prepare("SELECT 1 FROM retrieval_history_calls WHERE turn_id = ? AND call_id = ?");
   try {
     for (const entry of entries()) {
+      if (historicalCandidate(entry.message, id => register.run(entry.turnId, id), id => !!contains.get(entry.turnId, id)))
+        candidate.run(entry.seq, entry.channelId);
       const message = retrievalMessage(entry);
       if (message) {
         insert.run(message.seq, timelineIndexText(message.text), message.channel, timelineBytes(message.text));
@@ -175,7 +181,7 @@ function refreshRetrieval(db: Database, entries: () => TimelineEntry[]): void {
         if (projected !== entry.message) history.run(entry.seq, JSON.stringify(projected));
       }
     }
-  } finally { insert.finalize(); history.finalize(); }
+  } finally { insert.finalize(); history.finalize(); candidate.finalize(); register.finalize(); contains.finalize(); }
   db.exec("UPDATE meta SET value = '0' WHERE key = 'timelineRetrievalV1Dirty'");
 }
 
@@ -262,6 +268,9 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     retrievalAll: q("SELECT rowid AS seq, bytes FROM timeline_retrieval_v1 WHERE timeline_retrieval_v1 MATCH ? ORDER BY rowid DESC LIMIT ?"),
     retrievalChannel: q("SELECT rowid AS seq, bytes FROM timeline_retrieval_v1 WHERE timeline_retrieval_v1 MATCH ? AND channel = ? ORDER BY rowid DESC LIMIT ?"),
     retrievalReverse: q("SELECT seq FROM entry_reply_ids WHERE message_id = ?"),
+    historicalCandidate: q("INSERT INTO retrieval_history_candidates VALUES (?, ?)"),
+    historicalRegister: q("INSERT OR IGNORE INTO retrieval_history_calls VALUES (?, ?)"),
+    historicalContains: q("SELECT 1 FROM retrieval_history_calls WHERE turn_id = ? AND call_id = ?"),
     historicalInsert: q("INSERT INTO retrieval_history_projection VALUES (?, ?)"),
     historicalEntry: q(`SELECT e.seq, e.at, e.channel_id, e.turn_id, e.sender, e.kind, e.source_channel_id, e.item_id, e.external_source,
       coalesce((SELECT message FROM retrieval_history_projection WHERE seq = e.seq), e.message) AS message,
@@ -288,9 +297,12 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     contextRecent: q(`SELECT ${contextHeader("'other'")} FROM entries AS e WHERE seq < ? ORDER BY seq DESC LIMIT ?`),
     contextRecentLegacy: q(`SELECT ${contextHeader("'other'", true)} FROM entries AS e WHERE seq < ? ORDER BY seq DESC LIMIT ?`),
     contextShared: q(`WITH recent AS MATERIALIZED (
-        SELECT seq, channel_id FROM entries WHERE ${CHAT} ORDER BY seq DESC LIMIT ?)
+        SELECT seq, channel_id FROM retrieval_history_candidates ORDER BY seq DESC LIMIT ?)
       SELECT ${historyHeader()} FROM recent JOIN entries AS e ON e.seq = recent.seq
-      WHERE recent.channel_id <> ? ORDER BY e.seq DESC`),
+      WHERE recent.channel_id <> ? AND EXISTS (
+        SELECT 1 FROM entries AS c INDEXED BY entries_conversation
+        WHERE c.channel_id = recent.channel_id AND c.seq = recent.seq AND (${CHAT}))
+      ORDER BY e.seq DESC`),
     contextPolicySize: q(`SELECT count(*) AS count, coalesce(sum(bytes), 0) AS bytes FROM (
         SELECT octet_length(name) + 1 AS bytes FROM context_turn_policies WHERE turn_id = ? LIMIT ?
       )`),
@@ -456,6 +468,8 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       e.itemId ?? null, JSON.stringify(e.message), e.externalSource ?? null);
       if (e.messageId !== undefined) s.addReplyId.run(e.seq, e.messageId);
       if (clean) {
+        if (historicalCandidate(e.message, id => s.historicalRegister.run(e.turnId, id), id => !!s.historicalContains.get(e.turnId, id)))
+          s.historicalCandidate.run(e.seq, e.channelId);
         const projected = retrievalMessage(e);
         if (projected) {
           s.retrievalInsert.run(e.seq, timelineIndexText(projected.text), e.channelId, timelineBytes(projected.text));
