@@ -6,6 +6,7 @@ export type ManagedModel = { protocol: "scripted"; script: string }
   | { protocol: "openrouter"; model: string; apiKeyEnv: string };
 export interface ManagedConfig {
   version: 1;
+  limits?: { unattendedTurns: number };
   system: string;
   model: ManagedModel;
   defaultPolicy: string;

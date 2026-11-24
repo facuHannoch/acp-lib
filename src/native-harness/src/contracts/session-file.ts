@@ -3,6 +3,7 @@
  * embedded or required to exist during import. */
 export interface PortableSessionConfig {
   version: 1;
+  limits?: { unattendedTurns: number };
   system: string;
   model: import("./config-permissions.ts").ManagedModel;
   /** Present on session files produced after decision 0016. */

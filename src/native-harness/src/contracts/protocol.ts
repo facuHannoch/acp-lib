@@ -101,7 +101,7 @@ export interface ChannelChangeResult {
 export type DurableErrorCode =
   | "item_conflict" | "not_running" | "stopped" | "invalid_state" | "incompatible"
   | "owner_conflict" | "not_found" | "already_exists" | "busy"
-  | "invalid_archive" | "invalid_policy" | "transfer_limit" | "serialization_error" | "storage_failure"
+  | "invalid_archive" | "invalid_config" | "invalid_policy" | "transfer_limit" | "serialization_error" | "storage_failure"
   /** Decision 0014. The channel is suspending or suspended; a retry of accepted input still returns its recorded outcome. */
   | "channel_suspended"
   /** The channel ID was deleted; it is reserved for good. */
