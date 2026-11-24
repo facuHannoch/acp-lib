@@ -84,20 +84,30 @@ read optional `meta` on `session_info` and `usage` for unmodeled update
 metadata. Narrow the value before reading adapter-specific fields. See
 [Provider notices](CONSUMER_GUIDE.md#provider-notices-retries-warnings-and-failures).
 
-## Native one-off reminders
+## Native reminders
 
 Use `conversation.reminders` on Agent-owned native conversations and page
 all reminder views through `agent.reminders.list({ after, limit })`.
 Check `conversationCapabilities.reminders`. Native support is provisional
 until negotiation. A compatible harness advertises `capabilities.reminders`
-and `reminderLimits`. ACP has no reminder support. Repeating schedules are
-refused with `routines_unavailable`.
+and `reminderLimits`. ACP has no reminder support. For repeating schedules,
+check `conversationCapabilities.routines` after executable open. A
+0032-compatible harness must advertise both routine and unattended guard
+support. Set `harness.config.limits.unattendedTurns` when enabling the guard.
+The setting accepts a positive safe integer or `"unlimited"`. The latter
+binds `Number.MAX_SAFE_INTEGER` and keeps the guard counting while effectively
+leaving unattended paid turns uncapped. A spending cap remains a TODO.
+The harness persists the numeric value and refuses later attempts to change
+it. `"unlimited"` and the numeric maximum are equivalent.
 
 Custom backends can optionally expose a `reminders` repository and the
 `capabilities.reminders` flag. SQLite supplies the repository. Without
 durable storage, stopped mutations that need to write reject with `reminders_unavailable`
 as the `ReminderError.code`. SQLite journals
-offline changes for the next executable open. Reads while stopped show
+offline changes for the next executable open. The library keeps SQLite schema
+22 and accepts existing one-off journal rows. Routine and retry metadata fit
+in the existing JSON values. A 0032 harness binds its unattended-turn guard
+using its own session format 8. Reads while stopped show
 last-confirmed cached rows and local intents. A refused intent stays visible
 as blocked. Use `discardBlocked` to remove it locally and create a new ID
 when correcting a blocked create. The harness remains authoritative.
@@ -106,7 +116,11 @@ The local `reminder_intent_recorded`, `reminder_intent_confirmed`,
 `reminder_intent_blocked` and `reminder_intent_discarded` events track
 writes. The harness separately reports `reminder_changed`, `reminder_fired`,
 `reminder_cancelled` and `reminder_expired`. A fired event means a notice
-was queued. Historical events are not replayed.
+was queued. Routine consumers can also receive `routine_disposition` and
+`routine_migration_blocked`. Extend exhaustive event switches and handle
+routine rows, which can be active after a fire and may carry remaining count,
+timezone data and migration status. Historical events are not replayed.
+See [Reminder routines](CONSUMER_GUIDE.md#reminder-routines).
 
 Only the file-backed SQLite owner schedules a cold wake, while the Agent
 is running. Explicit harness stop retains the wake. Closing the Agent

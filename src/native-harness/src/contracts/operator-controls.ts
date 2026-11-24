@@ -11,6 +11,7 @@ export interface OpenResult {
   remindersNext?: string;
   nextDueAt?: string | null;
   reminderRevision?: number;
+  unattendedTurnGuard?: { maxConsecutiveTurns: number } | null;
 }
 
 export interface ChannelObservation {

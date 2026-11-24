@@ -16,12 +16,12 @@ export interface ChannelScheduler {
 }
 
 /** Status is a pure reading of one snapshot plus this process's own state. */
-export function sessionStatus(view: Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">, stopped: boolean, incompatible = false): SessionStatus {
+export function sessionStatus(view: Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">, stopped: boolean, incompatible = false, readyChannels?: readonly string[]): SessionStatus {
   const working = view.turns.some(turn => turn.state.status === "running");
   // Input pending on a channel that cannot run (suspended, suspending) is waiting
   // for a resume, not execution.
   const open = new Set(view.channels.filter(channel => channel.lifecycle === "open").map(channel => channel.channelId));
-  const pending = view.items.some(item => item.milestone === "received" && open.has(item.channelId));
+  const pending = readyChannels ? readyChannels.length > 0 : view.items.some(item => item.milestone === "received" && open.has(item.channelId));
   const sessionRuns = view.session.lifecycle === "running";
   return {
     sessionId: view.session.sessionId, revision: view.revision, lifecycle: view.session.lifecycle,
@@ -70,13 +70,17 @@ export function createChannelScheduler(
   const status = () => {
     const read = storage.readExecution();
     if (!read.ok) throw new Error(read.error.message);
-    return sessionStatus(read.value, stopped, !compatible());
+    const guard = storage.unattendedGuard();
+    if (!guard.ok) throw new Error(guard.error.message);
+    const ready = guard.value === undefined ? undefined : storage.readReadyChannels(limits);
+    if (ready && !ready.ok) throw new Error(ready.error.message);
+    return sessionStatus(read.value, stopped, !compatible(), ready?.value.channels);
   };
   /** Channels whose pending input this process may start: open ones only. A
    * suspended channel's backlog waits for its own resume and is not "waiting"
    * here, so it never keeps the session from reporting idle. */
   function rescan() {
-    const current = storage.readReadyChannels();
+    const current = storage.readReadyChannels(limits);
     if (!current.ok) throw new Error(current.error.message);
     lifecycle = current.value.lifecycle;
     waiting.clear();

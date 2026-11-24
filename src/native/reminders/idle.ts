@@ -1,8 +1,7 @@
+import type { ConditionalStopResult } from "../../native-harness/src/client.ts";
 import type { NativeHostState } from "../host.ts";
 import type { ReminderTimer } from "./supervisor.ts";
 import { wallReminderTimer } from "./supervisor.ts";
-
-export type IdleStopResult = { stopped: true } | { stopped: false; reason: "busy" | "next_due_soon" };
 
 export function idleMilliseconds(value: number | undefined, name: string): number | undefined {
   if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
@@ -14,7 +13,7 @@ export function idleMilliseconds(value: number | undefined, name: string): numbe
 interface IdleHost {
   state(): NativeHostState;
   window(): Promise<number | undefined>;
-  stop(window: number, stillIdle: () => boolean): Promise<IdleStopResult>;
+  stop(window: number, stillIdle: () => boolean): Promise<ConditionalStopResult>;
   error(error: unknown): void;
 }
 

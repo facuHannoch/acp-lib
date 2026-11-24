@@ -1311,9 +1311,8 @@ export async function listReminderPages(agent: Agent) {
 - **Schedule.** Use `{ at: epochMilliseconds }` or `{ in: delayMilliseconds }`.
   The library converts relative time to an absolute time at acceptance and
   keeps it across retries and restarts. The bundled harness requires at least
-  two minutes of lead time. It advertises `maxActiveRoutinesPerChannel: 0`.
-  `every` and `cron` requests fail with `routines_unavailable`; routines
-  need a separate harness release.
+  two minutes of lead time. See [Reminder routines](#reminder-routines) for
+  interval and cron schedules on compatible harnesses.
 - **Expiry.** Grace starts at the scheduled instant. Omit `expiresAfter`
   for twice the lead time, clamped to five minutes through 24 hours with the
   bundled limits. Supply an integer millisecond duration within those bounds
@@ -1366,7 +1365,11 @@ view.
 | Local | `unauthorized` | The configured authorization callback refused the change. |
 | Local | `reminders_unavailable` | The mutation needs a live reminder service or durable storage. Agent-owned storage and service setup are required for this API. |
 | Local | `reminders_unsupported` | The conversation or connected harness lacks reminder support. |
-| Local | `routines_unavailable` | Repeating schedules are disabled. |
+| Local | `routines_unavailable` | The peer lacks routine or unattended guard support, or executable open has yet to confirm an effective guard. |
+| Local or harness startup | `invalid_config` | The unattended-turn limit is invalid or differs from the saved limit. |
+| Harness request | `storage_failure` | A retryable storage or proof-budget failure returned no receipt. A live routine mutation that still has no receipt after retry returns a pending view. Retrying the same input reuses the saved ID and change. |
+| Startup | `reminder_batch_retry_exhausted` | Three startup attempts returned a storage failure. The session stays stopped and the frozen batch remains unacknowledged. See the recovery steps below. |
+| Harness | `unattended_guard_required` | Routine activation was blocked because the session lacks an enabled guard. |
 | Harness | `invalid_policy` | The reminder names a policy the harness does not accept. |
 | Harness | `channel_missing`, `channel_retired` | The destination channel is missing or retired. |
 | Harness | `invalid_schedule` | The harness refused the scheduled time, acceptance anchor or expiry. |
@@ -1387,11 +1390,119 @@ Subscribe on the conversation for live updates. Extend exhaustive
 | `reminder_changed` | The harness reported a row change, including an agent-created reminder. |
 | `reminder_fired` | A notice was queued. Use its `noticeId` to relate it to inbox activity. This event does not indicate a completed turn. |
 | `reminder_cancelled`, `reminder_expired` | The harness cancelled or expired the reminder. |
+| `routine_disposition` | A routine processed a range of occurrences. Includes `reminderId`, `firstScheduledAt`, `lastScheduledAt`, `count` and `reason` (`missed`, `catch_up_limit`, `overlap`, `expired` or `coalesced`). |
+| `routine_migration_blocked` | A timezone data update held a cron routine. Includes `reminderId`, `fromVersion`, `targetVersion` and `cause` (`invalid_schedule` or `proof_budget`). |
 
 The harness tools `schedule_reminder`, `list_reminders` and
 `cancel_reminder` are scoped to the calling channel and subject to its
 tool policy. Historical events are not replayed. Read reminder rows and
 normal inbox or turn history after reconnect.
+
+#### Reminder routines
+
+A 0032-compatible native harness advertises both `routines` and
+`unattendedTurnGuard`. The Agent enables authoring when an executable open
+also confirms a non-null guard. Check `conversationCapabilities.routines`
+after that open. Routine authoring requires an executable open in this Agent
+process, including for offline writes after a restart. Guard evidence stays
+in memory and each connection obtains it from its own executable open.
+The bundled one-off harness reports a zero routine cap.
+
+Set `AgentConfig.harness.config.limits.unattendedTurns` to a positive safe
+integer or `"unlimited"` to enable the guard on session creation or on the first executable
+open that enables it for an existing session. There is no default. The
+harness persists the bound value and later opens can omit it. Setting a
+different value fails with `invalid_config`. Explicit configuration on a
+peer lacking support fails as incompatible. Inspection cannot enable the
+guard.
+
+`"unlimited"` sends `9007199254740991` (`Number.MAX_SAFE_INTEGER`). The
+guard stays on and keeps counting, with a limit high enough that it
+effectively leaves unattended paid turns uncapped. A spending cap is
+still a TODO. Both spellings bind the same numeric value.
+
+The guard counts consecutive turns per channel that begin without
+owning-host participant input. A taken participant item resets the count.
+Automated work should use notices. When the limit is exhausted, the
+channel's routines wait for eligible participant input and contribute no
+routine wake. No disposition is emitted when the guard holds work.
+
+Use the existing reminder API to author a routine after startup.
+
+```ts
+import type { ReminderCreate } from "@qlairoslabs/acp-client";
+
+export const checkQueue = {
+  text: "Check the queue and summarize new items.",
+  schedule: { every: 600_000, count: 6 },
+  missedRuns: "coalesce",
+  overlap: "skip",
+} satisfies ReminderCreate;
+
+export const reviewCalendar = {
+  text: "Review today's calendar.",
+  schedule: { cron: "0 9 * * 1-5", timezone: "Europe/Paris" },
+  expiresAfter: null,
+} satisfies ReminderCreate;
+```
+
+Pass either input to `conversation.reminders.create(input)`.
+
+- Intervals take milliseconds and an optional epoch-millisecond `startAt`.
+  The first occurrence defaults to acceptance plus one interval. Cron accepts
+  five numeric fields with wildcards, lists, ranges and steps. Both day
+  fields must match. Supply a timezone. The harness validates the zone and
+  proves the spacing between occurrences.
+- Use a positive safe integer `count` or an inclusive epoch-millisecond
+  `until`. Omitting both allows the routine to continue indefinitely.
+  Each processed occurrence consumes count, including skipped ones. A
+  routine can remain active after `reminder_fired`.
+- A schedule edit replaces the remaining recurrence and resets its anchor
+  and bound. The schedule kind stays the same. Text, grace, policy and
+  lifecycle edits preserve the anchor. Default grace is twice the time to
+  the next calendar match, clamped to five minutes through 24 hours. Explicit
+  durations and `null` are preserved unless replaced. Read a confirmed row
+  for the next occurrence's expiry and any remaining count.
+- `missedRuns` defaults to `coalesce`, which produces one notice for the
+  live backlog. `skip` consumes it without a notice. `each` queues a
+  bounded backlog. `overlap` defaults to `skip` and also accepts `queue`.
+  The harness advertises a 600,000 ms minimum interval, 20 active routines
+  per channel and 10 catch-up notices per routine per eligibility episode.
+  The harness enforces its active cap.
+- Offline mutations require durable storage and guard confirmation in this process.
+  At startup, cancellations, pauses and other non-activating changes go
+  before due work. Creates, resumes and schedule replacements wait for
+  the connection's executable open and retain their original acceptance time.
+  A held entry also holds any later changes to its ID. An entirely unsent
+  create can be cancelled locally. A create followed by pause is sent live
+  in order, and a due occurrence may commit between those requests. An
+  offline schedule replacement can take effect after overdue work from the
+  old calendar. Held changes alone do not launch the harness. If open
+  confirms no effective guard, the harness can record
+  `unattended_guard_required` when the queued activation is sent live.
+
+If startup exhausts its reminder batch retries, correct the storage cause
+and start again to replay the exact frozen batch. The harness does not
+identify the failing entry. To recover by elimination, stop the harness,
+call `conversation.reminders.discardExhausted(reminderId)` for one
+reminder, then start the harness again. Repeat if the remaining batch still
+fails. The call returns `true` when it removes that reminder's frozen
+entries. Later pending entries for the same reminder stay queued. If they
+target a discarded create that never committed, they can come back blocked
+with `not_found`. Use `discardBlocked(reminderId)` to clear them.
+
+Discard removes local intent only. If the harness already committed a
+discarded create, the reminder can still fire and the next startup sweep
+will show it as a confirmed row. Check that row before creating a new
+reminder. A new ID creates a duplicate if the original is still alive.
+
+Routine events are live, and identical frames are all delivered. An
+`expired` disposition counts occurrences. The client refreshes the row to
+learn the remaining count, next run and terminal state. Within one commit a disposition precedes the fire
+it describes. A migration hold precedes the updated row, whose state is
+`blocked` with `blockedReason: "invalid_schedule"` and `timezoneMigration`.
+The row remains visible and contributes no wake while held. Use confirmed
+rows after reconnect.
 
 #### Cold wake and idle stop
 

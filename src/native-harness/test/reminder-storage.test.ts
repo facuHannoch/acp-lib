@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createMemoryStorageAdapter } from "../src/state/storage/memory.ts";
 import { createSqliteStorageAdapter } from "../src/state/storage/sqlite.ts";
 import type { StorageResult } from "../src/contracts/storage.ts";
-import type { ReminderChange } from "../src/contracts/reminders.ts";
+import type { OneOffReminderChange } from "../src/contracts/reminders.ts";
 
 const identity = { sessionId: "reminders", compatibilityKey: "test" };
 const instant = Date.parse("2026-11-24T12:00:00.000Z");
@@ -16,7 +16,7 @@ function value<T>(result: StorageResult<T>): T {
   if (!result.ok) throw new Error(result.error.message);
   return result.value;
 }
-function create(id: string): ReminderChange {
+function create(id: string): OneOffReminderChange {
   return { reminderId: id, changeId: 1, op: "create", payload: {
     channel: "alpha", schedule: { at: due }, text: "Check the result", acceptedAt: new Date(instant).toISOString(),
   } };
@@ -65,7 +65,7 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: format activati
     expect(value(store.exportArchive()).archiveVersion).toBe(6);
     value(store.createChannel({ channelId: "alpha" }));
     expect(value(store.changeReminder(blocked, instant))).toMatchObject({ outcome: "blocked", reason: "channel_missing" });
-    const changed: ReminderChange = { ...blocked, changeId: 2, op: "create", payload: {
+    const changed: OneOffReminderChange = { ...blocked, changeId: 2, op: "create", payload: {
       channel: "alpha", text: "corrected", schedule: { at: due }, acceptedAt: new Date(instant).toISOString(),
     } };
     expect(value(store.changeReminder(changed, instant))).toMatchObject({ outcome: "blocked", reason: "conflict" });

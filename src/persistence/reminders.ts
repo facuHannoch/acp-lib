@@ -1,3 +1,6 @@
+import { activatesRoutine } from "../native/reminders/routine-guard.ts";
+import type { MissedRuns, RoutineOverlap } from "../native/reminders/routine-schedule.ts";
+import type { TimezoneMigration } from "../native/reminders/routine-wire.ts";
 import type { WireChange } from "../native/reminders/wire.ts";
 import type { ReminderExpiry, ReminderExpiryPolicy, ReminderSchedule } from "../native/reminders/schedule.ts";
 import { defaultReminderLimits } from "../native/reminders/limits.ts";
@@ -21,6 +24,11 @@ export interface Reminder {
   readonly lastOccurrenceId?: string;
   readonly noticeId?: string;
   readonly blockedReason?: string;
+  readonly remainingCount?: number;
+  readonly missedRuns?: MissedRuns;
+  readonly overlap?: RoutineOverlap;
+  readonly timezoneVersion?: string;
+  readonly timezoneMigration?: TimezoneMigration;
   readonly unreconciled?: boolean;
   readonly missing?: boolean;
 }
@@ -28,8 +36,9 @@ export interface Reminder {
 export interface ReminderChangeInput {
   readonly reminder: Reminder;
   readonly acceptedAt: number;
+  readonly retryKey?: string;
   readonly op: "create" | "update" | "cancel";
-  readonly fields?: readonly ("text" | "schedule" | "expiry" | "status" | "policyNames")[];
+  readonly fields?: readonly ("text" | "schedule" | "expiry" | "status" | "policyNames" | "missedRuns" | "overlap")[];
 }
 
 export interface ReminderChange extends ReminderChangeInput {
@@ -55,6 +64,8 @@ export interface ReminderWakeIndex {
   readonly reported: ReminderDeadline | null;
   readonly effectiveAt: number | null;
   readonly supported?: boolean;
+  readonly replacementAttempted?: string;
+  readonly startupRetry?: { sessionId: string; entries: readonly WireChange[]; exhausted?: true };
 }
 
 export interface ReminderStorage {
@@ -74,7 +85,7 @@ type Runner = <T>(operation: () => T) => Promise<T>;
 export interface ReminderPersistence {
   readonly durable: boolean;
   list(): Promise<readonly ReminderJournal[]>;
-  wake(): Promise<ReminderWakeIndex>;
+  wake(routineGuardConfirmed?: boolean): Promise<ReminderWakeIndex>;
   updateDeadline(deadline: ReminderDeadline, replaceSession?: boolean): Promise<ReminderDeadlineDecision>;
   setConversationSuspended(conversationId: string, suspended: boolean): Promise<void>;
   deleteConversation(conversationId: string): Promise<void>;
@@ -82,10 +93,14 @@ export interface ReminderPersistence {
   markMaybeSent(id: string, changeId: number, wire?: WireChange): Promise<ReminderChange | undefined>;
   acknowledge(id: string, changeId: number, outcome: { confirmed: Reminder } | { reason: string }): Promise<boolean>;
   discardBlocked(id: string): Promise<void>;
+  discardExhausted(id: string, conversationId: string): Promise<boolean>;
   observe(reminder: Reminder): Promise<void>;
   restoreStaged(change: ReminderChange): Promise<void>;
   quarantine(id: string, changeId: number, reason: string): Promise<void>;
+  deferStorageFailure(id: string, changeId: number): Promise<void>;
   setSupported(supported: boolean): Promise<void>;
+  setReplacementAttempted(sessionId: string | undefined): Promise<void>;
+  setStartupRetry(retry: ReminderWakeIndex["startupRetry"]): Promise<void>;
   replaceSession(sessionId: string): Promise<void>;
   completeSweep(seen: ReadonlySet<string>): Promise<void>;
 }
@@ -106,13 +121,16 @@ export class StoredReminderPersistence implements ReminderPersistence {
     return this.read(() => this.store.list());
   }
 
-  wake(): Promise<ReminderWakeIndex> {
-    return this.read(() => this.store.wake());
+  wake(routineGuardConfirmed = false): Promise<ReminderWakeIndex> {
+    return this.read(() => routineGuardConfirmed ? this.deriveWake(this.store.wake().reported, true) : this.store.wake());
   }
 
-  private recompute(reported = this.store.wake().reported): void {
-    const supported = this.store.wake().supported;
-    const candidates = supported === false ? [] : this.store.list().flatMap((journal) => journal.changes.filter(change => isWakeSchedule(change.reminder.schedule)).map((change) => {
+  private deriveWake(reported: ReminderWakeIndex["reported"], routineGuardConfirmed: boolean): ReminderWakeIndex {
+    const { supported, replacementAttempted, startupRetry } = this.store.wake();
+    const candidates = supported === false ? [] : this.store.list().flatMap(journal => journal.changes.filter(change => {
+      const schedule = change.reminder.schedule;
+      return isWakeSchedule(schedule) || (routineGuardConfirmed && change.op === "create" && activatesRoutine(change));
+    }).map(change => {
       const latest = journal.changes.at(-1)?.reminder ?? change.reminder;
       const { schedule } = change.reminder;
       return {
@@ -123,11 +141,17 @@ export class StoredReminderPersistence implements ReminderPersistence {
         retiring: false,
       };
     }));
-    this.store.saveWake({
+    return {
       reported,
       ...(supported === undefined ? {} : { supported }),
+      ...(replacementAttempted === undefined ? {} : { replacementAttempted }),
+      ...(startupRetry === undefined ? {} : { startupRetry }),
       effectiveAt: supported === false ? null : deriveReminderWake(reported, candidates, defaultReminderLimits.oneShotLeadMs),
-    });
+    };
+  }
+
+  private recompute(reported = this.store.wake().reported): void {
+    this.store.saveWake(this.deriveWake(reported, false));
   }
 
   updateDeadline(deadline: ReminderDeadline, replaceSession = false): Promise<ReminderDeadlineDecision> {
@@ -162,7 +186,9 @@ export class StoredReminderPersistence implements ReminderPersistence {
       const journal = this.store.get(id) ?? { id, conversationId, highWater: 0, changes: [] };
       if (journal.conversationId !== conversationId) throw new Error("Reminder belongs to another conversation");
       const latest = journal.changes.at(-1);
-      const coalesce = latest?.state === "pending" && !latest.frozenWire && !(latest.op === "create" && change.reminder.status === "paused");
+      const separateRoutineStop = latest && activatesRoutine(latest) &&
+        (change.op === "cancel" || change.fields?.includes("status") && change.reminder.status === "paused");
+      const coalesce = !separateRoutineStop && latest?.state === "pending" && !latest.frozenWire && !(latest.op === "create" && change.reminder.status === "paused");
       const dropCreate = change.op === "cancel" && journal.changes[0]?.op === "create"
         && journal.changes.every(entry => entry.state === "pending");
       const changes = dropCreate ? [] : coalesce ? journal.changes.slice(0, -1) : [...journal.changes];
@@ -261,10 +287,33 @@ export class StoredReminderPersistence implements ReminderPersistence {
     });
   }
 
+  deferStorageFailure(id: string, changeId: number): Promise<void> {
+    return this.write(() => {
+      const journal = this.store.get(id);
+      if (!journal) return;
+      this.store.save({ ...journal, changes: journal.changes.map(change =>
+        change.changeId === changeId && change.state === "maybe_sent" ? { ...change, reason: "storage_failure" } : change) });
+    });
+  }
+
   setSupported(supported: boolean): Promise<void> {
     return this.write(() => {
       this.store.saveWake({ ...this.store.wake(), supported });
       this.recompute();
+    });
+  }
+
+  setReplacementAttempted(sessionId: string | undefined): Promise<void> {
+    return this.write(() => {
+      const { replacementAttempted: _previous, ...wake } = this.store.wake();
+      this.store.saveWake(sessionId === undefined ? wake : { ...wake, replacementAttempted: sessionId });
+    });
+  }
+
+  setStartupRetry(startupRetry: ReminderWakeIndex["startupRetry"]): Promise<void> {
+    return this.write(() => {
+      const { startupRetry: _previous, ...wake } = this.store.wake();
+      this.store.saveWake(startupRetry ? { ...wake, startupRetry } : wake);
     });
   }
 
@@ -277,7 +326,8 @@ export class StoredReminderPersistence implements ReminderPersistence {
           ...(row.confirmed ? { confirmed: { ...row.confirmed, unreconciled: true }, receiptVersion: undefined } : {}),
         });
       }
-      this.recompute({ sessionId, revision: 0, nextDueAt: null });
+      const { replacementAttempted: _attempted, ...wake } = this.deriveWake({ sessionId, revision: 0, nextDueAt: null }, false);
+      this.store.saveWake(wake);
     });
   }
 
@@ -287,6 +337,21 @@ export class StoredReminderPersistence implements ReminderPersistence {
         if (!row.confirmed || seen.has(row.id) || row.changes.some(change => change.state === "pending" || change.state === "maybe_sent")) continue;
         this.store.save({ ...row, confirmed: { ...row.confirmed, unreconciled: false, missing: true } });
       }
+    });
+  }
+
+  discardExhausted(id: string, conversationId: string): Promise<boolean> {
+    return this.write(() => {
+      const journal = this.store.get(id);
+      const { startupRetry, ...wake } = this.store.wake();
+      if (!startupRetry?.exhausted || journal?.conversationId !== conversationId) return false;
+      const discarded = new Set(startupRetry.entries.filter(entry => entry.reminderId === id).map(entry => entry.changeId));
+      if (!discarded.size) return false;
+      const remaining = startupRetry.entries.filter(entry => entry.reminderId !== id);
+      this.store.save({ ...journal, changes: journal.changes.filter(change => !discarded.has(change.changeId)) });
+      this.store.saveWake(remaining.length ? { ...wake, startupRetry: { ...startupRetry, entries: remaining } } : wake);
+      this.recompute();
+      return true;
     });
   }
 

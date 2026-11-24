@@ -18,6 +18,7 @@ export interface InitializeParams {
 }
 export interface ProtocolConfig {
   version: 1;
+  limits?: { unattendedTurns: number };
   system: string;
   model: import("./config-permissions.ts").ManagedModel;
   defaultPolicy?: string;
@@ -43,6 +44,12 @@ export interface PushParams {
   channel: string;
   item: { id: string; kind: "user_message"; sender: string; content: { type: "text"; text: string }[]; policy?: string | null; delivery?: "queue"; wake?: true };
 }
+export interface InitializeResult {
+  protocolVersion: 1;
+  harness: { version: string };
+  description: Description;
+}
+
 export interface Description {
   reminderLimits?: import("./reminders.ts").ReminderLimits;
   configOptions: unknown[]; commands: unknown[]; policies: string[];
@@ -54,7 +61,7 @@ export interface Description {
      * reject the field. */
     startupChannelChanges?: true;
     /** Decision 0021: tool catalogs, `functions/call` callbacks and invocation records. */
-    functions?: true; reminders?: true };
+    functions?: true; reminders?: true; routines?: true; unattendedTurnGuard?: true };
 }
 
 // ---- Channel changes applied at open, decision 0020.
@@ -94,7 +101,7 @@ export interface ChannelChangeResult {
 export type DurableErrorCode =
   | "item_conflict" | "not_running" | "stopped" | "invalid_state" | "incompatible"
   | "owner_conflict" | "not_found" | "already_exists" | "busy"
-  | "invalid_archive" | "invalid_policy" | "transfer_limit" | "serialization_error" | "storage_failure"
+  | "invalid_archive" | "invalid_config" | "invalid_policy" | "transfer_limit" | "serialization_error" | "storage_failure"
   /** Decision 0014. The channel is suspending or suspended; a retry of accepted input still returns its recorded outcome. */
   | "channel_suspended"
   /** The channel ID was deleted; it is reserved for good. */
@@ -246,7 +253,7 @@ export interface DurableMethods extends ModelExecutionMethods, ReminderMethods, 
  * events. Delivered through `subscribeSession` on the transport and endpoint. */
 export interface RpcSessionNotification { jsonrpc: "2.0"; method: "session/event"; params: SessionEvent | import("./reminders.ts").ReminderSessionEvent }
 export interface Methods {
-  initialize: { params: InitializeParams; result: { protocolVersion: 1; harness: { version: string }; description: Description } };
+  initialize: { params: InitializeParams; result: InitializeResult };
   /** Validate without opening a session or starting execution. */
   "config/validate": { params: { config: unknown }; result: { valid: true } };
   "approval/respond": { params: { requestId: string; decision: import("./config-permissions.ts").ApprovalAnswer }; result: { accepted: true } };

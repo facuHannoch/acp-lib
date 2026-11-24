@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
-import { NativeHarnessHost, HarnessUnavailableError, type NativeHostState } from "../../src/native/host.ts";
+import { NativeHarnessHost, HarnessIncompatibleError, HarnessUnavailableError, type NativeHostState } from "../../src/native/host.ts";
 import { createAgentReminderService } from "../../src/native/reminders/service.ts";
 import { ReminderWakeSupervisor } from "../../src/native/reminders/supervisor.ts";
 import { SqliteAgentPersistence } from "../../src/persistence/sqlite-backend.ts";
 import { nativeRig, until } from "./support.ts";
 import { ReminderClock } from "./fixtures/reminder-clock.ts";
 
+import { HarnessClientError } from "../../src/native-harness/src/client.ts";
+import { ReminderPeer } from "./fixtures/reminder-peer.ts";
 const settle = async () => { for (let index = 0; index < 8; index++) await Promise.resolve(); };
 
 function wakeRig() {
@@ -184,5 +186,104 @@ test("an exhausted reminder wake still fails outstanding conversation work", asy
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(HarnessUnavailableError);
     expect(clock.delays).toEqual([]);
+  } finally { await fixture.clean(); }
+});
+
+test("a held routine alone never arms or launches a stopped SQLite owner", async () => {
+  const fixture = await nativeRig();
+  const clock = new ReminderClock();
+  fixture.harness.reminderTimer = clock;
+  try {
+    const agent = await fixture.open();
+    const host = agent.nativeHarness!;
+    const repository = agent.persistence.reminders!;
+    const sessionId = agent.id;
+    await repository.enqueue({ acceptedAt: 0, op: "create", reminder: {
+      id: "held", conversationId: "routine-channel", schedule: { cron: "*/10 * * * *", timezone: "Etc/UTC" },
+      text: "held routine", expiry: { kind: "harness_default" }, expiryPolicy: { kind: "default" },
+      status: "active", scheduleAcceptedAt: 0, missedRuns: "coalesce", overlap: "skip",
+    } });
+    await repository.updateDeadline({ sessionId, nextDueAt: 180_000, revision: 1 });
+    await until(() => clock.delays.length === 1);
+    await repository.updateDeadline({ sessionId, nextDueAt: null, revision: 2 });
+    await until(() => clock.delays.length === 0);
+    clock.tickAt(600_000);
+    await settle();
+    expect(clock.delays).toEqual([]);
+    expect(host.state).toBe("stopped");
+    expect(host.launches).toBe(0);
+    expect((await repository.list())[0]?.changes[0]?.state).toBe("pending");
+  } finally { await fixture.clean(); }
+});
+
+test("automatic reopen stops on invalid_config and explicit restart retries after correction", async () => {
+  const fixture = await nativeRig();
+  const peer = new ReminderPeer();
+  let first: Awaited<ReturnType<ReminderPeer["connect"]>> | undefined;
+  let attempts = 0;
+  fixture.harness.connect = async () => {
+    const link = await peer.connect();
+    if (++attempts === 1) first = link;
+    if (attempts === 2) link.client.openSession = async () => {
+      throw new HarnessClientError("invalid_config", "guard configuration changed");
+    };
+    return link;
+  };
+  try {
+    const agent = await fixture.open();
+    const host = agent.nativeHarness!;
+    const detach = host.attach("outstanding", { busy: () => true, reconcile() {}, event() {}, failed() {}, disconnected() {} });
+    await host.start();
+    await first!.kill();
+    await until(() => host.state === "failed" || attempts > 2, "terminal reopen outcome");
+    expect(attempts).toBe(2);
+    expect(host.failure).toMatchObject({ code: "invalid_config" });
+    detach();
+    await host.restart();
+    expect(host.state).toBe("running");
+    expect(attempts).toBe(3);
+  } finally { await fixture.clean(); }
+});
+
+test("a cold wake stops on incompatible harness and allows a later explicit start", async () => {
+  const fixture = await nativeRig();
+  const clock = new ReminderClock();
+  const peer = new ReminderPeer();
+  const incompatible = new HarnessIncompatibleError("unsupported guard");
+  let attempts = 0;
+  fixture.harness.reminderTimer = clock;
+  fixture.harness.connect = async () => {
+    if (++attempts === 1) throw incompatible;
+    return peer.connect();
+  };
+  try {
+    const agent = await fixture.open();
+    const host = agent.nativeHarness!;
+    await agent.persistence.reminders!.updateDeadline({ sessionId: peer.sessionId, nextDueAt: 0, revision: 1 });
+    await until(() => clock.delays.length === 1, "armed cold wake");
+    clock.tickAt(1_000);
+    await until(() => fixture.logs.some(([, event]) => event === "reminder_wake_failed"), "reported incompatible wake");
+    expect(host.failure).toBe(incompatible);
+    expect(host.state).toBe("stopped");
+    expect(clock.delays).toEqual([]);
+    expect(attempts).toBe(1);
+    await host.start();
+    expect(host.state).toBe("running");
+    expect(attempts).toBe(2);
+  } finally { await fixture.clean(); }
+});
+
+test("discardExhausted refuses while the native host is running", async () => {
+  const fixture = await nativeRig();
+  const peer = new ReminderPeer();
+  fixture.harness.connect = () => peer.connect();
+  try {
+    const agent = await fixture.open();
+    const host = agent.nativeHarness!;
+    await host.start();
+    const conversation = await agent.conversations.create();
+    await expect(conversation.reminders.discardExhausted("absent")).rejects.toMatchObject({ code: "conflict" });
+    await host.stop();
+    expect(await conversation.reminders.discardExhausted("absent")).toBe(false);
   } finally { await fixture.clean(); }
 });

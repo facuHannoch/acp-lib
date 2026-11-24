@@ -1,9 +1,10 @@
 import type { ConversationCapabilities } from "../conversation-controller/capabilities.ts";
 
-export function nativeConversationCapabilities(reminders = true): ConversationCapabilities {
+export function nativeConversationCapabilities(reminders = true, routines = false): ConversationCapabilities {
   return {
     nativeSteering: true,
     reminders,
+    ...(routines ? { routines } : {}),
     // The harness times out model calls, approvals and tools itself and reports the outcome.
     supervision: "backend",
     freshContext: false,

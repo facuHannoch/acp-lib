@@ -1,15 +1,15 @@
+import { hasRoutineCronShape, isRoutineSchedule, validInstant, type RoutineBound, type RoutineSchedule } from "./routine-schedule.ts";
+import type { KnownReminderBlockReason } from "./wire.ts";
 import { defaultReminderLimits, type ReminderLimits } from "./limits.ts";
 
 export type ReminderSchedule =
   | { readonly at: number }
-  | { readonly every: number; readonly startAt: number }
-  | { readonly cron: string; readonly timezone: string };
+  | RoutineSchedule<number, { readonly startAt: number }>;
 
 export type ReminderScheduleInput =
   | { readonly at: number }
   | { readonly in: number }
-  | { readonly every: number; readonly startAt?: number }
-  | { readonly cron: string; readonly timezone: string };
+  | RoutineSchedule<number>;
 
 export type ReminderExpiryPolicy =
   | { readonly kind: "unknown" }
@@ -23,10 +23,9 @@ export type ReminderExpiry =
   | { readonly kind: "duration"; readonly milliseconds: number }
   | null;
 
-export type ReminderErrorCode =
-  | "stale" | "invalid_state" | "routines_unavailable" | "reminders_unavailable" | "reminders_unsupported" | "invalid_schedule"
-  | "invalid_input" | "invalid_policy" | "unauthorized" | "limit_exceeded"
-  | "channel_missing" | "channel_retired" | "conflict" | "not_found";
+export type ReminderErrorCode = KnownReminderBlockReason
+  | "routines_unavailable" | "reminders_unavailable" | "reminders_unsupported"
+  | "invalid_input" | "unauthorized" | "invalid_config" | "storage_failure" | "unattended_guard_required";
 
 export class ReminderError extends Error {
   constructor(readonly code: ReminderErrorCode, message: string) {
@@ -39,20 +38,29 @@ export function normalizeReminderSchedule(
   input: ReminderScheduleInput,
   acceptedAt: number,
   limits: ReminderLimits = defaultReminderLimits,
+  replacement = false,
 ): ReminderSchedule {
-  if ("cron" in input) {
-    if (!input.cron.trim() || !input.timezone.trim()) {
-      throw new ReminderError("invalid_schedule", "Cron requires an expression and timezone");
+  if (isRoutineSchedule(input)) {
+    const { count, until } = input;
+    if (count !== undefined && (until !== undefined || !Number.isSafeInteger(count) || count <= 0)) {
+      throw new ReminderError("invalid_schedule", "Expected a positive safe count or an inclusive until, not both");
     }
-    return { cron: input.cron, timezone: input.timezone };
-  }
-  if ("every" in input) {
+    if (until !== undefined && (!validInstant(until) || (!replacement && until - acceptedAt < limits.repeatIntervalMs))) {
+      throw new ReminderError("invalid_schedule", "Until must include at least one eligible occurrence");
+    }
+    const bound: RoutineBound<number> = count !== undefined ? { count } : until !== undefined ? { until } : {};
+    if ("cron" in input) {
+      if (typeof input.cron !== "string" || !hasRoutineCronShape(input.cron) || typeof input.timezone !== "string" || !input.timezone.trim()) {
+        throw new ReminderError("invalid_schedule", "Expected a five-field numeric cron expression and timezone");
+      }
+      return { cron: input.cron, timezone: input.timezone, ...bound };
+    }
     const startAt = input.startAt ?? acceptedAt + input.every;
-    if (!Number.isSafeInteger(input.every) || input.every < limits.repeatIntervalMs || !Number.isSafeInteger(startAt)
-      || startAt - acceptedAt < limits.oneShotLeadMs) {
-      throw new ReminderError("invalid_schedule", "Invalid reminder interval or start time");
+    if (!Number.isSafeInteger(input.every) || input.every < limits.repeatIntervalMs || !validInstant(startAt)
+      || startAt - acceptedAt < limits.repeatIntervalMs || (!replacement && until !== undefined && until < startAt)) {
+      throw new ReminderError("invalid_schedule", "Invalid routine interval, start time or bound");
     }
-    return { every: input.every, startAt };
+    return { every: input.every, startAt, ...bound };
   }
   const at = "in" in input ? acceptedAt + input.in : input.at;
   if (!Number.isSafeInteger(at) || at - acceptedAt < limits.oneShotLeadMs) {
@@ -76,13 +84,10 @@ export function resolveReminderExpiry(
   acceptedAt: number,
   limits: ReminderLimits = defaultReminderLimits,
 ): ReminderExpiry {
+  if (isRoutineSchedule(schedule) || policy.kind === "unknown") return { kind: "harness_default" };
   if (policy.kind === "unlimited") return null;
-  if (policy.kind === "unknown") return { kind: "harness_default" };
-  if ("cron" in schedule) {
-    return policy.kind === "duration" ? policy : { kind: "harness_default" };
-  }
-  const dueAt = "at" in schedule ? schedule.at : schedule.startAt;
-  const lead = "every" in schedule ? schedule.every : dueAt - acceptedAt;
+  const dueAt = schedule.at;
+  const lead = dueAt - acceptedAt;
   const graceMs = policy.kind === "duration"
     ? policy.milliseconds
     : Math.max(limits.minGraceMs, Math.min(limits.maxGraceMs, limits.expiryMultiplier * lead));

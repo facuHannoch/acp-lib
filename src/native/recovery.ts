@@ -1,9 +1,10 @@
+import { activatesRoutine, RoutineAdmission } from "./reminders/routine-guard.ts";
 import type { ReminderChange } from "../persistence/reminders.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
-import type { ReminderOpenResult } from "./reminders/wire.ts";
+import { type ReminderWireOpen, type RoutineConfigInput } from "./reminders/routine-wire.ts";
 import type { ResponseMessage } from "../types.ts";
 import { codeOf } from "./errors.ts";
-import type { HarnessClient, ItemStatus, PendingChannelChange, StoredMessage, TurnStatus } from "../native-harness/src/client.ts";
+import { HarnessClientError, type HarnessClient, type ItemStatus, type PendingChannelChange, type StoredMessage, type TurnStatus } from "../native-harness/src/client.ts";
 
 export async function recoverChannel(
   client: HarnessClient, channel: string, itemIds: readonly string[], trackedTurns: readonly string[], options: { signal?: AbortSignal; atObservation?: () => void } = {},
@@ -50,51 +51,82 @@ export async function readCompleteMessage(client: HarnessClient, messageId: stri
 
 /** The catalog and startup edits are installed before recovered work can start. */
 export async function openOrCreate(
-  client: HarnessClient, config: Pick<Parameters<HarnessClient["openSession"]>[0], "sessionId" | "config">,
+  client: HarnessClient, config: { sessionId: string; config?: RoutineConfigInput },
   batch: PendingChannelChange[], tools: Parameters<HarnessClient["openSession"]>[0]["tools"], signal: AbortSignal, reminders?: ReminderSync,
 ) {
+  const admission = reminders?.routineAdmission ?? new RoutineAdmission();
+  admission.configForOpen(config.config); // Validate before marking any journal entry maybe sent.
   const changes = { ...(batch.length ? { channelChanges: batch } : {}), ...(tools ? { tools } : {}) };
   const originals: ReminderChange[] = [];
-  let staged = await reminders?.stage(originals) ?? [];
-  const execute = async (fresh: boolean) => {
-    signal.throwIfAborted();
-    const params = { sessionId: config.sessionId, config: config.config, ...changes,
-      ...(fresh ? { participants: [], channels: {} } : {}) };
-    type Result = Awaited<ReturnType<HarnessClient["openSession"]>> & ReminderOpenResult;
-    const request = (): Promise<Result> => {
-      const payload = { ...params, ...(staged.length ? { reminderChanges: staged } : {}) };
-      return fresh ? client.createSession({ ...payload, participants: [], channels: {} }) : client.openSession(payload);
-    };
-    let result: Result;
-    try {
-      try { result = await request(); }
-      catch (error) {
-        if (fresh || codeOf(error) !== "timeout") throw error;
-        result = await request();
-      }
-    } catch (error) {
-      if (!staged.length || codeOf(error) !== "invalid_params") throw error;
-      const rejected = staged;
-      staged = [];
+  const frozen = await reminders?.startupRetry(config.sessionId);
+  let staged = frozen ?? await reminders?.stage(change => !activatesRoutine(change), originals) ?? [];
+  let storageAttempts = 0;
+  let replacement = await reminders?.replacementAttempted(config.sessionId) ?? false;
+  const execute = async (initialCreate: boolean): Promise<ReminderWireOpen> => {
+    let create = initialCreate;
+    let timeoutRetried = false;
+    for (;;) {
+      signal.throwIfAborted();
+      const params = {
+        sessionId: config.sessionId, config: admission.configForOpen(config.config), ...changes,
+        ...(staged.length ? { reminderChanges: staged } : {}),
+      };
       try {
-        result = await request();
-      } catch (retryError) {
-        await reminders!.restoreStaged(originals);
-        throw retryError;
+        return create
+          ? await client.createSession({ ...params, participants: [], channels: {} })
+          : await client.openSession(params);
+      } catch (error) {
+        const code = codeOf(error);
+        if (staged.length && code === "storage_failure") {
+          if (++storageAttempts === 1 && !frozen) await reminders?.freezeStartupRetry(config.sessionId, staged);
+          if (storageAttempts === 3) {
+            await reminders?.freezeStartupRetry(config.sessionId, staged, true);
+            throw new HarnessClientError("reminder_batch_retry_exhausted", "Startup reminder batch exhausted three attempts");
+          }
+          // Create can publish before failing. The same frozen batch goes through
+          // open thereafter. Never infer the failure point from error.data.
+          create = false;
+          continue;
+        }
+        if (storageAttempts || (frozen && code !== "not_found")) throw error;
+        if (code === "invalid_config") {
+          await reminders?.restoreStaged(originals);
+          if (create) await reminders?.setReplacementAttempted(undefined);
+        }
+        if (code === "timeout" && !create && !timeoutRetried) {
+          timeoutRetried = true;
+          continue;
+        }
+        if (!staged.length || code !== "invalid_params") throw error;
+        const rejected = staged;
+        staged = [];
+        const { reminderChanges: _rejected, ...unbatched } = params;
+        let result: ReminderWireOpen;
+        try {
+          result = create
+            ? await client.createSession({ ...unbatched, participants: [], channels: {} })
+            : await client.openSession(unbatched);
+        } catch (retryError) {
+          await reminders!.restoreStaged(originals);
+          throw retryError;
+        }
+        await reminders!.rejectedBatch(rejected);
+        return result;
       }
-      await reminders!.rejectedBatch(rejected);
     }
-    return result;
   };
-  let fresh = false;
   let result;
   try { result = await execute(false); }
   catch (error) {
-    if (codeOf(error) !== "not_found") throw error;
-    fresh = true;
+    // Confirmed absence means the prior create never published. A marker
+    // still fences a replacement if open finds it, but cannot veto creation.
+    if (storageAttempts || codeOf(error) !== "not_found") throw error;
+    replacement = true;
+    await reminders?.setReplacementAttempted(config.sessionId);
+    admission.resetBinding();
     result = await execute(true);
   }
-  await reminders?.opened(client, result, config.sessionId, fresh);
+  await reminders?.opened(client, result, config.sessionId, replacement);
   return result;
 }
 

@@ -28,3 +28,8 @@ export function pendingRetirementError(channel: string): HarnessClientError {
 export const codeOf = (error: unknown): string | undefined => error instanceof HarnessClientError ? error.code : undefined;
 /** The request's outcome is unknown: it may or may not have been applied. */
 export const ambiguous = (error: unknown) => { const code = codeOf(error); return code === "timeout" || code === "transport_closed" || code === "closed"; };
+
+export function terminalStartupError(error: unknown): error is Error {
+  return error instanceof HarnessIncompatibleError || (error instanceof Error && "code" in error &&
+    (error.code === "invalid_config" || error.code === "reminder_batch_retry_exhausted"));
+}
