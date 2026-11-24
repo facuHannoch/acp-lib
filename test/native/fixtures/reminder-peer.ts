@@ -22,6 +22,7 @@ export class ReminderPeer {
   sessionId = "session";
   fresh = false;
   rejectBatch = false;
+  rejectChannels = false;
   invalidatePages = 0;
   recomputeDefaultOnScheduleEdit = true;
   now = 1_000_000;
@@ -97,7 +98,7 @@ export class ReminderPeer {
     if (method === "session/open" || method === "session/create") {
       if (method === "session/open" && this.fresh) throw failure("not_found");
       const changes = (params.reminderChanges ?? []) as WireChange[];
-      if (changes.length > 100 || (changes.length && this.rejectBatch)) throw failure("invalid_params");
+      if (this.rejectChannels || changes.length > 100 || (changes.length && this.rejectBatch)) throw failure("invalid_params");
       const channelChanges = (params.channelChanges ?? []) as Array<{ channel: string; changeId: string }>;
       for (const value of channelChanges) if (!this.channelOrder.includes(value.channel)) this.channelOrder.push(value.channel);
       this.running = true;

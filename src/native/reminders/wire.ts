@@ -81,7 +81,7 @@ export function reminderRequest(change: ReminderChange, limits = defaultReminder
     new Set(policyNames).size !== policyNames.length || policyNames.some(name => typeof name !== "string" || !name.trim())
   )))) throw new Error("Invalid reminder destination or policies");
   if (change.op === "update" && includes("status") && status !== "active" && status !== "paused") throw new Error("Invalid reminder state");
-  if (includes("expiry") && !["default", "duration", "unlimited"].includes(expiryPolicy?.kind)) throw new Error("Invalid reminder expiry policy");
+  if (includes("expiry") && !["default", "duration", "unlimited", "unknown"].includes(expiryPolicy?.kind)) throw new Error("Invalid reminder expiry policy");
   const expiresAfter = expiryPolicy.kind === "duration" ? expiryPolicy.milliseconds : expiryPolicy.kind === "unlimited" ? null : undefined;
   if (includes("expiry") && typeof expiresAfter === "number" &&
     (!Number.isSafeInteger(expiresAfter) || expiresAfter < limits.minGraceMs || expiresAfter > limits.maxGraceMs)) {
@@ -107,7 +107,7 @@ export function fromWireReminder(row: WireReminder, prior?: Reminder): Reminder 
     status: state === "done" ? "completed" : state,
     schedule: { at: Date.parse(row.schedule.at) },
     scheduleAcceptedAt: Date.parse(row.acceptedAt),
-    expiryPolicy: prior?.expiryPolicy ?? (row.expiresAfter === null ? { kind: "unlimited" } : { kind: "duration", milliseconds: row.expiresAfter }),
+    expiryPolicy: prior?.expiryPolicy ?? { kind: "unknown" },
     expiry: row.expiresAt === null ? null : { kind: "absolute", at: Date.parse(row.expiresAt), graceMs: row.expiresAfter! },
     nextRunAt: row.nextRunAt == null ? null : Date.parse(row.nextRunAt),
     ...(lastRunAt === undefined ? {} : { lastRunAt: Date.parse(lastRunAt) }),
@@ -132,5 +132,14 @@ export function reminderNotification(value: unknown): ReminderNotification | und
   if (frame.method !== "channel/event" || typeof params.channel !== "string" || !params.event) return;
   const { type, ...fields } = params.event as { type: string };
   if (!["reminder_changed", "reminder_fired", "reminder_cancelled", "reminder_expired"].includes(type)) return;
+  const fieldsByType: Record<string, readonly string[]> = {
+    reminder_fired: ["reminderId", "occurrenceId", "scheduledAt", "firedAt", "noticeId"],
+    reminder_cancelled: ["reminderId", "by"],
+    reminder_expired: ["reminderId", "occurrenceId", "scheduledAt", "expiredAt"],
+  };
+  if (type === "reminder_changed") {
+    const row = (fields as { reminder?: WireReminder }).reminder;
+    if (!row || typeof row.id !== "string" || row.channel !== params.channel || typeof row.schedule?.at !== "string") return;
+  } else if (fieldsByType[type]!.some(key => typeof (fields as Record<string, unknown>)[key] !== "string")) return;
   return { channel: params.channel, event: { ...fields, kind: type } as WireReminderEvent };
 }

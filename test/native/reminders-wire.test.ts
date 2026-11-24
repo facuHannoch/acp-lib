@@ -14,7 +14,10 @@ async function setup() {
   const backend = await SqliteAgentPersistence.open({ path: ":memory:", agentSessionId });
   await backend.conversations.create({ agentSessionId, agentConversationId: channel, controllerKind: "native" });
   const service = new ReminderService({ persistence: backend, now: () => 1_000_000 });
-  const sync = new ReminderSync(backend, backend.reminders, noopLogger);
+  const warnings: Array<{ event: string; data: unknown }> = [];
+  const sync = new ReminderSync(backend, backend.reminders, {
+    ...noopLogger, warn: (event, data) => { warnings.push({ event, data }); },
+  });
   const peer = new ReminderPeer();
   const reminders = service.conversation(channel, true, () => {});
   const initialize = () => sync.initialize({ capabilities: { reminders: true }, reminderLimits: { maxActiveRoutinesPerChannel: 0 } });
@@ -22,7 +25,7 @@ async function setup() {
     version: 1, system: "", model: { protocol: "scripted", script: "" },
     defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } },
   } }, [{ channel, changeId: "1", displayName: "Reminder tests" }], undefined, new AbortController().signal, sync);
-  return { backend, channel, sync, peer, reminders, open, initialize };
+  return { backend, channel, sync, peer, reminders, open, initialize, warnings };
 }
 
 const input = { text: "one-off", schedule: { in: 180_000 } };
@@ -222,5 +225,87 @@ test("pending and maybe-sent cancels reject edits, pause and resume with conflic
         await expect(operation(item.id)).rejects.toMatchObject({ code: "conflict" });
       }
     }
+  } finally { await s.backend.close(); }
+});
+
+test("invalid channel batches leave staged reminder entries as they were", async () => {
+  const s = await setup();
+  try {
+    await s.initialize();
+    const maybeSent = await s.reminders.create(input);
+    await s.sync.stage();
+    await s.reminders.create({ ...input, text: "never sent" });
+    const before = await s.backend.reminders.list();
+    s.peer.rejectChannels = true;
+    await expect(s.open()).rejects.toMatchObject({ code: "invalid_params" });
+    expect(s.peer.traffic.filter(({ method }) => method === "session/open")).toHaveLength(2);
+    expect(await s.backend.reminders.list()).toEqual(before);
+    expect(await s.reminders.get(maybeSent.id)).toMatchObject({ state: "maybe_sent" });
+    expect(s.warnings.some(({ event }) => event === "reminder_batch_rejected")).toBe(false);
+  } finally { await s.backend.close(); }
+});
+
+test("equal deadline mismatches and stale or conflicting receipts log defects", async () => {
+  const s = await setup();
+  try {
+    await s.initialize();
+    s.peer.revision = 1;
+    await s.open();
+    s.sync.notification({ deadline: { revision: 1, nextDueAt: "1970-01-01T00:01:00.000Z" } }, () => {});
+    await s.sync.settled();
+    expect(s.warnings).toContainEqual({
+      event: "reminders_due_revision_conflict", data: { revision: 1, nextDueAt: "1970-01-01T00:01:00.000Z" },
+    });
+    for (const reason of ["stale", "conflict"] as const) {
+      const item = await s.reminders.create(input);
+      if (reason === "stale") s.peer.highWater.set(item.id, 2);
+      else {
+        const [entry] = await s.sync.stage();
+        s.peer.apply({ ...entry!, payload: { ...entry!.payload, text: "different definition" } });
+      }
+      await s.sync.dispatch(s.peer.client);
+      expect(await s.reminders.get(item.id)).toMatchObject({ reason, state: "blocked" });
+      expect(s.warnings).toContainEqual({
+        event: "reminder_receipt_conflict", data: { reminderId: item.id, changeId: 1, reason },
+      });
+    }
+  } finally { await s.backend.close(); }
+});
+
+test("routine and malformed legacy schedule entries contribute neither wake nor wire", async () => {
+  const s = await setup();
+  try {
+    await s.initialize();
+    const repo = s.backend.reminders;
+    for (const [id, schedule] of [
+      ["routine", { every: 600_000, startAt: 600_000 }],
+      ["legacy", { at: "1970-01-01T00:05:00.000Z" }],
+    ] as const) await repo.enqueue({ op: "create", acceptedAt: 0, reminder: {
+      id, conversationId: s.channel, text: id, status: "active", schedule: schedule as never,
+      expiryPolicy: { kind: "default" }, expiry: null,
+    } });
+    expect((await repo.wake()).effectiveAt).toBeNull();
+    expect(await s.sync.stage()).toEqual([]);
+    expect((await repo.list()).map(row => row.changes[0]?.state)).toEqual(["blocked", "blocked"]);
+  } finally { await s.backend.close(); }
+});
+
+test("a schedule edit of a reminder with unknown grace provenance leaves expiry to the harness", async () => {
+  const s = await setup();
+  try {
+    await s.initialize();
+    const item = await s.reminders.create(input);
+    const [request] = await s.sync.stage();
+    s.peer.channelOrder.push(s.channel);
+    const receipt = s.peer.apply({ ...request!, reminderId: "tool" });
+    s.peer.rows.set("tool", { ...receipt.reminder!, createdBy: "agent" });
+    await s.sync.refresh(s.peer.client);
+    const prior = await s.reminders.get("tool");
+    expect(prior?.expiryPolicy).toEqual({ kind: "unknown" });
+    const pending = await s.reminders.update("tool", { schedule: { in: 240_000 } });
+    expect(pending.expiry).toBeNull();
+    const pendingWire = (await s.sync.stage()).find(entry => entry.reminderId === "tool");
+    expect(pendingWire?.payload).not.toHaveProperty("expiresAfter");
+    expect(item.id).not.toBe("tool");
   } finally { await s.backend.close(); }
 });

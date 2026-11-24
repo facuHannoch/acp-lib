@@ -12,6 +12,7 @@ export type ReminderScheduleInput =
   | { readonly cron: string; readonly timezone: string };
 
 export type ReminderExpiryPolicy =
+  | { readonly kind: "unknown" }
   | { readonly kind: "default" }
   | { readonly kind: "duration"; readonly milliseconds: number }
   | { readonly kind: "unlimited" };

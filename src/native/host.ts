@@ -92,11 +92,16 @@ export class NativeHarnessHost {
   reminderSync?: ReminderSync;
   reminderWake?: ReminderWakeSupervisor;
   #stoppingExplicitly = false;
-  get reminderWakeState(): NativeHostState { return this.#stoppingExplicitly ? "running" : this.#state; }
+  #wakeFailure: HarnessUnavailableError | null = null;
+  get reminderWakeState(): NativeHostState { return this.#wakeFailure ? "failed" : this.#stoppingExplicitly ? "running" : this.#state; }
   get reminderTimer() { return this.#config.reminderTimer; }
   startForReminder(now: number): Promise<void> {
     if (this.#starting || this.#state === "running") return this.ensureStarted();
-    if (!this.#claimRestart(now)) return Promise.reject(this.#failReopen());
+    if (!this.#claimRestart(now)) {
+      if (this.#localBusy()) return Promise.reject(this.#failReopen());
+      this.#wakeFailure = new HarnessUnavailableError("the reminder wake exhausted its restart budget", { code: "reopen_failed" });
+      return Promise.reject(this.#wakeFailure);
+    }
     return this.ensureStarted();
   }
   async changeReminder(change: WireChange) {
@@ -126,6 +131,7 @@ export class NativeHarnessHost {
       if (result.stopped && this.#connection === connection) {
         this.#connection = null;
         this.#approvals.stop();
+        for (const port of this.#ports.values()) port.disconnected();
         try { await connection.kill(); } finally { this.#setState("stopped"); }
       }
       return result;
@@ -213,7 +219,8 @@ export class NativeHarnessHost {
 
   get state(): NativeHostState { return this.#state; }
   /** Why the host is `failed`. */
-  get failure(): Error | null { return this.#failure; }
+  get failure(): Error | null { return this.#failure ?? this.#wakeFailure; }
+  get explicitlyStopped(): boolean { return this.#stopped; }
   subscribeState(listener: () => void): () => void {
     this.#stateListeners.add(listener);
     return () => this.#stateListeners.delete(listener);
@@ -299,6 +306,7 @@ export class NativeHarnessHost {
   /** Starts the harness if it is not running. Concurrent callers share one start. */
   ensureStarted(): Promise<void> {
     if (this.#idling) return this.#idling.catch(() => {}).then(() => this.ensureStarted());
+    if (this.#wakeFailure) { this.#wakeFailure = null; this.#restarts.length = 0; }
     this.reminderIdle?.activity();
     if (this.#state === "running") return Promise.resolve();
     if (this.#state === "failed") return Promise.reject(new HarnessUnavailableError("the native harness is unavailable; call restart()", { cause: this.#failure, code: "failed" }));

@@ -49,7 +49,7 @@ export class ReminderSync {
     await this.repository.setSupported(this.supported);
   }
 
-  async stage(): Promise<WireChange[]> {
+  async stage(originals?: ReminderChange[]): Promise<WireChange[]> {
     if (!this.supported) return [];
     return this.transaction(async repo => {
       const entries = (await repo.list()).flatMap(row => row.changes)
@@ -65,6 +65,7 @@ export class ReminderSync {
           if (size > 900_000) throw new Error("Reminder entry exceeds startup frame budget");
           if (bytes + size > 900_000) break;
           if (await repo.markMaybeSent(wire.reminderId, wire.changeId, wire)) {
+            originals?.push(change);
             batch.push(wire);
             bytes += size;
           }
@@ -77,7 +78,14 @@ export class ReminderSync {
     });
   }
 
+  async restoreStaged(originals: ReminderChange[]): Promise<void> {
+    await this.transaction(async repo => {
+      for (const change of originals) await repo.restoreStaged(change);
+    });
+  }
+
   async rejectedBatch(batch: WireChange[]): Promise<void> {
+    // A successful retry isolates the reminder batch. Quarantine it whole.
     this.log.warn("reminder_batch_rejected", { count: batch.length });
     await this.transaction(async repo => {
       for (const entry of batch) await repo.quarantine(entry.reminderId, entry.changeId, "invalid_params");
