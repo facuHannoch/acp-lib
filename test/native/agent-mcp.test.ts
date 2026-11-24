@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentHarnessConfig } from "../../src/agent/config.ts";
 import { HarnessClientError, type HarnessClient } from "../../src/native-harness/src/client.ts";
+import { launchNativeConnection } from "../../src/native/connection.ts";
+import { executableMcpOpen } from "../../src/native/mcp.ts";
 import { openOrCreate } from "../../src/native/recovery.ts";
 import { hold, nativeRig, reply, until } from "./support.ts";
 
@@ -191,3 +193,69 @@ test("a real native turn with mixed owner and guest input denies MCP", async () 
     expect(JSON.stringify(captures[2].messages)).toContain("policy_denied");
   } finally { await rig.clean(); }
 }, 15_000);
+
+test("native MCP runtime headers enforce UTF-8 value and encoded total limits before sending", async () => {
+  const secret = "private-fixture-header";
+  const sent: unknown[] = [];
+  const signal = new AbortController().signal;
+  const send = async (material: unknown) => { sent.push(material); };
+  const boundary = { web: { authorization: "é".repeat(1024) } };
+  await executableMcpOpen(() => boundary, signal, send);
+  for (const material of [
+    { web: { authorization: secret + "é".repeat(1024) } },
+    { web: Object.fromEntries(Array.from({ length: 5 }, (_, i) => ["header-" + i, secret + "x".repeat(1800)])) },
+  ]) {
+    try {
+      await executableMcpOpen(() => material, signal, send);
+      throw new Error("Expected oversized headers to be rejected");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "mcp_runtime_headers_too_large" });
+      expect(String(error)).not.toContain(secret);
+    }
+  }
+  expect(sent).toEqual([boundary]);
+});
+
+test("native MCP does not send credentials when aborted while the provider is pending", async () => {
+  const abort = new AbortController();
+  const reason = new Error("Cancelled during material acquisition");
+  const material = Promise.withResolvers<{ web: { authorization: string } }>();
+  let sent = 0;
+  const opened = executableMcpOpen(() => material.promise, abort.signal, async () => { sent++; });
+  abort.abort(reason);
+  material.resolve({ web: { authorization: "private-fixture-header" } });
+  await expect(opened).rejects.toBe(reason);
+  expect(sent).toBe(0);
+});
+
+test("native launcher redacts stderr when executable opens can carry MCP credentials", async () => {
+  const marker = crypto.randomUUID();
+  const observations: unknown[] = [];
+  const connection = await launchNativeConnection({
+    sessionId: "stderr-fixture", home: ".", config: configFor(process.cwd()),
+    command: [process.execPath, "-e", "console.error(process.env.FIXTURE_STDERR_MARKER)"],
+    env: { ...process.env, FIXTURE_STDERR_MARKER: marker },
+    mcpRuntimeHeaders: () => ({ web: { authorization: marker } }),
+  }, { debug() {}, info() {}, error() {}, warn(event, data) { observations.push({ event, data }); } });
+  try {
+    await connection.closed;
+    await until(() => observations.length > 0, "stderr was observed");
+    expect(observations).toContainEqual({ event: "native_harness_stderr", data: { redacted: true } });
+    expect(JSON.stringify(observations)).not.toContain(marker);
+  } finally { await connection.kill(); }
+});
+
+test("ACP object prompts reject a native policy before dispatch", async () => {
+  const rig = await nativeRig();
+  try {
+    const peer = new URL("../fixtures/lifecycle-agent.ts", import.meta.url).pathname;
+    const agent = await rig.open({
+      adapters: { main: { command: [process.execPath, peer] } },
+      conversationDefaults: { providerStart: "on_first_use", env: { LIFECYCLE_STATE: join(rig.directory, "sessions.json") } },
+    });
+    const channel = await agent.conversations.create();
+    await expect(channel.prompt({ text: "ACP cannot carry this field", nativePolicy: "owner" }))
+      .rejects.toThrow("nativePolicy requires a native conversation");
+    expect(channel.connection.isConnected).toBe(false);
+  } finally { await rig.clean(); }
+});

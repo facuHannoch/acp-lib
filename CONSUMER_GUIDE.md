@@ -1783,6 +1783,8 @@ If an install omits them, the configured MCP entries report
 `reason: "connect"` for HTTPS. These statuses describe the failed stage
 without exposing credential values. Install the optional dependencies to
 use MCP. Other native features still work without them.
+A failing MCP server must leave the harness running. The current harness
+has a known exception for HTTP 500 on discovery and tool calls.
 
 ```ts
 import type { AgentHarnessConfig } from "@qlairoslabs/acp-client";
@@ -1815,6 +1817,8 @@ Merge those fields into the Agent's `harness` settings. Only the trusted
 owner supplies `mcpRuntimeHeaders`. The callback runs for every
 executable open or create request, including retry, reconnect and restart.
 It can resolve refreshed credentials. Header names are case-insensitive.
+The encoded runtime headers are limited to 8 KiB total and 2 KiB per value.
+Larger material fails locally with `mcp_runtime_headers_too_large`.
 Missing or empty material disables that server entry before it connects,
 while other servers can still start. Keep credentials out of configuration,
 prompt content and metadata. Runtime header values are never persisted.
@@ -1823,7 +1827,8 @@ On an attributed prompt, the trusted caller can select an existing policy
 for that input with `conversation.promptFrom({ participantId, text,
 nativePolicy: "guest" })`. Object-form `prompt` accepts `nativePolicy` too.
 When the caller omits it, the harness uses the channel's selected policy,
-then the session default. An owner channel still needs an explicit guest
+then the session default. Omitting `nativePolicy` denies MCP only when that
+fallback policy has no MCP grant. An owner channel still needs an explicit guest
 policy on guest input. Participant kind, sender ID, display name and text
 never grant MCP access. Do not populate `nativePolicy` from participant input.
 
