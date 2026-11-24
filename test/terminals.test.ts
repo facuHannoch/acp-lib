@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AcpClient } from "../src/client.ts";
 import { TerminalRegistry, UnknownTerminalError } from "../src/terminals.ts";
 
 // How agents that route a shell tool through ACP terminals actually populate the request.
@@ -166,4 +167,45 @@ describe("TerminalRegistry", () => {
     expect(() => registry.kill("nope")).toThrow("unknown terminalId: nope");
     expect(() => registry.release("nope")).not.toThrow(); // releasing twice is fine
   });
+});
+
+test("exact terminal creation environments replace all defaults and ACP additions", async () => {
+  const registry = new TerminalRegistry({ env: { LEGACY: "base" }, terminalEnv: { BASE: "safe" } });
+  try {
+    const id = registry.create({
+      command: "/usr/bin/env", args: ["--"], terminalEnv: { ONLY: "explicit" },
+      env: [{ name: "EXTRA", value: "ignored" }],
+    });
+    await registry.waitForExit(id);
+    expect(registry.output(id).output).toBe("ONLY=explicit\n");
+    const empty = registry.create({ command: "/usr/bin/env", args: ["--"], terminalEnv: {} });
+    await registry.waitForExit(empty);
+    expect(registry.output(empty).output).toBe("");
+  } finally {
+    registry.releaseAll();
+  }
+});
+
+test("ACP terminal creation isolates the hub and spawn environments and honors launcher terminalEnv", async () => {
+  using _secret = (() => {
+    const name = "ACP_TEST_HUB_SECRET";
+    const previous = process.env[name];
+    process.env[name] = "host-private";
+    return { [Symbol.dispose]() { if (previous === undefined) delete process.env[name]; else process.env[name] = previous; } };
+  })();
+  for (const terminalEnv of [undefined, {}, { SAFE: "launcher" }]) {
+    const client = new AcpClient({
+      adapter: { command: [process.execPath, join(import.meta.dir, "fixtures/terminal-agent.ts")] },
+      launcher: { async prepare({ targetCommand }) {
+        return { command: [...targetCommand], spawnEnv: { ACP_TEST_SPAWN_SECRET: "spawn-private" }, terminalEnv };
+      } },
+    });
+    try {
+      await client.connect();
+      const { text } = await client.prompt("inspect-terminal-environment");
+      expect(text).toBe(terminalEnv === undefined ? "AGENT_EXTRA=untrusted\n" : "SAFE" in terminalEnv ? "SAFE=launcher\n" : "");
+    } finally {
+      await client.stop();
+    }
+  }
 });

@@ -242,8 +242,9 @@ export class NativeHarnessHost {
 
   #observeApproval(connection: NativeConnection, { channel, event }: ChannelEvent): void {
     if (event.type === "approval_requested") {
-      this.#approvals.observe(channel, event, async decision =>
-        this.#connection === connection && this.#answerApproval(event.requestId, decision));
+      this.#approvals.observe(channel, event,
+        async decision => this.#connection === connection && this.#answerApproval(event.requestId, decision),
+        async () => this.#connection === connection && this.interrupt(channel, event.turnId, "unanswered permission"));
     } else if (event.type === "approval_closed") {
       this.#approvals.closed(event);
     }

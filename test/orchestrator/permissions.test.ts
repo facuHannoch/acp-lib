@@ -8,7 +8,7 @@ import type { WorkerActor } from "../../src/orchestrator/contracts.ts";
 import type { PermissionLevel } from "../../src/permissions/matcher.ts";
 import type { ConversationPermissionEvent } from "../../src/permissions/conversation.ts";
 
-async function rig(level: PermissionLevel, options: { answers?: boolean; timeoutMs?: number; owner?: boolean; consumerDefault?: PermissionLevel } = {}) {
+async function rig(level: PermissionLevel, options: { answers?: boolean; timeoutMs?: number; owner?: boolean; consumerDefault?: PermissionLevel; unanswered?: "reject" | "cancel" } = {}) {
   const root = await mkdtemp(join(tmpdir(), "acp-worker-permissions-"));
   const agent = await Agent.open({
     persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
@@ -17,12 +17,12 @@ async function rig(level: PermissionLevel, options: { answers?: boolean; timeout
       worker: { command: ["bun", resolve(import.meta.dir, "../fixtures/permission-agent.ts")] },
     },
     defaultAdapterId: "giver",
-    permissions: { default: "allow" },
+    permissions: { default: "allow", unanswered: options.unanswered },
     capture: { message: "content" },
     checkpointing: { enabled: false },
     orchestrator: {
       workers: { adapterId: "worker", limit: 1 },
-      ...(options.consumerDefault ? { defaults: { workerPermissions: { default: options.consumerDefault } } } : {}),
+      ...(options.consumerDefault ? { defaults: { workerPermissions: { default: options.consumerDefault, unanswered: options.unanswered } } } : {}),
     },
   });
   try {
@@ -144,3 +144,13 @@ for (const level of ["allow", "ask"] as const) {
     } finally { await close(); }
   }, 15_000);
 }
+
+test("a giver without an answering consumer cancels an unanswered worker ask when configured", async () => {
+  const { agent, actor, events, outcome, close } = await rig("ask", { unanswered: "cancel" });
+  try {
+    await agent.orchestrator!.open(actor, { text: "reject-first" });
+    expect(await outcome()).toEqual({ outcome: "cancelled" });
+    expect(events.map(event => event.kind)).toEqual(["permission_requested", "permission_resolved"]);
+    expect(events[1]).toMatchObject({ by: "default", outcome: "cancelled" });
+  } finally { await close(); }
+}, 15_000);

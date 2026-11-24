@@ -1064,8 +1064,16 @@ export async function openApprovalDemo(adapter: AgentAdapter, path: string) {
 
 Allow and deny resolve immediately. Ask first uses a per-prompt
 `onPermissionRequest` handler. Without one, it waits for a consumer only if
-`answersPermissions` is true. Otherwise the unattended ask is refused. The
-consumer wait defaults to five minutes, starts at request ingress, and expires
+`answersPermissions` is true. An ask with neither responder uses `permissions.unanswered`. The default,
+`"reject"`, refuses the tool and lets the turn continue. ACP selects
+`reject_once` when offered and sends cancellation otherwise. Native responds
+with `deny`. Use `permissions: { default: "ask", unanswered: "cancel" }`
+to send ACP's cancelled permission response or interrupt the requesting
+native turn. The setting applies only to an unanswered ask. It leaves
+explicit deny, handler responses and consumer timeout behavior unchanged.
+A forwarded ask uses the giving conversation's setting when it is
+available. Without a giving conversation, an applicable worker policy with
+`unanswered: "cancel"` cancels an otherwise unanswered ask. The consumer wait defaults to five minutes, starts at request ingress, and expires
 to a refusal. Supply a positive integer below 600,000 to override it.
 `expiresAt` is epoch milliseconds and is present only for a consumer wait.
 Check `answerPermission()`'s `{ accepted }` result. Unknown, expired,
@@ -1082,6 +1090,22 @@ and `deny`. The harness also has a ten-minute approval limit. A configured
 `harness.approvalResponder(request, answer, signal)` can answer centrally,
 including while detached. Await `answer("allow_once")` or `answer("deny")`
 to learn whether the harness accepted the decision.
+
+## Built-in ACP terminal environments
+
+Set `terminalEnv` on the client, controller or conversation runtime, or
+return it from `launcher.prepare()`. The prepared value takes precedence.
+For example, `terminalEnv: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" }`
+passes exactly those environment variables to built-in terminals. Use an
+empty object to pass none. In this mode ACP terminal request environment
+entries cannot add to or override the host's environment.
+
+When no exact environment is configured, the built-in ACP terminal uses the
+variables supplied in the terminal request. The hub's process environment,
+client spawn settings and the launcher's `spawnEnv` are separate.
+`TerminalRegistry` also accepts `terminalEnv` in its options and in a direct
+`create()` call. A direct per-terminal setting wins. Custom terminal
+handlers are responsible for their own environment isolation.
 
 ## Cancellable ACP startup and deferred connections
 
@@ -1680,10 +1704,19 @@ manual barriers and process replacement in code.
 
 ### Functions the model can call
 
-Register functions in `harness.functions`. The harness offers them to the
-model, applies the conversation's policy and asks for approval where the policy
-says `ask`, validates the arguments against `parameters`, and then calls the
-handler in this process.
+Register functions in `harness.functions.tools` before the Agent starts.
+The host declares the handler names during initialize and sends the tool
+catalog on every executable session open or create. Set `defaultPolicy` and
+`policies` under `harness.config`. The harness uses those policies to decide
+which tools to offer and whether a call needs approval. It validates the
+arguments against `parameters` before calling the handler in this process.
+
+`harness.config.system` supplies the complete consumer system text. At the
+next executable open, changing it replaces that text for subsequent model
+requests in the same saved session. The harness still appends its own
+instructions and retains the conversation history. To apply a different
+configuration, close the Agent and open it with the new configuration and
+the same persisted Agent and harness home.
 
 ```ts
 harness: {
@@ -1711,7 +1744,10 @@ harness: {
 - **Why a tool cannot run.** `agent.nativeHarness.tools()` lists each tool
   with `available` and a reason (`revoked`, `not_enabled`, `handler_missing`).
   Policy is separate: a tool the conversation's policy denies is not offered.
-- **Handlers.** Return any JSON value. Throw `FunctionError(code, message)` for
+- **Handlers.** The second argument contains `invocationId`, `channel`,
+  `turnId`, `tool`, `policyNames` and `signal`. `policyNames` comes from
+  the harness authorization snapshot. The names have no precedence by order.
+  Return a JSON value as the tool result. Throw `FunctionError(code, message)` for
   a failure the model should see. `signal` aborts when the harness stops
   waiting: the tool's deadline passed, the turn was interrupted, or the harness
   stopped. A value returned after that is ignored.
@@ -1732,6 +1768,42 @@ harness: {
   `toolInvocations(turn)` return each call's state. A call that was dispatched
   but has no recorded result (crash, lost connection, interrupt) is
   `interrupted` with `effect: "unknown"`. It is never run again automatically.
+
+Native conversations do not support attaching ACP `mcpServers`. To use an
+MCP tool, connect the MCP client in your host application and register a
+native function that calls it. Supply the tool description and input schema
+and allow the wrapper by its registered name in `harness.config.policies`.
+
+```ts
+import { FunctionError, type NativeFunctionsConfig } from "@qlairoslabs/acp-client";
+
+export function orderTools(
+  callMcpTool: (name: string, args: Record<string, unknown>, signal: AbortSignal) =>
+    Promise<{ content: unknown[]; isError?: boolean }>,
+): NativeFunctionsConfig {
+  return {
+    tools: {
+      lookup: {
+        description: "Look up an order",
+        parameters: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"],
+          additionalProperties: false,
+        },
+        async handler(args, { signal }) {
+          const result = await callMcpTool("lookup_order", args, signal);
+          if (result.isError) throw new FunctionError("mcp_tool_error", "Order lookup failed");
+          return result.content;
+        },
+      },
+    },
+  };
+}
+```
+
+Pass the returned object as `harness.functions`. The host owns the MCP
+connection lifecycle and forwards cancellation through its client library.
 
 Tool changes need a running harness: `revokeTool` and the others fail with
 `HarnessUnavailableError` while it is stopped.

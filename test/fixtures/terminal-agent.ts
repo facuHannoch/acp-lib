@@ -106,10 +106,11 @@ async function runTurn(message: any): Promise<void> {
   });
 
   // 2. Run the command through the client's terminal.
+  const inspectEnv = JSON.stringify(message.params?.prompt).includes("inspect-terminal-environment");
   const created: any = await request("terminal/create", {
     sessionId,
-    command: "printf",
-    args: ["hello from terminal"],
+    ...(inspectEnv ? { command: "/usr/bin/env", args: ["--"], env: [{ name: "AGENT_EXTRA", value: "untrusted" }], terminalEnv: { AGENT_OVERRIDE: "untrusted" } }
+      : { command: "printf", args: ["hello from terminal"] }),
   });
   const terminalId = created?.terminalId;
   if (!terminalId) {
@@ -148,7 +149,7 @@ async function runTurn(message: any): Promise<void> {
     cost: { amount: 0.0125, currency: "USD" },
   });
 
-  update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } });
+  update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: inspectEnv ? out?.output ?? "" : "done" } });
   send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
 
 }

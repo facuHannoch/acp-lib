@@ -4,8 +4,8 @@ For consumers of the published `@qlairoslabs/acp-client` 0.12.1, including
 `~agents` (`libs/agents/agents-core`). See the [consumer guide](CONSUMER_GUIDE.md)
 for complete examples.
 
-**Status.** These changes are on `alpha`. The package version remains 0.12.1
-and 0.13 is unpublished. For a local trial, point a disposable
+**Status.** Version `0.13.0-alpha.1` is published under the `alpha` tag.
+This note also covers subsequent changes on `alpha`. For a local trial, point a disposable
 consumer checkout at a local archive of the target code and use a copy of the
 database. For example, use a `file:/absolute/path/to/acp-client-archive`
 dependency in the trial checkout or replace its local package link. Make the
@@ -40,10 +40,11 @@ entry has 924 exports, including nine new reminder names.
 
 | What changed | What to do |
 | --- | --- |
-| `defaultPermission` was removed. | Replace `"approve"` with `permissions: { default: "allow" }` and `"cancel"` with `permissions: { default: "ask" }`. Omitting the setting means ask. |
+| `defaultPermission` was removed. | Replace `"approve"` with `permissions: { default: "allow" }` and `"cancel"` with `permissions: { default: "ask", unanswered: "cancel" }` to keep cancellation on an unattended ask. Omitting the setting means ask and reject the tool if nobody answers. |
 | Permission defaults and rules can settle requests before the prompt handler. | Install a handler or declare a consumer for asks. Update ACP refusal handling for `reject_once` where offered and cancellation otherwise. |
 | `AgentController` and `AgentControllerStartEvent` have new names. | Use `HarnessController` and `ControllerStartEvent`. The deprecated aliases still work. |
 | `conversation.connection` is a `ConversationController`. | Use the shared interface where possible and use `conversation.harnessConnection()` for ACP-specific members. Handle its null return. |
+| Built-in ACP terminals no longer inherit the hub or spawned process environment. | Supply exact variables via `terminalEnv` in client/runtime config, prepared launch or direct terminal creation. |
 | Launcher kind includes `"native-harness"`. | Handle the new kind in custom launcher unions and switches. Route it explicitly or reject it if unsupported. |
 | Custom persistence backends must supply `capabilities.channels: boolean`. | Use `channels: false` without a durable channel repository. The repository itself is optional. |
 | Adapter registration now accepts `AgentAdapter` (`Adapter \| NativeAdapter`). | Narrow `AgentAdapterRegistration.adapter`, entries in `AgentConfig.adapters`, and arguments to `AgentAdapterRegistry.register` before reading ACP fields such as `command`. `list()` still returns entries with an `Adapter`. |
@@ -143,7 +144,10 @@ Rules use `kind:` and exact `command:` keys. The stricter match wins. Native ask
 use the callback and default, while the harness itself grants or denies tools
 by name. Allow and deny are final. In particular, default allow can skip a
 prompt handler that previously ran. An ask with no handler and no eligible
-consumer is refused. Use `answersPermissions`, `permissionTimeoutMs` and
+consumer uses `permissions.unanswered`. The default `"reject"` refuses
+the tool using `reject_once` where ACP offers it or `deny` on native.
+`"cancel"` sends ACP's cancelled response or interrupts the requesting
+native turn. Use `answersPermissions`, `permissionTimeoutMs` and
 `answerPermission` to implement a conversation approval UI. See
 [permission configuration and events](CONSUMER_GUIDE.md#permissions-and-approval-ui).
 
@@ -230,6 +234,15 @@ destination receives an out-of-band message. A native destination receives a
 durable notice. Eligible notices can be retried without redispatching worker
 work. See the [orchestrator guide](CONSUMER_GUIDE.md#orchestrator-and-worker-delivery-experimental).
 
+## Native tools and system instructions
+
+Provide host callbacks in `harness.functions.tools` and tool policies
+in `harness.config`. Native conversations cannot attach ACP MCP servers.
+Wrap an MCP call in a native function if needed. A new executable open uses
+the supplied `harness.config.system` in place of the previous consumer
+system text and keeps the harness's own instructions. See
+[Functions the model can call](CONSUMER_GUIDE.md#functions-the-model-can-call).
+
 ## Other native harness changes
 
 The standalone native harness managed session config can opt into `timelineTools: true` to make
@@ -247,9 +260,9 @@ errors. The archive adds 13 diagnostics across the following four groups.
 
 | Location under `src/` | Exact edit |
 | --- | --- |
-| `agent/chat/session.ts` | Keep the app's `default_permission` and CLI option names. Import `PermissionSettings` from the package and make it the return type of `libraryPermission`, returning `{ default: policy === "approve" ? "allow" : "ask" }`. Set `permissions: libraryPermission(defaultPermission ?? agentCfg.default_permission)` on the session config. Pass `permissions: config.permissions` to both `loadAgentSession` and `createAgentSession`. |
-| `agent/chat/sqlite-session.ts` | In `conversationDefaults` set `permissions: { default: (canonical ? canonical.input.permission.policy : opts.defaultPermission ?? agentCfg!.default_permission) === "approve" ? "allow" : "ask" }`. Update the comment in `hub/index.ts` about the prompt handler. It runs for ask only, and an unattended ask fails closed. |
-| `__tests__/integration/docker-image-candidate-acp.test.ts`, `__tests__/integration/opencode-model-catalog.test.ts`, `gateway/docker-delivery.test.ts` | Replace the library-level `defaultPermission: "cancel"` with `permissions: { default: "ask" }`. |
+| `agent/chat/session.ts` | Keep the app's `default_permission` and CLI option names. Import `PermissionSettings` from the package and make it the return type of `libraryPermission`, returning `policy === "approve" ? { default: "allow" } : { default: "ask", unanswered: "cancel" }`. Set `permissions: libraryPermission(defaultPermission ?? agentCfg.default_permission)` on the session config. Pass `permissions: config.permissions` to both `loadAgentSession` and `createAgentSession`. |
+| `agent/chat/sqlite-session.ts` | In `conversationDefaults` apply the same mapping to `canonical ? canonical.input.permission.policy : opts.defaultPermission ?? agentCfg!.default_permission`. Update the comment in `hub/index.ts` about the prompt handler. It runs for ask only, and an unattended ask fails closed. |
+| `__tests__/integration/docker-image-candidate-acp.test.ts`, `__tests__/integration/opencode-model-catalog.test.ts`, `gateway/docker-delivery.test.ts` | Replace the library-level `defaultPermission: "cancel"` with `permissions: { default: "ask", unanswered: "cancel" }`. |
 | `agent/chat/launcher.ts` | For the current ACP-only launcher add `if (kind === "native-harness") throw new Error("Native harness launch is unsupported by this runtime");` before passing `kind` to `prepareProcessLaunch`. To enable native launches later, extend `RuntimeProcessKind` and its runtime handlers to route the new kind explicitly. |
 | `hub/index.ts` | Keep the degraded PTY special case. Replace `session.connection.currentClient.isConnected` with `session.harnessConnection()?.currentClient.isConnected ?? false` inside the existing try/catch. Update session test doubles used by that branch to supply `harnessConnection()` with the expected client state. |
 | `configuration/recording/acp-contract.test.ts` | Remove the public-package import of `ConversationPersistenceContext` from this fixture. Type `context` as `Parameters<ConversationSettingsResolver["settingsFor"]>[0]` using the fixture's existing resolver import. The error in the linked archive is a split branded type identity from mixing relative package internals with a public package type. The resolver contract test can stay on its test-only internal import path. |

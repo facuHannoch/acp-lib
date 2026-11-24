@@ -485,7 +485,7 @@ export class NativeController implements ConversationController, ChannelPort {
             // that end must not wait behind the question.
             if (turn.approvals.has(event.requestId)) return;
             turn.approvals.add(event.requestId);
-            const approval = this.#approve(event, handlers,
+            const approval = this.#approve(turn, event, handlers,
               AbortSignal.any([approvals.signal, attachment]), signal);
             if (recordingPermissionHandlers.has(handlers.onPermissionRequest!)) {
               approvalWork.add(approval);
@@ -524,9 +524,10 @@ export class NativeController implements ConversationController, ChannelPort {
     });
   }
 
-  async #approve(event: Extract<TurnScoped, { type: "approval_requested" }>, handlers: PromptHandlers, cancelled: AbortSignal, signal: (output: ProviderOutput) => void): Promise<void> {
+  async #approve(turn: Turn, event: Extract<TurnScoped, { type: "approval_requested" }>, handlers: PromptHandlers, cancelled: AbortSignal, signal: (output: ProviderOutput) => void): Promise<void> {
     const ticket = this.#host.approvalFor(event);
     if (!ticket) return;
+    ticket.onCancelTurn?.(() => { turn.cancelRequested = true; });
     const sessionId = this.#host.sessionId;
     signal({ kind: "permission_started", sessionId });
     try { await runNativeApproval(ticket, event, handlers, cancelled, this.#log); }

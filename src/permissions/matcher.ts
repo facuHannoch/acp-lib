@@ -5,6 +5,8 @@ export type PermissionLevel = "deny" | "ask" | "allow";
 export interface PermissionSettings {
   readonly default: PermissionLevel;
   readonly rules?: Readonly<Record<string, PermissionLevel>>;
+  /** How to answer an ask with no handler or answering consumer. Defaults to reject. */
+  readonly unanswered?: "reject" | "cancel";
 }
 
 const weight: Record<PermissionLevel, number> = { deny: 0, ask: 1, allow: 2 };
