@@ -1153,6 +1153,19 @@ environment, or use a scripted model with a local JSONL scenario for offline
 development. Keep the harness home on durable storage. Backend kind stays fixed
 across a conversation's mode changes and handoffs.
 
+### Compiled launchers
+
+A compiled Bun application can import `serve(home)` from
+`@qlairoslabs/acp-client/native-harness` and call it from its own subprocess
+command. For example, route `agents __native-harness serve --home <directory>`
+to `await serve(directory)` in the application, then set `harness.command` to
+`[process.execPath, "__native-harness", "serve", "--home", directory]`.
+Handle that command before normal application startup and keep stdout reserved
+for the harness protocol. The command override includes all arguments, so pass
+the same directory as `harness.home`.
+
+### Configuration
+
 ```ts
 import { Agent, ADAPTERS, type AgentHarnessConfig } from "@qlairoslabs/acp-client";
 
