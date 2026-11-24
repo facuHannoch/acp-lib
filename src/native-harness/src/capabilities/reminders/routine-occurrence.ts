@@ -38,3 +38,28 @@ export function routineOccurrenceIdentity(reminderId: string, instant: number) {
   return { scheduledAt, occurrenceId: `reminder:${reminderId}:${scheduledAt}`,
     noticeId: `reminder-notice:${reminderId}:${scheduledAt}` };
 }
+
+type ExpiredDisposition = {
+  type: "routine_disposition";
+  reminderId: string;
+  firstScheduledAt: string;
+  lastScheduledAt: string;
+  count: number;
+  reason: "expired";
+};
+
+/** The disposition describes consumption only. The returned cursor and
+ * remaining count are for updating the authoritative row in the same commit. */
+export function expireRoutineRange(reminderId: string, calendar: RoutineCalendar, range: OrdinalRange, remainingCount?: number) {
+  const first = calendar.at(range.first), last = calendar.at(range.last);
+  const count = range.last - range.first + 1;
+  if (first === undefined || last === undefined || count < 1 || (remainingCount !== undefined && count > remainingCount))
+    throw new RangeError("Invalid routine expiry range");
+  const remaining = remainingCount === undefined ? undefined : remainingCount - count;
+  const next = remaining === 0 ? undefined : calendar.at(range.last + 1);
+  const event: ExpiredDisposition = {
+    type: "routine_disposition", reminderId, reason: "expired", count,
+    firstScheduledAt: new Date(first).toISOString(), lastScheduledAt: new Date(last).toISOString(),
+  };
+  return { event, remainingCount: remaining, nextRunAt: next === undefined ? null : new Date(next).toISOString() };
+}
