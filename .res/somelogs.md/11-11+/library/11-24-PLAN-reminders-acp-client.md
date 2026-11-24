@@ -260,3 +260,8 @@ Left to contract review: the floor for short leads, a variable cron interval, th
 RESOLVED expiry (acp-client stores the resolved absolute expiry with the change and never recomputes it on resend). Idle stop:
 per-Agent setting with conversation overrides; acp-client passes the largest applicable pending-reminder window; the harness
 atomic stop check is authoritative.
+
+## User decision, round 5 (2026-11-24): expiry grace bounds
+
+Default `expiresAfter` grace = 2x the lead (one-shot) or 2x the interval (routine), clamped to a lower bound of 5 minutes and an
+upper bound of 24 hours. A 2-minute lead therefore gets 5 minutes, not 4. Harness to confirm at contract review.
