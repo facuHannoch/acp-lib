@@ -5,9 +5,9 @@ agents (Codex, Claude, Kimi, Pi, Gemini, Copilot, OpenCode, …) over JSON-RPC 2
 **degraded PTY fallback** for agents that don't speak ACP.
 
 ```ts
-import { AgentController, ADAPTERS } from "@qlairoslabs/acp-client";
+import { HarnessController, ADAPTERS } from "@qlairoslabs/acp-client";
 
-const agent = new AgentController({ adapter: ADAPTERS.codex, adapterId: "codex" });
+const agent = new HarnessController({ adapter: ADAPTERS.codex, adapterId: "codex" });
 await agent.start();
 const { text } = await agent.prompt("Say hello in one sentence.");
 console.log(text);
@@ -58,8 +58,8 @@ bun add -g @qlairoslabs/acp-client
 
 | Abstraction | What it is |
 |---|---|
-| **`AgentController`** | The control plane for **one** agent process: start/stop, prompt, interrupt, switch sessions, swap mode (normal ⇄ degraded), introspect capabilities & config. |
-| **`AgentSession`** | A **durable conversation** with a stable identity that survives reconnects and mode-swaps. Wraps an `AgentController` and (optionally) records itself to a catalog. The front face for consumers that want persistence. |
+| **`HarnessController`** | The control plane for **one** agent process: start/stop, prompt, interrupt, switch sessions, swap mode (normal ⇄ degraded), introspect capabilities & config. |
+| **`AgentSession`** | A **durable conversation** with a stable identity that survives reconnects and mode-swaps. Wraps a `ConversationController` and (optionally) records itself to a catalog. The front face for consumers that want persistence. |
 | **`SessionManager` + `SessionStore`** | The session **catalog**: routing metadata (which adapter/mode/cwd a session belongs to), *not* conversation content. Merges your catalog with the agent's live `session/list`. Ships a `FileSessionStore`; inject your own (e.g. a database) for custom backends. |
 | **Adapter** | Just how to *launch* an agent: the spawn command. `ADAPTERS` has convenience presets (`codex`, `claude`, `kimi`, `pi`, `gemini`, `copilot`, `opencode`); you can also pass a raw `{ command: [...] }`. Capabilities and commands are discovered after ACP initialization. |
 | **Mode** | `"normal"` (real ACP over JSON-RPC) or `"degraded"` (drive the native CLI through a PTY and parse it). Both implement the same `AgentClient` output contract. |
@@ -76,17 +76,17 @@ see the [consumer guide](./CONSUMER_GUIDE.md).
 
 ```ts
 import {
-  AgentController,
+  HarnessController,
   ADAPTERS,
   createConsoleLogger,
   formatResponseMessages,
 } from "@qlairoslabs/acp-client";
 
-const agent = new AgentController({
+const agent = new HarnessController({
   adapter: ADAPTERS.codex,
   adapterId: "codex",
   cwd: process.cwd(),
-  defaultPermission: "cancel",          // "approve" to auto-accept tool permissions
+  permissions: { default: "ask" },      // "allow" to auto-accept tool permissions
   logger: createConsoleLogger({ minLevel: "info" }),
 });
 
@@ -123,10 +123,11 @@ first — and `name` is prose meant for a human. The four kinds are `allow_once`
 `allow_always`, `reject_once`, `reject_always`; treat the `_always` pair as policy, since
 they persist into the agent's settings and outlive the session.
 
-If you omit `onPermissionRequest`, the client falls back to the controller's
-`defaultPermission` (`"approve"` / `"cancel"`). `"approve"` selects `allow_once`, or
-`allow_always` if that is the only grant offered, and cancels if it finds neither — it
-never guesses.
+Set `permissions: { default: "ask" | "allow" | "deny", rules? }` on the controller.
+The default is `ask`. Allow and deny are final. The prompt handler answers only
+an ask. Without a handler or an eligible conversation consumer, an ask is refused.
+ACP refusal selects `reject_once` where offered and cancels otherwise.
+See [permission configuration and events](./CONSUMER_GUIDE.md#permissions-and-approval-ui).
 
 Every session update except the response text reaches `onActivity`, discriminated by
 `kind`: `thinking`, `user_message`, `tool`, `tool_update`, `plan`, `plan_update`,
@@ -475,7 +476,7 @@ try {
 
 The older low-level controller REPL remains available as `runRepl()` plus
 `createControllerCommands()`. Its `/new`, `/load`, `/resume`, and `/fork` commands replace
-the `AgentController`'s ACP provider session directly; they do not manage multiple stable
+the `HarnessController`'s ACP provider session directly; they do not manage multiple stable
 `AgentSession` objects. A consumer-owned managed CLI belongs above both command sets.
 
 ### CLI
@@ -518,7 +519,7 @@ then `~/.acp-client`. A recorded built-in adapter is resolved automatically on o
 restore. Supply `--adapter-command` again for a custom adapter. Use `--no-repl` when a
 create/open/restore command should only acquire, report, checkpoint, and stop the session.
 
-The older `chat` command remains the direct `AgentController` CLI for compatibility. It
+The older `chat` command remains the direct `HarnessController` CLI for compatibility. It
 manipulates one provider thread and is deliberately separate from the managed catalog.
 
 Activity markers (thinking/tool) show by default; `--no-activity` disables them.
@@ -550,7 +551,7 @@ opt-in subpaths.
 
 | Import | Contents |
 |---|---|
-| `@qlairoslabs/acp-client` | Core: `AgentController`, `AgentSession`, `AcpClient`, `SessionManager`, `FileSessionStore`, `ADAPTERS`, loggers, types. |
+| `@qlairoslabs/acp-client` | Core: `HarnessController`, `AgentSession`, `AcpClient`, `SessionManager`, `FileSessionStore`, `ADAPTERS`, loggers, types. |
 | `@qlairoslabs/acp-client/activity` | `ActivityAggregator`, `foldRecords`, `foldFrame`, `wireFrames` — the delta→full-state fold. No runtime imports, so it is safe to compile for a browser. |
 | `@qlairoslabs/acp-client/repl` | `runAgentSessionRepl`, `createAgentSessionCommands`, plus low-level `runRepl` and `createControllerCommands`. |
 | `@qlairoslabs/acp-client/degraded` | The PTY fallback transport (`Bun.spawn({ terminal })` + xterm parsing). |

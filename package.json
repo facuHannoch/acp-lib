@@ -38,7 +38,9 @@
     "CHANGELOG-metering.md",
     "CHANGELOG-operation-lifecycle.md",
     "CHANGELOG-consumer-fixes.md",
-    "MIGRATION-0.10-to-0.12.md"
+    "CHANGELOG-controller-interface.md",
+    "MIGRATION-0.10-to-0.12.md",
+    "MIGRATION-0.12-to-0.13.md"
   ],
   "exports": {
     ".": "./src/index.ts",
