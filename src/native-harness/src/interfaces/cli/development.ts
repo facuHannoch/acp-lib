@@ -1,3 +1,4 @@
+import { compatibleInferenceKey } from "../../runtime/config/inference-key.ts";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -8,7 +9,7 @@ import { openRouter } from "../../capabilities/model/openrouter.ts";
 import { loadScenario, scriptedCompatibilityKey } from "../../capabilities/model/scenario-file.ts";
 import { scenarioAttempt } from "../../capabilities/model/scenario-attempt.ts";
 import { bindModelAttempt } from "../../capabilities/model/attempt.ts";
-import { openRouterAttempt } from "../../capabilities/model/openrouter-stream.ts";
+import { openAICompatibleAttempt, openRouterAttempt } from "../../capabilities/model/openrouter-stream.ts";
 import { currentTimeDefinition, executeCurrentTime } from "../../capabilities/tools/builtin/current-time.ts";
 import { debugToolDefinitions, debugToolHandlers } from "../../capabilities/tools/debug/index.ts";
 import { notifyChannelDefinition } from "../../capabilities/tools/builtin/notify-channel.ts";
@@ -18,7 +19,7 @@ import { createInspection } from "../inspector/state.ts";
 import { observeModel, observeSession } from "../inspector/observe.ts";
 import type { ManagedConfig } from "../../contracts/config-permissions.ts";
 import { chooseManagedConfig } from "../../runtime/config/paths.ts";
-import { resolveCredential, validateManagedConfig } from "../../runtime/config/managed.ts";
+import { resolveCompatibleCredential, resolveCredential, validateManagedConfig } from "../../runtime/config/managed.ts";
 
 export interface DevelopmentOptions {
   systemPrompt: string;
@@ -82,20 +83,31 @@ export async function openDevelopment(options: DevelopmentOptions) {
     managedConfig = { ...managedConfig, system: options.debugInstructions };
   const systemPrompt = options.instructions ?? options.debugInstructions ?? managedConfig?.system ?? options.systemPrompt;
   const scriptPath = managedConfig?.model.protocol === "scripted" ? managedConfig.model.script : undefined;
+  const compatible = managedConfig?.model.protocol === "openai-compatible" ? managedConfig.model : undefined;
+  const creating = !options.database || !!options.create;
+  const environment = options.environment ?? process.env;
+  let compatibleKey = compatible && creating ? resolveCompatibleCredential(compatible, environment) : undefined;
   const providerModel = managedConfig?.model.protocol === "openrouter" ? managedConfig.model : undefined;
   const apiKey = providerModel ? (useLegacyCredential ? options.provider!.apiKey : resolveCredential(providerModel, options.environment ?? process.env)) : undefined;
   if (providerModel && !apiKey) throw new Error(`config.model.apiKeyEnv: environment variable ${providerModel.apiKeyEnv} is missing or empty`);
   const script = scriptPath ? await loadScenario(scriptPath) : undefined;
-  if (!script && !providerModel) throw new Error("Development needs provider credentials or a script");
+  if (!script && !providerModel && !compatible) throw new Error("Development needs provider credentials or a script");
   const scriptedTools = script ? options.scriptedTools : undefined;
   const tools = [currentTimeDefinition, ...(scriptedTools?.tools ?? []),
     ...(options.debugTools ? debugToolDefinitions : []), notifyChannelDefinition];
-  const compatibilityKey = script ? scriptedCompatibilityKey(script.modelDigest, systemPrompt)
+  const compatibilityKey = compatible ? compatibleInferenceKey(compatible, systemPrompt, tools.map(tool => tool.name)) : script ? scriptedCompatibilityKey(script.modelDigest, systemPrompt)
     : createHash("sha256").update(JSON.stringify([systemPrompt, providerModel!.model, tools.map(tool => tool.name)])).digest("hex");
   const opened = adapter.open({ mode: options.database && !options.create ? "open" : "create",
     identity: { sessionId, compatibilityKey }, config: managedConfig, requiredScriptDigest: script?.modelDigest });
   if (!opened.ok) throw new Error(`Cannot open session storage (${opened.error.code}): ${opened.error.message}`);
   const storage = opened.value;
+  if (compatible && !creating) {
+    try {
+      const executable = storage.executionCompatible();
+      if (!executable.ok) throw new Error(executable.error.message);
+      if (executable.value) compatibleKey = resolveCompatibleCredential(compatible, environment);
+    } catch (error) { storage.close(); throw error; }
+  }
   if (savedConfig) {
     const saved = storage.saveConfig(savedConfig);
     if (!saved.ok && saved.error.code !== "incompatible") { storage.close(); throw new Error(`Cannot save config: ${saved.error.message}`); }
@@ -108,7 +120,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
     observeModelCall: inspection.modelCall,
     configureTurn(turn) {
       const model = observeModel(inspection, turn.channelId, onRequest => {
-        if (script) return async () => { throw new Error("Scripted model requires a reserved attempt"); };
+        if (script || compatible) return async () => { throw new Error("Model requires a reserved attempt"); };
         const provider = (options.providerFactory ?? openRouter)(apiKey!, providerModel!.model, onRequest);
         return provider;
       }, turn.turnId);
@@ -121,6 +133,9 @@ export async function openDevelopment(options: DevelopmentOptions) {
             for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; }
           };
         } });
+      } else if (compatible) {
+        bindModelAttempt(model, { scripted: false, create: () => openAICompatibleAttempt(compatible.baseUrl, compatible.model, compatibleKey, fetch,
+          body => inspection.request(turn.channelId, body, turn.turnId)) });
       } else if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => {
         const next = openRouterAttempt(apiKey!, providerModel!.model, fetch, body => inspection.request(turn.channelId, body, turn.turnId));
         return async function* (request, signal) { for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; } };

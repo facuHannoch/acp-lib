@@ -1,3 +1,4 @@
+import { compatibleInferenceKey } from "./runtime/config/inference-key.ts";
 import { wallReminderClock } from "./runtime/reminder-timer.ts";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -13,7 +14,7 @@ import type { LoadedScenario } from "./contracts/scenario.ts";
 export type { LoadedScenario, ScenarioHeader, ScenarioModelRecord, ScenarioRecord, ScenarioSend } from "./contracts/scenario.ts";
 export { loadScenario, parseScenario } from "./capabilities/model/scenario-file.ts";
 import { bindModelAttempt } from "./capabilities/model/attempt.ts";
-import { openRouterAttempt } from "./capabilities/model/openrouter-stream.ts";
+import { openAICompatibleAttempt, openRouterAttempt } from "./capabilities/model/openrouter-stream.ts";
 import { openRouter } from "./capabilities/model/openrouter.ts";
 import { notifyChannelDefinition } from "./capabilities/tools/builtin/notify-channel.ts";
 import { echoDefinition, executeEcho } from "./capabilities/tools/testing/echo.ts";
@@ -25,7 +26,7 @@ import { createProtocolServer, SessionOpenError } from "./interfaces/protocol/se
 import { parseCatalog } from "./capabilities/tools/runtime/catalog.ts";
 import { HarnessClient, createInProcessTransport } from "./client.ts";
 import { chooseManagedConfig, managedSessionPaths } from "./runtime/config/paths.ts";
-import { resolveCredential } from "./runtime/config/managed.ts";
+import { resolveCompatibleCredential, resolveCredential } from "./runtime/config/managed.ts";
 
 export interface ScriptedServerOptions {
   /** Directory of durable sessions, one SQLite file per session ID. */
@@ -101,7 +102,10 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const config = chooseManagedConfig({ mode, sidecar: paths?.config ?? noSidecar, inline, saved: stored?.ok ? stored.value : undefined });
     const script = config.model.protocol === "scripted" ? await (options.scenarioLoader ?? loadScenario)(config.model.script) : undefined;
     const credential = config.model.protocol === "openrouter" ? resolveCredential(config.model, options.environment ?? process.env) : undefined;
-    const compatibilityKey = script ? scriptedCompatibilityKey(script.modelDigest, config.system)
+    const compatible = config.model.protocol === "openai-compatible" ? config.model : undefined;
+    const environment = options.environment ?? process.env;
+    let compatibleKey = compatible && mode === "create" ? resolveCompatibleCredential(compatible, environment) : undefined;
+    const compatibilityKey = compatible ? compatibleInferenceKey(compatible, config.system, [...BUILTINS, notifyChannelDefinition].map(tool => tool.name)) : script ? scriptedCompatibilityKey(script.modelDigest, config.system)
       : createHash("sha256").update(JSON.stringify([config.system, config.model.protocol === "openrouter" && config.model.model,
         [...BUILTINS, notifyChannelDefinition].map(tool => tool.name)])).digest("hex");
     if (mode === "create" && paths) mkdirSync(paths.directory, { recursive: true });
@@ -114,6 +118,13 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       if (point === "snapshot" && options.snapshotLog) appendFileSync(options.snapshotLog, "snapshot\n");
       hit(point);
     }) : opened.value;
+    if (compatible && mode === "open") {
+      try {
+        const executable = storage.executionCompatible();
+        if (!executable.ok) throw new SessionOpenError("storage_failure", executable.error.message);
+        if (executable.value) compatibleKey = resolveCompatibleCredential(compatible, environment);
+      } catch (error) { storage.close(); throw error; }
+    }
     const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
     const executeTool: ExecuteTool = async (call, signal) => {
       const result = await (call.name === "record" ? record(call, signal) : call.name === "hold" ? hold(call, signal) : executeEcho(call, signal));
@@ -125,6 +136,13 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       ...(script && options.reminderTime !== undefined && Number.isSafeInteger(options.reminderTime)
         ? { reminderClock: { ...wallReminderClock, now: () => options.reminderTime! } } : {}), ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
       revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, ...(catalog ? { catalog } : {}), configureTurn(turn) {
+      if (compatible) {
+        const model: Model = async () => { throw new Error("Chat Completions requires a model attempt"); };
+        bindModelAttempt(model, { scripted: false,
+          ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }),
+          create: () => openAICompatibleAttempt(compatible.baseUrl, compatible.model, compatibleKey) });
+        return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
+      }
       if (config.model.protocol === "openrouter") {
         const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
         if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "") });

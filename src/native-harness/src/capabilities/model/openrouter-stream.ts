@@ -1,26 +1,47 @@
 import type { ModelAttempt, ModelAttemptEvent } from "../../contracts/model-execution.ts";
 import type { Message } from "../../contracts/loop.ts";
 
-function wireMessage(message: Message): unknown {
-  if (message.role === "assistant") return message.providerState ?? { role: "assistant", content: message.content,
+function wireMessage(message: Message, preserveProviderState: boolean): unknown {
+  if (message.role === "assistant") return (preserveProviderState ? message.providerState : undefined) ?? { role: "assistant", content: message.content,
     ...(message.calls.length ? { tool_calls: message.calls.map(c => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } })) } : {}) };
   return message.role === "tool" ? { role: "tool", content: message.content, tool_call_id: message.callId } : message;
 }
 /** OpenRouter SSE translation stays at the provider boundary; tool fragments are
  * private until a valid terminal response is assembled by the adapter. */
 export function openRouterAttempt(apiKey: string, model: string, fetcher: typeof fetch = fetch, onRequest?: (body: string) => void): ModelAttempt {
+  return chatAttempt(apiKey, model, fetcher, onRequest);
+}
+
+export function openAICompatibleAttempt(baseUrl: string, model: string, apiKey?: string, fetcher: typeof fetch = fetch,
+  onRequest?: (body: string) => void): ModelAttempt {
+  return chatAttempt(apiKey, model, fetcher, onRequest, `${baseUrl}/chat/completions`);
+}
+
+function chatAttempt(apiKey: string | undefined, model: string, fetcher: typeof fetch, onRequest?: (body: string) => void, endpoint?: string): ModelAttempt {
+  const errorText = (error: unknown) => endpoint ? "Chat Completions transport failed" : String(error).replaceAll(apiKey!, "[REDACTED]");
   return async function* (request, signal) {
-    const body = JSON.stringify({ model, stream: true, stream_options: { include_usage: true }, messages: request.messages.map(wireMessage),
-      ...(request.tools.length ? { tools: request.tools.map(tool => ({ type: "function", function: tool })) } : {}) });
+    const body = JSON.stringify({ model, stream: true, stream_options: { include_usage: true }, messages: request.messages.map(message => wireMessage(message, endpoint === undefined)),
+      ...(request.tools.length ? { tools: request.tools.map(tool => ({ type: "function", function: tool })), ...(endpoint ? { tool_choice: "auto" } : {}) } : {}) });
     onRequest?.(body);
     let response: Response;
-    try { response = await fetcher("https://openrouter.ai/api/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body, signal }); }
-    catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: String(error).replaceAll(apiKey, "[REDACTED]") }; return; }
+    try { response = await fetcher(endpoint ?? "https://openrouter.ai/api/v1/chat/completions", { method: "POST", headers: { ...(apiKey === undefined ? {} : { Authorization: `Bearer ${apiKey}` }), "Content-Type": "application/json" }, body, signal, ...(endpoint ? { redirect: "manual" } : {}) }); }
+    catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: errorText(error) }; return; }
     if (!response.ok) {
-      const text = (await response.text()).replaceAll(apiKey, "[REDACTED]");
+      if (endpoint) {
+        void response.body?.cancel().catch(() => {});
+        if (response.status >= 300 && response.status < 400) {
+          yield { type: "failure", kind: "provider", message: "redirect_refused" };
+          return;
+        }
+        yield { type: "failure", kind: response.status === 429 || response.status >= 500 ? "transient" : "invalid_request",
+          message: `Chat Completions HTTP ${response.status}` };
+        return;
+      }
+      const text = (await response.text()).replaceAll(apiKey!, "[REDACTED]");
       yield { type: "failure", kind: response.status === 429 || response.status >= 500 ? "transient" : "invalid_request", message: `OpenRouter HTTP ${response.status}: ${text}` }; return;
     }
-    const requestId = response.headers.get("x-request-id") ?? undefined;
+    const safeRequestId = (id: string | undefined) => endpoint && apiKey && id?.includes(apiKey) ? undefined : id;
+    const requestId = safeRequestId(response.headers.get("x-request-id") ?? undefined);
     if (!response.body) return;
     let content = "", buffer = "", stop: string | undefined, providerId = requestId, reasoning = "";
     const reasoningDetails: unknown[] = [];
@@ -35,8 +56,8 @@ export function openRouterAttempt(apiKey: string, model: string, fetcher: typeof
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim(); if (!data || data === "[DONE]") continue;
           let payload: { id?: string; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }; choices?: { finish_reason?: string | null; delta?: { content?: string | null; reasoning?: string | null; reasoning_details?: unknown[]; tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[] };
-          try { payload = JSON.parse(data); } catch { yield { type: "failure", kind: "provider", message: "Malformed OpenRouter stream" }; return; }
-          if (!providerId && payload.id) providerId = payload.id;
+          try { payload = JSON.parse(data); } catch { yield { type: "failure", kind: "provider", message: endpoint ? "Malformed Chat Completions stream" : "Malformed OpenRouter stream" }; return; }
+          if (!providerId && payload.id) providerId = safeRequestId(payload.id);
           // A parsed response frame, unlike an HTTP success header, is evidence
           // the provider has accepted the inference request.
           if (!confirmed) { confirmed = true; yield { type: "accepted", ...(providerId ? { providerRequestId: providerId } : {}) }; }
@@ -59,14 +80,14 @@ export function openRouterAttempt(apiKey: string, model: string, fetcher: typeof
       const ordered = [...fragments.entries()].sort((a, b) => a[0] - b[0]);
       if (ordered.some(([n], i) => n !== i)) { yield { type: "failure", kind: "provider", message: "Non-contiguous tool fragments" }; return; }
       const stopReason = stop === "stop" ? "complete" : stop === "tool_calls" ? "tool_calls" : stop === "length" ? "output_limit" : undefined;
-      if (!stopReason) { yield { type: "failure", kind: "provider", message: `Unsupported finish reason: ${stop}` }; return; }
+      if (!stopReason) { yield { type: "failure", kind: "provider", message: endpoint ? "Unsupported Chat Completions finish reason" : `Unsupported finish reason: ${stop}` }; return; }
       const calls = ordered.map(([, value]) => value);
       const message = { role: "assistant" as const, content: content || null, calls };
-      const event: ModelAttemptEvent = { type: "response", response: { ...message, stopReason, providerState: { role: "assistant", content: message.content,
+      const event: ModelAttemptEvent = { type: "response", response: { ...message, stopReason, ...(endpoint ? {} : { providerState: { role: "assistant", content: message.content,
         ...(reasoning ? { reasoning } : {}), ...(reasoningDetails.length ? { reasoning_details: reasoningDetails } : {}),
-        ...(calls.length ? { tool_calls: calls.map(call => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })) } : {}) } }, ...(providerId ? { providerRequestId: providerId } : {}) };
+        ...(calls.length ? { tool_calls: calls.map(call => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })) } : {}) } }) }, ...(providerId ? { providerRequestId: providerId } : {}) };
       yield event;
-    } catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: String(error).replaceAll(apiKey, "[REDACTED]") }; }
-    finally { reader.releaseLock(); }
+    } catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: errorText(error) }; }
+    finally { if (endpoint) void reader.cancel().catch(() => {}); reader.releaseLock(); }
   };
 }

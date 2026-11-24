@@ -16,6 +16,21 @@ const keys = (value: Record<string, unknown>, allowed: string[], field: string) 
 const name = (value: unknown, field: string): string => typeof value === "string" && value.trim() ? value : fail(field, "expected a nonempty string");
 const decision = (value: unknown, field: string): ToolDecision => value === "allow" || value === "ask" || value === "deny" ? value : fail(field, "expected allow, ask or deny");
 
+function baseUrl(value: unknown): string {
+  const field = "config.model.baseUrl", raw = name(value, field);
+  const match = /^(https?):\/\/([^/]+)(?:\/|$)/i.exec(raw);
+  if (!match || /[\s\\?#]/.test(raw) || match[2]!.includes("@")) return fail(field, "expected an HTTP(S) URL prefix without credentials, query or fragment");
+  let url: URL;
+  try { url = new URL(raw); } catch { return fail(field, "invalid URL"); }
+  if (url.protocol === "http:") {
+    const authority = match[2]!;
+    const ipv4 = /^127(?:\.(?:0|[1-9]\d{0,2})){3}(?::\d+)?$/.test(authority) && url.hostname.startsWith("127.");
+    const ipv6 = /^\[::1\](?::\d+)?$/.test(authority) && url.hostname === "[::1]";
+    if (!ipv4 && !ipv6) return fail(field, "HTTP requires a canonical loopback IP literal");
+  }
+  return url.origin + url.pathname.replace(/\/+$/, "");
+}
+
 /** Validate without side effects. Only explicitly requested legacy imports may
  * fill absent policy fields; partly specified modern configs are invalid. */
 export function validateManagedConfig(input: unknown, legacy = false): ManagedConfig {
@@ -32,7 +47,13 @@ export function validateManagedConfig(input: unknown, legacy = false): ManagedCo
     const reference = model.apiKeyEnv === undefined ? "OPENROUTER_API_KEY" : name(model.apiKeyEnv, "config.model.apiKeyEnv");
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) fail("config.model.apiKeyEnv", "expected an environment variable name");
     selectedModel = { protocol: "openrouter", model: model.model === undefined ? "deepseek/deepseek-v4.1-flash" : name(model.model, "config.model.model"), apiKeyEnv: reference };
-  } else return fail("config.model.protocol", "expected scripted or openrouter");
+  } else if (model.protocol === "openai-compatible") {
+    keys(model, ["protocol", "providerId", "model", "baseUrl", "apiKeyEnv"], "config.model");
+    const reference = model.apiKeyEnv === undefined ? undefined : name(model.apiKeyEnv, "config.model.apiKeyEnv");
+    if (reference !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) fail("config.model.apiKeyEnv", "expected an environment variable name");
+    selectedModel = { protocol: "openai-compatible", providerId: name(model.providerId, "config.model.providerId"),
+      model: name(model.model, "config.model.model"), baseUrl: baseUrl(model.baseUrl), ...(reference === undefined ? {} : { apiKeyEnv: reference }) };
+  } else return fail("config.model.protocol", "expected scripted, openrouter or openai-compatible");
   const isLegacy = legacy && raw.defaultPolicy === undefined && raw.policies === undefined;
   const defaultPolicy = isLegacy ? LEGACY_POLICY : name(raw.defaultPolicy, "config.defaultPolicy");
   const policiesInput = isLegacy ? { [LEGACY_POLICY]: { fallback: "allow", tools: {} } } : record(raw.policies, "config.policies");
@@ -62,5 +83,14 @@ export function validateManagedConfig(input: unknown, legacy = false): ManagedCo
 export function resolveCredential(model: Extract<ManagedConfig["model"], { protocol: "openrouter" }>, environment: Record<string, string | undefined>): string {
   const value = environment[model.apiKeyEnv];
   if (!value) return fail(`config.model.apiKeyEnv`, `environment variable ${model.apiKeyEnv} is missing or empty`);
+  return value;
+}
+
+
+export function resolveCompatibleCredential(model: Extract<ManagedConfig["model"], { protocol: "openai-compatible" }>,
+  environment: Record<string, string | undefined>): string | undefined {
+  if (model.apiKeyEnv === undefined) return;
+  const value = environment[model.apiKeyEnv];
+  if (!value?.trim() || /[\r\n]/.test(value)) return fail("config.model.apiKeyEnv", "configured credential is missing, empty or invalid");
   return value;
 }
