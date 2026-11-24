@@ -1820,6 +1820,7 @@ Messages that had to wait emit events on the conversation event stream:
 | Event | Meaning |
 |---|---|
 | `message_pending { id, delivery }` | Accepted and waiting. `delivery` is the mode in effect: `"queue"` while the running operation is not a consumer prompt turn (a handoff, a configuration change). |
+| `message_status { id, status, turnId? }` | Live delivery progress for an individual prompt. See [Message status](#message-status). |
 | `message_delivered { ids, via, turnId }` | Sent to the agent. `ids` lists every message in the prompt; `via` is `"tool_boundary"`, `"interrupt"` or `"turn_end"`. |
 | `message_withdrawn { id }` | Removed before delivery. |
 

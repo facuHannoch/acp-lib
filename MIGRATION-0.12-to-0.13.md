@@ -28,8 +28,9 @@ archive's dependencies available before starting the consumer.
 ## Breaking changes for 0.12.1 consumers
 
 The package entry at `510e2a7` retained all 828 exports from 0.12.1 and
-had 913 exports. The package exports map and dependencies are unchanged
-through `fb20ed6`.
+had 913 exports. At `fb20ed6` it has 915, including the new
+`MessageStatus` and `MessageStatusEvent` types. The package exports map and
+dependencies are unchanged through `fb20ed6`.
 `AgentController` remains a deprecated value and type alias of
 `HarnessController`.
 

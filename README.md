@@ -131,7 +131,7 @@ See [permission configuration and events](./CONSUMER_GUIDE.md#permissions-and-ap
 
 Every session update except the response text reaches `onActivity`, discriminated by
 `kind`: `thinking`, `user_message`, `tool`, `tool_update`, `plan`, `plan_update`,
-`plan_removed`, `commands`, `mode`, `usage`, `session_info`, `config`, and `unknown` for
+`plan_removed`, `commands`, `mode`, `usage`, `session_info`, `config`, and `provider_notice`, `unknown` for
 anything the protocol adds later (the raw payload rides along on `raw`).
 
 **Tool calls arrive incrementally.** Agents announce a call before they know much about it
