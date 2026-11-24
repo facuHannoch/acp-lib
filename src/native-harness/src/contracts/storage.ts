@@ -30,7 +30,7 @@ export type StorageErrorCode =
   /** Export refused: active or pending work exists and the session is not suspended. */
   | "busy"
   | "invalid_archive"
-  | "serialization_error" | "storage_failure" | "transfer_limit";
+  | "serialization_error" | "storage_failure" | "transfer_limit" | "invalid_cursor";
 
 /** A failed mutation leaves no partial domain changes. Do not retry blindly. */
 export interface StorageError { code: StorageErrorCode; message: string }
@@ -79,7 +79,7 @@ export interface StoredSession {
   sessionId: string;
   /** Storage contract/data format revision, distinct from RPC and archive versions.
    * Revision 5 stores model calls and script reservations. Formats 2–4 upgrade on open. */
-  formatVersion: 6;
+  formatVersion: 6 | 7;
   createdAt: string;
   lifecycle: SessionLifecycle;
   /** The key supplied at create. Immutable; open never rewrites it. */
@@ -229,7 +229,8 @@ export interface StorageSnapshot {
  * Version 5 adds external notices. */
 export interface SessionArchive {
   format: "harness-session";
-  archiveVersion: 5;
+  archiveVersion: 5 | 6;
+  reminderState?: import("./reminders.ts").ReminderArchiveState;
   exportedAt: string;
   snapshot: StorageSnapshot;
   /** ID allocation state so the copy never reissues a turn ID, seq or item ID. */
@@ -289,7 +290,18 @@ export interface TimelineRetrievalReads {
   readMessage(input: import("./timeline-retrieval.ts").TimelineWindow, maxResponseBytes?: number): StorageResult<import("./timeline-retrieval.ts").TimelineWindowResult>;
 }
 
-export interface SessionStorage extends ModelCallStore, TimelineRetrievalReads, OperatorStorageReads, InferenceStorageReads, InspectionStorageReads {
+export interface ReminderStorage {
+  scheduleAgentReminder(turnId: number, invocationId: string, schedule: import("./reminders.ts").AgentReminderSchedule, text: string,
+    policyNames: readonly string[], expiresAfter: number | null | undefined, now: number): StorageResult<{ reminder: import("./reminders.ts").Reminder; created: boolean }>;
+  cancelAgentReminder(turnId: number, id: string): StorageResult<{ id: string; alreadyQueued: boolean; changed: boolean }>;
+  changeReminder(change: import("./reminders.ts").ReminderChange, now: number): StorageResult<import("./reminders.ts").ReminderChangeResult>;
+  readReminder(id: string): StorageResult<import("./reminders.ts").Reminder | undefined>;
+  listReminders(input: import("./reminders.ts").ReminderListParams): StorageResult<import("./reminders.ts").ReminderList>;
+  reminderWake(): StorageResult<import("./reminders.ts").ReminderWake>;
+  fireDueReminders(now: number): StorageResult<Array<{ channel: string; event: import("./reminders.ts").ReminderChannelEvent }>>;
+}
+
+export interface SessionStorage extends ModelCallStore, ReminderStorage, TimelineRetrievalReads, OperatorStorageReads, InferenceStorageReads, InspectionStorageReads {
   readSession(): StorageResult<StoredSession>;
   readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
   readReadyChannels(): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
@@ -421,7 +433,7 @@ export interface SessionStorage extends ModelCallStore, TimelineRetrievalReads, 
    * pending items all unchanged), if any turn being resumed has a
    * compatibilityKey different from the key passed to this open. Already running
    * returns no turns; `suspending` is `invalid_state`. */
-  resume(): StorageResult<{ session: StoredSession; turns: StoredTurn[] }>;
+  resume(): StorageResult<{ session: StoredSession; turns: StoredTurn[]; unblockedReminders?: import("./reminders.ts").Reminder[] }>;
 
   /** Stop, in one transaction, by lifecycle:
    * - `running`: every running turn becomes interrupted.
@@ -482,7 +494,7 @@ export interface SessionStorage extends ModelCallStore, TimelineRetrievalReads, 
    * the checkpoint stays under the session suspension, no turn runs, and the
    * session's own resume continues it. Pending items become eligible once both
    * lifecycles permit. */
-  resumeChannel(channelId: string): StorageResult<{ channel: StoredChannel; turn?: StoredTurn }>;
+  resumeChannel(channelId: string): StorageResult<{ channel: StoredChannel; turn?: StoredTurn; unblockedReminders?: import("./reminders.ts").Reminder[] }>;
 
   /** Retire the channel: `retired` is final and the ID is reserved. Refused with
    * `channel_busy`, changing nothing, while the channel has a running or
@@ -492,7 +504,7 @@ export interface SessionStorage extends ModelCallStore, TimelineRetrievalReads, 
    * sends fail `channel_retired`. The timeline, items and turns are kept.
    * Retired already returns it unchanged. `not_found`. Allowed in every
    * session lifecycle and from `suspended`. */
-  deleteChannel(channelId: string): StorageResult<StoredChannel>;
+  deleteChannel(channelId: string): StorageResult<StoredChannel & { cancelledReminderIds?: string[] }>;
 
   /** Withdraw a pending input of this channel, message or notice alike. Competes with
    * `beginTurn`/`takePending` by commit order. Pending (`received`) becomes

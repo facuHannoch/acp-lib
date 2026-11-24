@@ -293,6 +293,7 @@ export class NativeController implements ConversationController, ChannelPort {
       if (!this.#turns.has(sessionTurnId(payload.turnId))) this.#begin(payload.turnId, payload.items);
       return;
     }
+    if (payload.turnId === undefined) return;
     let turn = this.#turns.get(sessionTurnId(payload.turnId));
     // A checkpoint from before this connection continues under its original id: the first this
     // conversation hears of it is the resume.

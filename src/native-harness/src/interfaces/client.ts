@@ -1,3 +1,4 @@
+import type { ConditionalStopParams, ConditionalStopResult, ReminderSessionEvent } from "../contracts/reminders.ts";
 import type { ClientTransport, Methods, DurableMethods, InitializeParams, CreateParams, PushParams } from "../contracts/protocol.ts";
 import type { EventSink, SessionEventSink } from "../contracts/events.ts";
 import { createHash } from "node:crypto";
@@ -33,6 +34,7 @@ export class HarnessClient {
   private unsubscribeClose = () => {};
   private readonly listeners = new Set<EventSink>();
   private readonly sessionListeners = new Set<SessionEventSink>();
+  private readonly wakeListeners = new Set<(event: ReminderSessionEvent) => void>();
   private unsubscribeSession = () => {};
   private readonly waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
   private readonly unsubscribe: () => void;
@@ -55,7 +57,12 @@ export class HarnessClient {
       }
     });
     this.unsubscribeSession = transport.subscribeSession?.(message => {
-      for (const listener of this.sessionListeners) { try { listener(structuredClone(message.params)); } catch { /* Consumer isolation. */ } }
+      const event = message.params;
+      if (event.type === "reminders_due") {
+        for (const listener of this.wakeListeners) { try { listener(structuredClone(event)); } catch { /* Consumer isolation. */ } }
+        return;
+      }
+      for (const listener of this.sessionListeners) { try { listener(structuredClone(event)); } catch { /* Consumer isolation. */ } }
     }) ?? (() => {});
     this.unsubscribeCallbacks = transport.subscribeCallbacks?.(message => {
       if (message.method === "functions/cancel") { this.running.get(message.params.invocationId)?.abort(new Error(message.params.reason)); return; }
@@ -152,6 +159,16 @@ export class HarnessClient {
   /** Explicit: a loaded suspended session runs nothing until this is called. */
   resume() { return this.request("session/resume", {}); }
   /** Immediate: cancels inference and tools and reports active turns interrupted. */
+  changeReminder(params: Calls["reminder/change"]["params"]) { return this.request("reminder/change", params); }
+  getReminder(params: Calls["reminder/get"]["params"]) { return this.request("reminder/get", params); }
+  listReminders(params: Calls["reminder/list"]["params"] = {}) { return this.request("reminder/list", params); }
+  stopIfIdle(params: ConditionalStopParams = { ifIdle: true }): Promise<ConditionalStopResult> {
+    return this.request("session/stop", params as unknown as Calls["session/stop"]["params"]) as unknown as Promise<ConditionalStopResult>;
+  }
+  onReminderWake(listener: (event: ReminderSessionEvent) => void) {
+    this.wakeListeners.add(listener);
+    return () => { this.wakeListeners.delete(listener); };
+  }
   stop() { return this.request("session/stop", {}); }
   /** Write the session's archive to a path the harness can reach. */
   exportTo(path: string) { return this.request("session/export", { to: { type: "path", path } }); }
@@ -202,7 +219,7 @@ export class HarnessClient {
     this.closed = true; this.unsubscribe(); this.unsubscribeSession(); this.unsubscribeCallbacks(); this.unsubscribeClose(); this.transport.close();
     // The harness no longer waits for anything this connection was handling.
     for (const control of this.running.values()) control.abort(this.terminalError);
-    this.running.clear(); this.listeners.clear(); this.sessionListeners.clear();
+    this.running.clear(); this.listeners.clear(); this.sessionListeners.clear(); this.wakeListeners.clear();
     for (const pending of this.waiting.values()) pending.reject(this.terminalError);
   }
 }

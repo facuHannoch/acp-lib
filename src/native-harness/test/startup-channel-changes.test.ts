@@ -139,7 +139,11 @@ test("an invalid batch is rejected whole and leaves every channel as it was", as
     expect(events).toEqual([]);
     const loaded = await load(second);
     expect(loaded.channelChanges).toBeUndefined();
-    expect(loaded.status.channels).toMatchObject([{ channel: "a", lifecycle: "open", pending: ["a2"], waitingForResume: false }]);
+    expect(loaded.status.channels).toMatchObject([{ channel: "a", lifecycle: "open", waitingForResume: false }]);
+    // Scheduling releases after the open response. The separate status RPC
+    // may already see the recovered item taken, so read its stable identity.
+    const recovered = await second.client.reconcileChannel({ channel: "a", itemIds: ["a2"] });
+    expect(recovered.items.map(item => item.id)).toEqual(["a2"]);
     expect(loaded.status.channels[0]!.displayName).toBeUndefined();
     await until(() => events.some(event => event.channel === "a" && event.event.type === "turn_ended"), "recovered input to run");
   } finally { await second.close(); }

@@ -118,7 +118,7 @@ interface Reminder {
 Proposed 2026-11-24, reusing the harness's existing patterns (decision 0020's startup channel changes, decision
 0025's notices).
 
-- **Changes at open:** `session/create` and `session/load` take `reminderChanges`, next to `channelChanges`, applied
+- **Changes at open:** `session/create` and `session/open` take `reminderChanges`, next to `channelChanges`, applied
   after the channel changes and before recovered or due work, so a cancel made while stopped lands before a past-due
   reminder fires. After the open, changes use the live requests.
 - **An entry:** `{ reminderId, changeId, op: "create" | "update" | "cancel", payload }` (`changeId` is acp-client's

@@ -1,3 +1,4 @@
+import { reminderDefinitions } from "../src/capabilities/tools/reminders/index.ts";
 import { notifyChannelDefinition } from "../src/capabilities/tools/builtin/notify-channel.ts";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -27,7 +28,7 @@ test("file scenario executes echo through the real scheduler/loop and supplies i
     { role: "assistant", content: "I'll echo that.", calls: [{ id: "echo-1", name: "echo", arguments: '{"text":"hello"}' }] },
     { role: "tool", callId: "echo-1", content: '{"ok":true,"text":"hello"}' },
   ]);
-  expect(requests[0]?.tools).toEqual([echoDefinition, notifyChannelDefinition]);
+  expect(requests[0]?.tools).toEqual([echoDefinition, notifyChannelDefinition, ...reminderDefinitions]);
   expect(store.snapshot().map(entry => entry.message.role)).toEqual(["user", "assistant", "tool", "assistant"]);
   expect(requests).toHaveLength(scenario.defaultModels.length);
 });

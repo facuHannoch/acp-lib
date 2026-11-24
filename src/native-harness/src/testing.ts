@@ -1,3 +1,4 @@
+import { wallReminderClock } from "./runtime/reminder-timer.ts";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -49,6 +50,7 @@ export interface ScriptedServerOptions {
   scenarioLoader?: (path: string) => Promise<LoadedScenario>;
   streamResponses?: boolean;
   modelTimeoutMs?: number;
+  reminderTime?: number;
   /** Directory for transfer files when there is no home. */
   transfers?: string;
   /** Smaller transfer limits for tests. */
@@ -119,7 +121,9 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       return result;
     };
     const revisions = new Map<string, number>();
-    const session = createSession({ ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
+    const session = createSession({
+      ...(script && options.reminderTime !== undefined && Number.isSafeInteger(options.reminderTime)
+        ? { reminderClock: { ...wallReminderClock, now: () => options.reminderTime! } } : {}), ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
       revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, ...(catalog ? { catalog } : {}), configureTurn(turn) {
       if (config.model.protocol === "openrouter") {
         const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);

@@ -15,6 +15,10 @@ import type { ToolCatalogInput } from "../../contracts/tools.ts";
 import { CatalogError, parseCatalog, sameCatalog } from "../../capabilities/tools/runtime/catalog.ts";
 import { ToolFault, createCallbackBridge, isToolMethod, toolMethods, toolRequest } from "./functions.ts";
 
+import { parseReminderBatch, parseReminderChange, parseReminderList, ReminderShapeError } from "../../runtime/reminder-validation.ts";
+import { REMINDER_LIMITS } from "../../util/reminder-schedule.ts";
+import type { ReminderChange, ReminderChangeResult, ReminderSessionEvent } from "../../contracts/reminders.ts";
+
 class Fault extends Error {
   constructor(readonly tag: string, message: string, readonly rpc = -32602) { super(message); }
 }
@@ -69,12 +73,13 @@ function count(value: unknown, fallback: number): number {
  * advertised only when its sessions are opened from durable storage. */
 export function describe(durable: boolean, archives = false, functions = false): Description {
   return {
+    reminderLimits: REMINDER_LIMITS,
     configOptions: [], commands: [], policies: [],
-    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, ...(functions ? { functions: true as const } : {}),
-      methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/open"] : []), ...operatorMethods, "session/status",
+    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, reminders: true, ...(functions ? { functions: true as const } : {}),
+      methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/open"] : []), ...operatorMethods, "session/status", "reminder/change", "reminder/get", "reminder/list",
         "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/notify", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
         ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? toolMethods() : [])],
-      events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "approval_closed", "session/event"] },
+      events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "approval_closed", "reminder_changed", "reminder_fired", "reminder_expired", "reminder_cancelled", "session/event"] },
   };
 }
 
@@ -89,6 +94,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   // Decision 0020: the batch this connection's open applied, kept so a repeated
   // load reports the same results without applying anything again.
   let startup: { batch: PendingChannelChange[]; results: ChannelChangeResult[] } | undefined;
+  let reminderStartup: { batch: ReminderChange[]; results: ReminderChangeResult[] } | undefined;
   let activeConfig: ProtocolConfig | undefined;
   let subscription: Subscription = { text: "final", tools: "full" };
   const listeners = new Set<(notification: RpcNotification) => void>();
@@ -134,10 +140,12 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const message: RpcNotification = { jsonrpc: "2.0", method: "channel/event", params: event };
       publish(() => { for (const listener of listeners) { try { listener(structuredClone(message)); } catch { /* Isolate clients. */ } } });
     });
-    opened.session.subscribeSession(event => {
+    const sendSession = (event: Parameters<Parameters<PersistentSession["subscribeSession"]>[0]>[0] | ReminderSessionEvent) => {
       const message: RpcSessionNotification = { jsonrpc: "2.0", method: "session/event", params: event };
       publish(() => { for (const listener of sessionListeners) { try { listener(structuredClone(message)); } catch { /* Isolate clients. */ } } });
-    });
+    };
+    opened.session.subscribeSession(sendSession);
+    opened.session.reminders?.subscribeWake(sendSession);
     opened.session.approvals.setConsumer(approvalConsumer);
     activeConfig = structuredClone(opened.config ?? request.config);
     return opened;
@@ -180,6 +188,24 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     }, 0);
   }
 
+  function reminderView(session: PersistentSession, results: ReminderChangeResult[] = []) {
+    const reminders = session.reminders;
+    if (!reminders) return {};
+    const page = readValue(reminders.listReminders({})).value;
+    return { reminderChanges: results, reminders: page.reminders, ...(page.next ? { remindersNext: page.next } : {}),
+      ...(reminders.executable() ? readValue(reminders.reminderWake()).value : {}) };
+  }
+
+  function prepareReminders(session: PersistentSession, batch: ReminderChange[]) {
+    const reminders = session.reminders;
+    if (batch.length && !reminders?.executable()) throw new Fault("incompatible", "Reminders cannot change in an inspection-only session");
+    const results = batch.map(change => readValue(reminders!.change(change)).value);
+    reminders?.processStartup();
+    const view = reminderView(session, results);
+    reminderStartup = { batch, results };
+    return view;
+  }
+
   async function dispatch(method: string, raw: unknown): Promise<unknown> {
     if (!description.capabilities.methods.includes(method)) throw new Fault("method_not_found", `Unsupported method: ${method}`, -32601);
     const p = obj(raw);
@@ -208,7 +234,8 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { valid: true };
     }
     if (method === "session/create") {
-      keys(p, ["sessionId", "config", "participants", "channels", "channelChanges", "tools"]);
+      keys(p, ["sessionId", "config", "participants", "channels", "channelChanges", "tools", "reminderChanges"]);
+      const reminderBatch = parseReminderBatch(p.reminderChanges);
       const tools = catalogOf(p.tools);
       const sessionId = text(p.sessionId);
       if (current || opening) throw new Fault("already_exists", "One session per endpoint");
@@ -228,20 +255,24 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       if (batch && p.config?.policies) checkPolicies(batch, Object.keys(p.config.policies));
       const opened = await attach({ mode: "create", sessionId, config: p.config, ...(tools ? { tools } : {}) });
       let results: ChannelChangeResult[] | undefined;
+      let reminderResult: ReturnType<typeof reminderView>;
       try {
         const finish = batch && await prepare(opened, batch);
         opened.commitConfig?.();
+        if (opened.session.reminders) holdAfterResponse();
         results = finish?.();
+        reminderResult = prepareReminders(opened.session, reminderBatch);
         current = opened;
         if (batch) startup = { batch, results: results! };
       } catch (error) { abandon(opened, !!batch); throw error; }
       finally { opening = false; }
-      if (batch?.length) holdAfterResponse(() => opened.session.start());
+      if (batch?.length || opened.session.reminders) holdAfterResponse(() => { if (current === opened) opened.session.start(); });
       else opened.session.start();
-      return { ...(opened.session.operatorReads ? ready(opened) : { sessionId }), ...(results ? { channelChanges: results } : {}) };
+      return { ...(opened.session.operatorReads ? ready(opened) : { sessionId }), ...reminderResult, ...(results ? { channelChanges: results } : {}) };
     }
     if (method === "session/open") {
-      keys(p, ["sessionId", "config", "channelChanges", "tools"]);
+      keys(p, ["sessionId", "config", "channelChanges", "tools", "reminderChanges"]);
+      const reminderBatch = parseReminderBatch(p.reminderChanges);
       const tools = catalogOf(p.tools);
       const sessionId = text(p.sessionId);
       const batch = p.channelChanges === undefined ? undefined : parseChannelChanges(p.channelChanges);
@@ -252,20 +283,23 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         if (ready(current).sessionId !== sessionId) throw new Fault("already_exists", "One session per endpoint");
         if (batch && !sameBatch(startup?.batch ?? [], batch)) throw new Fault("invalid_state", "The session is already open; send newer channel changes through the channel methods");
         if (tools && !(startupTools && sameCatalog(startupTools, tools))) throw new Fault("invalid_state", "The session is already open with another tool catalog; use the tool methods");
-        return { ...ready(current), ...(startup ? { channelChanges: startup.results } : {}) };
+        if (p.reminderChanges !== undefined && JSON.stringify(reminderBatch) !== JSON.stringify(reminderStartup?.batch ?? [])) throw new Fault("invalid_state", "The session is already open; send changes through reminder/change");
+        return { ...ready(current), ...reminderView(current.session, reminderStartup?.results), ...(startup ? { channelChanges: startup.results } : {}) };
       }
       const opened = await attach({ mode: "open", sessionId, config: p.config, ...(tools ? { tools } : {}) });
       try {
         const finish = batch && await prepare(opened, batch);
         // From here to the end of the block nothing is awaited: the resumes, the
         // view and the hold on later notifications are one synchronous step.
+        if (opened.session.reminders) holdAfterResponse();
         const results = finish?.();
-        const result = ready(opened);
         opened.commitConfig?.();
-        holdAfterResponse(() => opened.session.start());
+        const reminderResult = prepareReminders(opened.session, reminderBatch);
+        const result = ready(opened);
+        holdAfterResponse(() => { if (current === opened) opened.session.start(); });
         current = opened;
         if (batch) startup = { batch, results: results! };
-        return { ...result, ...(results ? { channelChanges: results } : {}) };
+        return { ...result, ...reminderResult, ...(results ? { channelChanges: results } : {}) };
       }
       // Work was not started; release the session so no partial load is observable.
       catch (error) { abandon(opened, !!batch); throw error; }
@@ -287,7 +321,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
       else return bad("Import source must be a path or a transfer");
       const payload = decodeArchive(bytes, limits.maxBytes) as SessionFilePayload<SessionArchive>;
-      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5].includes(payload.archive?.archiveVersion))
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5, 6].includes(payload.archive?.archiveVersion))
         throw new Fault("invalid_archive", "Invalid session file payload");
       try { validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { throw new Fault("invalid_archive", String(error)); }
       const sessionId = p.sessionId ?? payload.archive?.snapshot?.session?.sessionId;
@@ -379,7 +413,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const status = wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()).channels.find(value => value.channel === channel)!;
       return { channel: status, ...(method === "channel/create" ? { created: (result.value as { created: boolean }).created } : {}) };
     }
-    if (method === "session/idle") { keys(p, []); return { idle: session.agent.idle() }; }
+    if (method === "session/idle") { keys(p, []); return { idle: session.agent.idle() && session.status().execution !== "working" }; }
     if (method === "session/status") { keys(p, []); return wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
     if (method === "session/suspend" || method === "session/resume") {
       keys(p, []);
@@ -388,6 +422,26 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const outcome = method === "session/suspend" ? await session.suspend() : session.resume();
       if (!outcome.ok) throw new Fault(outcome.error.code, outcome.error.message);
       return wireStatus(outcome.status, session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot());
+    }
+    if (method.startsWith("reminder/")) {
+      const reminders = session.reminders;
+      if (!reminders) throw new Fault("invalid_state", "Reminders are unavailable");
+      if (method === "reminder/list") return readValue(reminders.listReminders(parseReminderList(p))).value;
+      if (method === "reminder/get") {
+        keys(p, ["id"]);
+        const reminder = readValue(reminders.readReminder(text(p.id))).value;
+        if (!reminder) throw new Fault("not_found", "Unknown reminder");
+        return { reminder };
+      }
+      if (!reminders.executable()) throw new Fault("incompatible", "Reminders cannot change in this session");
+      return readValue(reminders.change(parseReminderChange(p))).value;
+    }
+    if (method === "session/stop" && Object.keys(p).length) {
+      keys(p, ["ifIdle", "unlessDueWithinMs"]);
+      const windowMs = p.unlessDueWithinMs ?? 0;
+      if (p.ifIdle !== true || p.unlessDueWithinMs === null || !Number.isSafeInteger(windowMs) || windowMs < 0) bad("Invalid conditional stop");
+      if (!session.reminders) throw new Fault("invalid_state", "Conditional stop is unavailable");
+      return session.reminders.conditionalStop(windowMs);
     }
     if (method === "session/stop") { keys(p, []); return wireStatus(session.stop("Stopped by the host"), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
     if (method === "session/model-calls") {
@@ -446,6 +500,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { jsonrpc: "2.0", id: request.id, result };
       } catch (error) {
         const fault = error instanceof FrameLimit ? new Fault("transfer_limit", error.message)
+          : error instanceof ReminderShapeError ? new Fault("invalid_params", error.message)
           : error instanceof TransferFault || error instanceof SessionFileError || error instanceof OperatorFault || error instanceof ChannelChangeFault || error instanceof ToolFault ? new Fault(error.code, error.message) : error;
         return { jsonrpc: "2.0", id, error: { code: fault instanceof Fault ? fault.rpc : -32603,
           message: String(fault), data: { code: fault instanceof Fault ? fault.tag : "internal_error" } } };
@@ -457,6 +512,6 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     respond(response) { bridge.respond(response); },
     // A connection that is gone serves no handler and answers no callback.
     disconnect() { approvalConsumer = false; current?.session.approvals.disconnect(); current?.session.tools?.serve([]); bridge.disconnect(); },
-    dispose() { approvalConsumer = false; current?.session.approvals.disconnect(); bridge.disconnect(); transfers?.dispose(); current?.close(); current = undefined; },
+    dispose() { approvalConsumer = false; current?.session.approvals.disconnect(); bridge.disconnect(); transfers?.dispose(); current?.session.reminders?.releaseTimer(); current?.close(); current = undefined; },
   };
 }

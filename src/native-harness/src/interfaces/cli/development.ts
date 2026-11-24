@@ -140,6 +140,6 @@ export async function openDevelopment(options: DevelopmentOptions) {
     session, inspection, storage: options.database ?? "memory",
     /** The session as local clients use it: acceptance also refreshes the inspector. */
     local: { agent: observed.agent, subscribe: session.subscribe },
-    close() { observed.stop(); const closed = storage.close(); if (!closed.ok) throw new Error(`Cannot close session storage (${closed.error.code}): ${closed.error.message}`); },
+    close() { session.reminders?.releaseTimer(); observed.stop(); const closed = storage.close(); if (!closed.ok) throw new Error(`Cannot close session storage (${closed.error.code}): ${closed.error.message}`); },
   };
 }

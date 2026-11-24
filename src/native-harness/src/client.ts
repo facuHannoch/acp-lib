@@ -10,3 +10,5 @@ export type { ManagedConfig, ManagedModel, ToolPolicy, ToolDecision, ItemPolicy,
 
 export type { ModelCallSummary, ModelAttemptSummary, ModelUsage, ModelTextEvent, ModelTextPage } from "./contracts/model-execution.ts";
 export { aggregateUsage } from "./capabilities/model/usage.ts";
+
+export type { Reminder, ReminderChange, ReminderChangeResult, ReminderList, ReminderListParams, ReminderWake, ReminderSessionEvent, ConditionalStopParams, ConditionalStopResult } from "./contracts/reminders.ts";
