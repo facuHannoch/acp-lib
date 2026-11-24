@@ -271,7 +271,9 @@ function migrateRoutineZones(tables: Tables, meta: Meta, events: ReminderDeliver
         events.push({ channel: row.channel, event });
       } else {
         const state = row.timezoneMigration ? "active" : row.state;
-        reminder = { ...row, ...prepared.fields, schedule: row.schedule, state,
+        const timezone = "timezone" in prepared.fields.schedule ? prepared.fields.schedule.timezone : undefined;
+        const schedule = timezone !== undefined ? { ...row.schedule, timezone } : row.schedule;
+        reminder = { ...row, ...prepared.fields, schedule, state,
           blockedReason: row.timezoneMigration ? undefined : row.blockedReason,
           nextRunAt: state === "active" ? prepared.fields.nextRunAt : null, timezoneMigration: undefined } as Reminder;
       }
@@ -650,10 +652,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
 
     changeReminder: (change, wallTime) => run(meta => {
       requireCompatible();
-      if (change.op !== "cancel" && (change.payload.schedule?.at === undefined && change.payload.schedule !== undefined)) {
-        activateReminders(meta);
-        meta.formatVersion = 8;
-      }
+      const routineSchedule = change.op !== "cancel" && change.payload.schedule !== undefined && change.payload.schedule.at === undefined;
       const replacing = change.op === "update" && change.payload.schedule !== undefined;
       return applyReminderChange({
         guardEnabled: () => reminders.guardLimit() !== undefined,
@@ -670,7 +669,12 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
               reminders.put({ ...row, episodeCutoff: undefined, coalescedPending: undefined });
           }
         },
-        saveReceipt(receipt) { activateReminders(meta); reminders.saveReceipt(receipt); seq(meta); },
+        saveReceipt(receipt) {
+          activateReminders(meta);
+          if (routineSchedule) meta.formatVersion = 8;
+          reminders.saveReceipt(receipt);
+          seq(meta);
+        },
         channelStatus: channel => tables.channel(channel)?.lifecycle, validPolicies: validReminderPolicies,
       }, change, wallTime);
     }),

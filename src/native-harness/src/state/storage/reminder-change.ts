@@ -95,7 +95,9 @@ export function applyReminderChange(store: ReminderChanges, change: ReminderChan
   const defaulted = fields.expiresAfter === undefined && store.defaultedExpiry(reminderId);
   const grace = fields.expiresAfter !== undefined ? fields.expiresAfter : defaulted ? undefined : row.expiresAfter;
   if (isRoutine(row)) {
-    if (fields.schedule?.at !== undefined) return persist(block("invalid_schedule"));
+    if (fields.schedule && (fields.schedule.at !== undefined ||
+        (fields.schedule.every !== undefined) !== (row.schedule.every !== undefined)))
+      return persist(block("invalid_schedule"));
     const state = fields.state ?? (row.state === "blocked" ? "active" : row.state);
     if (state === "active" && row.state !== "active" && store.activeRoutines(row.channel) >= 20)
       return persist(block("limit_exceeded"));

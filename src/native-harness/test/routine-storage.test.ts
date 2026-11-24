@@ -34,6 +34,9 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: archived calend
       schedule: { at: "2026-11-02T12:00:00.000Z" }, acceptedAt: new Date(now).toISOString(),
     } }, now));
     expect(invalid).toMatchObject({ outcome: "blocked", reason: "invalid_schedule" });
+    expect(take(store.changeReminder({ op: "update", reminderId: "fold", changeId: 3, payload: {
+      schedule: { every: 600_000 }, acceptedAt: new Date(now).toISOString(),
+    } }, now))).toMatchObject({ outcome: "blocked", reason: "invalid_schedule" });
     expect(take(store.changeReminder({ ...input, reminderId: "one", payload: { ...input.payload, overlap: "queue",
       schedule: { at: "2026-11-02T12:00:00.000Z" } } }, now))).toMatchObject({ outcome: "blocked", reason: "invalid_schedule" });
 
@@ -98,4 +101,19 @@ test("exhausted channel contributes no wake while another channel fires; partici
     }]);
     expect(reset.items.map(item => item.itemId)).toEqual(["reset"]);
   } finally { session.close(); }
+});
+
+test("an existing receipt conflict does not activate routine format", () => {
+  const adapter = createMemoryStorageAdapter();
+  const store = take(adapter.open({ mode: "create", identity }));
+  try {
+    take(store.createChannel({ channelId: "a" }));
+    const payload = { channel: "a", text: "one-off", acceptedAt: new Date(now).toISOString() };
+    const one = { op: "create", reminderId: "r", changeId: 1 } as const;
+    take(store.changeReminder({ ...one, payload: { ...payload, schedule: { at: new Date(now + 600_000).toISOString() } } }, now));
+    expect(take(store.readSession()).formatVersion).toBe(7);
+    expect(take(store.changeReminder({ ...one, payload: { ...payload, schedule: { every: 600_000 } } }, now)))
+      .toMatchObject({ outcome: "blocked", reason: "conflict" });
+    expect(take(store.readSession()).formatVersion).toBe(7);
+  } finally { store.close(); }
 });
