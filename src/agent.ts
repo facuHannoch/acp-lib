@@ -1,5 +1,4 @@
 import { channelSettingsLive, type NativeChannelSettings, type NativeRestartOptions, type NativeRestartPreview, type NativeRestartResult, type NativeToolSetting } from "./agent/native-operations.ts";
-import type { AgentConversationId } from "./agent-ids.ts";
 import { createAgentReminderService, type ReminderService } from "./native/reminders/service.ts";
 import { resolveProviderStart } from "./conversation-startup.ts";
 import { withDelegationTools } from "./orchestrator/native-delegation.ts";
