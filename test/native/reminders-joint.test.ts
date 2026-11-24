@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnHarness } from "../../src/native-harness/test/helpers/stdio.ts";
-import { HarnessClientError, type HarnessClient } from "../../src/native-harness/src/client.ts";
+import { HarnessClientError, type HarnessClient, type ReminderSessionEvent } from "../../src/native-harness/src/client.ts";
 import { ReminderClock } from "./fixtures/reminder-clock.ts";
 import { hold, nativeRig, reply, until } from "./support.ts";
 
@@ -12,7 +12,7 @@ async function joint() {
   const clock = new ReminderClock();
   clock.time = Date.now();
   const peer = { time: clock.time as number | undefined, fault: undefined as string | undefined,
-    lostReply: false, dropWake: false, current: undefined as Child | undefined };
+    lostReply: false, dropWake: false, holdWakeUntilStop: false, current: undefined as Child | undefined };
   const opens: Open[] = [];
   const batches: Array<Parameters<HarnessClient["openSession"]>[0]> = [];
   const children: Child[] = [];
@@ -23,6 +23,21 @@ async function joint() {
     peer.current = child;
     const client = child.client;
     if (peer.dropWake) client.onReminderWake = () => () => {};
+    if (peer.holdWakeUntilStop) {
+      const subscribe = client.onReminderWake.bind(client);
+      const held: Array<() => void> = [];
+      let holding = true;
+      client.onReminderWake = listener => subscribe((event: ReminderSessionEvent) => {
+        if (holding && event.nextDueAt !== null) held.push(() => listener(event));
+        else listener(event);
+      });
+      const stop = client.stop.bind(client);
+      client.stop = () => {
+        holding = false;
+        for (const notify of held.splice(0)) notify();
+        return stop();
+      };
+    }
     const open = client.openSession.bind(client);
     client.openSession = async params => {
       batches.push(structuredClone(params));
@@ -184,24 +199,29 @@ test("joint missed deadline event and post-commit death recover from executable 
 test("joint cold wake survives stop and owner close and fires exactly once on the original channel", async () => {
   const s = await joint();
   try {
+    s.peer.holdWakeUntilStop = true;
     const first = await s.rig.open();
     const channel = await first.conversations.create({ title: "cold target" });
     await first.nativeHarness!.start();
     const item = await channel.reminders.create(pending("cold notice"));
     const due = atOf(item);
+    const repo = first.persistence.reminders!;
+    expect((await repo.wake()).reported?.nextDueAt).toBeNull();
     await first.nativeHarness!.stop();
-    await until(() => s.clock.delays.length === 1);
+    expect((await repo.wake()).reported?.nextDueAt).toBe(due);
+    s.peer.holdWakeUntilStop = false;
+    await until(() => s.clock.delays.length === 1, "first owner re-arms after explicit stop");
     expect((await first.persistence.reminders!.wake()).effectiveAt).toBe(due);
     await first.close();
     expect(s.clock.delays).toEqual([]);
     const next = await s.rig.open({ id: first.id });
     const { conversation: reopenedChannel } = await next.conversations.open(channel.id);
     const events = s.rig.watch(reopenedChannel);
-    await until(() => s.clock.delays.length === 1);
+    await until(() => s.clock.delays.length === 1, "second owner re-arms the persisted wake");
     s.peer.time = due;
     s.clock.tickAt(due);
-    await until(() => next.nativeHarness!.state === "running");
-    await until(() => events.some(event => event.kind === "reminder_fired"));
+    await until(() => next.nativeHarness!.state === "running", "cold wake starts the second owner’s harness");
+    await until(() => events.some(event => event.kind === "reminder_fired"), "second owner receives reminder_fired");
     expect(next.nativeHarness!.launches).toBe(1);
     expect(s.clock.delays).toEqual([]);
     expect(events.filter(event => event.kind === "reminder_fired")).toHaveLength(1);
