@@ -302,3 +302,20 @@ channel transaction, expiry drift on edit), a per-access ReminderService with a 
 terminal reminder, explicit `every.startAt` and 0 ms expiry unvalidated, plus coverage gaps (events, accessor, real 21->22 upgrade,
 real SQLite delete). Follow-up assigned to cod2b-t. R8 carry-over: the validation wake (min(acceptedAt + 2 min, dueAt)) is a launch
 deadline, so an unresolved entry leaves a past wake; R8 must rate-limit it with the restart budget (3 in 60 s), no spin.
+
+## Round 9 (2026-11-24): contract released, decision 0031 (`34969fd9`, ref `aiagent/haurness-rh1-approved`)
+
+Copied to `contracts/0031-one-off-reminders-34969fd.md`; it overrides the plan where they differ. Differences to carry:
+- ONE-OFFS ONLY: create/update schedule is `{ at }`; `maxActiveRoutinesPerChannel` is 0 (routines disabled); `every`/`cron` stay
+  out of R8 and need a separate harness gate before R9.
+- Open returns `reminderChanges` outcomes, `nextDueAt`, `reminderRevision` AND the first bounded list page (`reminders`,
+  `remindersNext`); lists via `reminder/list` (50 default, 100 max), cursors die on any reminder mutation (`invalid_cursor`).
+- `expired` is its own state and its own event `reminder_expired` (not a `cancelled.by` value); `cancelled.by` is host | agent |
+  channel_retired; new block reasons `stale`, `invalid_state`.
+- `expiresAfter` on the wire is integral milliseconds (omit = default, null = none); the harness derives expiry from the stored
+  anchor, so acp-client's local expiry is provisional and the displayed value comes from the harness row; a grace-only edit uses the
+  stored lead anchor (R7's "re-resolve at the edit's acceptance" is superseded for the wire).
+- `acceptedAt` is trusted if not more than 30 s ahead of the harness clock; lead is measured from it, including on schedule edits.
+- Stop: `{ stopped:true }` or `{ stopped:false, reason: busy | next_due_soon }`; window defaults to 0.
+- Harness timer is clamped to 60 s chunks with a wall-clock recheck; the cold wake is acp-client's (R-H3 on their side).
+- Real-stdio tests wait for R-H2 (reviewed runnable SHA); R8 uses a scripted fake from 0031. Brief: `briefs/11-24-BRIEF-R8-reminders-wire.md`.
