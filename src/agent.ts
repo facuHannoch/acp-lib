@@ -473,6 +473,7 @@ export class Agent {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.nativeHarness?.reminderWake?.close();
     this.manager.cancelStarts();
     let shutdownError: unknown;
     try {
@@ -486,7 +487,6 @@ export class Agent {
       await this.manager.stopAll();
       await this.orchestrator?.waitForCompletions();
       await this.acpWorkerDelivery?.flush();
-      // The shared harness process is the Agent's: it stops with it, after its conversations.
       await this.nativeHarness?.stop();
       // Every authorized shutdown write has finished; nothing may be observed after this.
       this.eventBus.close();

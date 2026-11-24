@@ -24,7 +24,7 @@ type Runner = <T>(operation: () => T) => Promise<T>;
 type JournalRow = { id: string; conversation_id: string; high_water: number };
 type ValueRow = { value: string };
 
-export function createSqliteReminderPersistence(database: Database, write: Runner, read: Runner): ReminderPersistence {
+export function createSqliteReminderPersistence(database: Database, write: Runner, read: Runner, changed: () => void = () => {}): ReminderPersistence {
   const journalFrom = (row: JournalRow): ReminderJournal => {
     const cache = database.query<ValueRow & { observation: number }, [string]>("SELECT value, observation FROM reminder_cache WHERE id = ?").get(row.id);
     const changes = database.query<ValueRow, [string]>(
@@ -78,7 +78,8 @@ export function createSqliteReminderPersistence(database: Database, write: Runne
     },
     saveWake(wake) {
       database.query(`INSERT INTO reminder_wake_index VALUES (1, ?)
-        ON CONFLICT(singleton) DO UPDATE SET value = excluded.value`).run(JSON.stringify(wake));
+        ON CONFLICT(singleton) DO UPDATE SET value = excluded.value WHERE value <> excluded.value`).run(JSON.stringify(wake));
+      changed();
     },
   }, (operation) => write(() => database.inTransaction ? operation() : database.transaction(operation).immediate()), read);
 }

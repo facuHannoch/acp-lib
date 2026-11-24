@@ -1,3 +1,5 @@
+import { SqliteAgentPersistence } from "../../persistence/sqlite-backend.ts";
+import { ReminderWakeSupervisor } from "./supervisor.ts";
 import { ReminderSync } from "./sync.ts";
 import type { NativeHarnessHost } from "../host.ts";
 import { noopLogger } from "../../logger.ts";
@@ -198,6 +200,18 @@ export function createAgentReminderService(
     refresh: async (channel, id) => { await host?.refreshReminders(channel, id); },
     live: async (change) => await host?.changeReminder(change) ?? { reason: "not_found" },
   });
-  if (host) host.reminderSync = new ReminderSync(persistence, service.repository, log);
+  if (host) {
+    host.reminderSync = new ReminderSync(persistence, service.repository, log);
+    if (persistence instanceof SqliteAgentPersistence && persistence.ownsReminderWake) {
+      host.reminderWake = new ReminderWakeSupervisor({
+        state: () => host.reminderWakeState,
+        index: () => service.repository.wake(),
+        subscribe: listener => persistence.subscribeReminderWake(listener),
+        start: now => host.startForReminder(now),
+        error: error => log.warn("reminder_wake_failed", { error: String(error) }),
+      }, host.reminderTimer);
+      host.reminderWake.subscribeHost(listener => host.subscribeState(listener));
+    }
+  }
   return service;
 }

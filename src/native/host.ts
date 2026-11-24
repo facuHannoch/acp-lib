@@ -1,3 +1,4 @@
+import type { ReminderTimer, ReminderWakeSupervisor } from "./reminders/supervisor.ts";
 import type { ReminderSync } from "./reminders/sync.ts";
 import type { WireChange } from "./reminders/wire.ts";
 import type { ReminderNotification, WireReminderEvent } from "./reminders/wire.ts";
@@ -116,6 +117,7 @@ export interface NativeHarnessHostConfig {
   /** Per request to the running harness. Default 30 000 ms. */
   readonly requestTimeoutMs?: number;
   /** Automatic reopen attempts after an unexpected loss with work outstanding. Default 3 within 60 000 ms. */
+  readonly reminderTimer?: ReminderTimer;
   readonly restart?: { readonly limit: number; readonly windowMs: number };
   readonly logger?: Logger;
   /** A blocked channel change (a delete that found pending work, a resume the configuration cannot run...). */
@@ -135,6 +137,15 @@ export class NativeHarnessHost {
   readonly #config: NativeHarnessHostConfig;
   readonly #log: Logger;
   reminderSync?: ReminderSync;
+  reminderWake?: ReminderWakeSupervisor;
+  #stoppingExplicitly = false;
+  get reminderWakeState(): NativeHostState { return this.#stoppingExplicitly ? "running" : this.#state; }
+  get reminderTimer() { return this.#config.reminderTimer; }
+  startForReminder(now: number): Promise<void> {
+    if (this.#starting || this.#state === "running") return this.ensureStarted();
+    if (!this.#claimRestart(now)) return Promise.reject(this.#failReopen());
+    return this.ensureStarted();
+  }
   changeReminder(change: WireChange) { return this.reminderSync?.dispatch(this.#client(), change); }
   refreshReminders(channel?: string, id?: string) { return this.reminderSync?.refresh(this.#client(), channel, id); }
   #state: NativeHostState = "stopped";
@@ -301,7 +312,8 @@ export class NativeHarnessHost {
 
   /** Stops the process. Pending work is not reconciled until the next start; waiting pushes fail. */
   async stop(): Promise<void> {
-    this.#stopped = true;
+    this.#stopped = this.#stoppingExplicitly = true;
+    this.reminderWake?.refresh();
     const connection = this.#connection;
     this.#connection = null;
     await this.#starting?.catch(() => undefined);
@@ -320,6 +332,8 @@ export class NativeHarnessHost {
     } finally {
       this.#functions?.dispose();
       this.#functions = null;
+      this.#stoppingExplicitly = false;
+      this.reminderWake?.refresh();
     }
   }
 
@@ -560,13 +574,7 @@ export class NativeHarnessHost {
   }
 
   async #reopen(): Promise<void> {
-    const { limit, windowMs } = this.#config.restart ?? { limit: 3, windowMs: 60_000 };
-    for (;;) {
-      const now = Date.now();
-      while (this.#restarts.length && now - this.#restarts[0]! > windowMs) this.#restarts.shift();
-      if (this.#stopped) return;
-      if (this.#restarts.length >= limit) break;
-      this.#restarts.push(now);
+    while (!this.#stopped && this.#claimRestart(Date.now())) {
       try {
         await this.ensureStarted();
         return;
@@ -575,11 +583,24 @@ export class NativeHarnessHost {
         await new Promise((resolve) => setTimeout(resolve, 100 * this.#restarts.length));
       }
     }
-    // Never a silent wait: restarts ran out, so everything pending fails with an explicit error.
+    if (!this.#stopped) this.#failReopen();
+  }
+
+  #claimRestart(now: number): boolean {
+    const { limit, windowMs } = this.#config.restart ?? { limit: 3, windowMs: 60_000 };
+    while (this.#restarts.length && now - this.#restarts[0]! > windowMs) this.#restarts.shift();
+    if (this.#restarts.length >= limit) return false;
+    this.#restarts.push(now);
+    return true;
+  }
+
+  #failReopen(): Error {
+    // Report exhausted retries to pending callers and stop automatic starts.
     this.#failure = new HarnessUnavailableError("the native harness could not be reopened", { code: "reopen_failed" });
     this.#setState("failed");
     this.#rejectWaiters(this.#failure);
     for (const port of [...this.#ports.values()]) port.failed(this.#failure);
+    return this.#failure;
   }
 
   #rejectWaiters(error: Error): void {

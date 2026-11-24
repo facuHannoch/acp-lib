@@ -1,3 +1,4 @@
+import type { ReminderTimer } from "../native/reminders/supervisor.ts";
 import type { ReminderServiceOptions } from "../native/reminders/service.ts";
 import type { OrchestratorConfig } from "../orchestrator/config.ts";
 import type { ConversationPermissionConfig, PermissionPolicyConfig } from "../permissions/policy.ts";
@@ -110,6 +111,7 @@ export interface AgentConfig extends PermissionPolicyConfig {
 }
 
 export interface AgentHarnessConfig {
+  readonly reminderTimer?: ReminderTimer;
   /** The harness configuration, sent on every open. */
   readonly config: import("../native-harness/src/client.ts").ProtocolConfig;
   /** The harness home, a path in the harness's environment. It must survive process restarts. */

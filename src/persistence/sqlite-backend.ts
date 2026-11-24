@@ -190,6 +190,16 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   private readonly installedExtensions: PersistenceExtension[] = [];
   private writeTail: Promise<void> = Promise.resolve();
   private closed = false;
+  private readonly reminderWakeListeners = new Set<() => void>();
+
+  get ownsReminderWake(): boolean { return this.ownerLock !== undefined; }
+  subscribeReminderWake(listener: () => void): () => void {
+    this.reminderWakeListeners.add(listener);
+    return () => { this.reminderWakeListeners.delete(listener); };
+  }
+  private notifyReminderWake(): void {
+    for (const listener of this.reminderWakeListeners) { try { listener(); } catch { /* Observer isolation. */ } }
+  }
 
   private constructor(
     path: string,
@@ -318,13 +328,15 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     this.assertOpen();
     return await this.enqueueWrite(async () => {
       const committed: ConversationRecord[] = [];
+      let wakeChanged = false;
       this.database.exec("BEGIN IMMEDIATE");
       try {
         const scope = this.createScope(async (operation) => operation(), (records) => {
           committed.push(...records);
-        });
+        }, undefined, () => { wakeChanged = true; });
         const result = await work(scope);
         this.database.exec("COMMIT");
+        if (wakeChanged) this.notifyReminderWake();
         await this.notifyRecordsCommitted(committed);
         return result;
       } catch (error) {
@@ -368,6 +380,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     runWrite: WriteRunner,
     onAppended: (records: readonly ConversationRecord[]) => void | Promise<void>,
     readChannels: WriteRunner = runWrite,
+    scopedWakeChanged?: () => void,
   ): PersistenceScope {
     return Object.freeze({
       media: new SqliteMediaStore(this.database, runWrite),
@@ -392,7 +405,13 @@ export class SqliteAgentPersistence implements PersistenceBackend {
         runWrite,
       ),
       identityDelivery: new SqliteIdentityDeliveryPersistence(this.database, runWrite),
-      reminders: createSqliteReminderPersistence(this.database, runWrite, readChannels),
+      reminders: scopedWakeChanged
+        ? createSqliteReminderPersistence(this.database, runWrite, readChannels, scopedWakeChanged)
+        : createSqliteReminderPersistence(this.database, async operation => {
+          const result = await runWrite(operation);
+          this.notifyReminderWake();
+          return result;
+        }, readChannels),
       channels: new SqliteChannelPersistence(this.database, runWrite, readChannels),
       workers: new SqliteWorkers(this.database, runWrite, readChannels),
       ...(this.ownerLock ? { workerDelivery: new SqliteWorkerDelivery(
