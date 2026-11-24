@@ -127,3 +127,9 @@ test("pins an IPv6 literal and rejects the seventh request", async () => {
   expect(redirects.writes).toHaveLength(6);
   expect(redirects.closed).toEqual(Array(6).fill(true));
 });
+
+test("unsupported encoding closes the socket before rejecting", async () => {
+  const f = fixture(() => ({ fragments: [raw("data", "Content-Encoding: unknown\r\n")] }));
+  await expect(f.fetch()).rejects.toMatchObject({ code: "unsupported_content" });
+  expect(f.closed).toEqual([true]);
+});
