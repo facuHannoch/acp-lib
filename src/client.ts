@@ -48,6 +48,7 @@ import type { ClientPrompt } from "./agent-client.ts";
 import { answerPermissionLevel, ownPermissions, permissionLevel, recordingPermissionHandlers, type PermissionPolicyConfig } from "./permissions/policy.ts";
 import { stampAcpPermission } from "./permissions/arrival.ts";
 import { toPermissionRequest } from "./permissions/acp.ts";
+import { AIR_CLIENT_CAPABILITY_META } from "./provider-notices.ts";
 
 export interface AcpClientConfig extends PermissionPolicyConfig {
   /** How to launch the agent binary. */
@@ -219,6 +220,9 @@ export class AcpClient implements AgentClient {
         writeTextFile: this.handlers.writeTextFile !== false,
       },
       terminal: this.handlers.terminal !== false,
+      // Ask adapters that speak the AIR extension (codex-acp, claude-agent-acp) to report retries,
+      // warnings and failures as typed session failures; read in provider-notices.ts.
+      _meta: { ...AIR_CLIENT_CAPABILITY_META },
     };
   }
 

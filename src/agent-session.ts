@@ -4461,6 +4461,8 @@ function runtimeRecordFromActivity(
     case "plan":
     case "plan_update":
     case "plan_removed":
+    // A provider's warning, retry or failure: kept so a consumer can show it apart from messages.
+    case "provider_notice":
       return {
         recordId,
         agentSessionId,
