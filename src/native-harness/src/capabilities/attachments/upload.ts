@@ -8,7 +8,7 @@ export class UploadError extends Error {
     readonly expectedOffset?: number) { super(message); }
 }
 
-type Upload = { metadata: AttachmentMetadata; path: string; fd: number; offset: number; lastUsed: number; validation?: AbortController };
+type Upload = { metadata: AttachmentMetadata; path: string; fd: number; offset: number; lastUsed: number; validation?: AbortController; timer?: ReturnType<typeof setTimeout> };
 type Finalized = { channel: string; metadata: AttachmentMetadata };
 
 /** The session owner must serialize these methods with acceptance and cleanup.
@@ -18,6 +18,8 @@ type Finalized = { channel: string; metadata: AttachmentMetadata };
 export function createUploadManager(options: {
   root: string;
   now?: () => number;
+  /** Test-only override; production uses the advertised idle interval. */
+  idleMs?: number;
   validateImage: (path: string, metadata: AttachmentMetadata, signal: AbortSignal) => void | Promise<void>;
   publishReady: (metadata: AttachmentMetadata) => void;
 }) {
@@ -26,23 +28,37 @@ export function createUploadManager(options: {
   if (!lstatSync(options.root).isDirectory()) throw new Error("Attachment root must be a directory, not a symlink");
   if (!existed) { const parent = openSync(dirname(options.root), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); try { fsyncSync(parent); } finally { closeSync(parent); } }
   const now = options.now ?? Date.now;
+  const idleMs = options.idleMs ?? ATTACHMENT_LIMITS.uploadIdleMs;
+  if (!Number.isSafeInteger(idleMs) || idleMs < 1) throw new Error("Invalid upload idle interval");
   const uploads = new Map<string, Upload>();
   const completed = new Map<string, Finalized>();
   const finalizing = new Map<string, Promise<AttachmentMetadata>>();
   const discard = (id: string, upload: Upload) => {
     uploads.delete(id);
+    if (upload.timer) clearTimeout(upload.timer);
     upload.validation?.abort();
     closeSync(upload.fd);
     rmSync(upload.path, { force: true });
   };
   const expire = () => {
-    for (const [id, upload] of uploads) if (!upload.validation && now() - upload.lastUsed >= ATTACHMENT_LIMITS.uploadIdleMs) discard(id, upload);
+    for (const [id, upload] of uploads) if (!upload.validation && now() - upload.lastUsed >= idleMs) discard(id, upload);
+  };
+  const arm = (id: string, upload: Upload, delay = idleMs) => {
+    if (upload.timer) clearTimeout(upload.timer);
+    upload.timer = setTimeout(() => {
+      if (uploads.get(id) !== upload) return;
+      const remaining = idleMs - (now() - upload.lastUsed);
+      if (upload.validation || remaining > 0) { arm(id, upload, upload.validation ? idleMs : remaining); return; }
+      try { discard(id, upload); } catch { /* Owner recovery removes any orphan. */ }
+    }, delay);
+    upload.timer.unref?.();
   };
   const get = (channel: string, id: string): Upload => {
     expire();
     const upload = uploads.get(id);
     if (!upload || upload.metadata.channel !== channel) throw new UploadError("not_found", "Unknown upload");
     upload.lastUsed = now();
+    arm(id, upload);
     return upload;
   };
   return {
@@ -58,7 +74,8 @@ export function createUploadManager(options: {
       const id = randomUUID(), uploadId = randomUUID();
       const path = join(options.root, `.stage-${uploadId}`);
       const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
-      uploads.set(uploadId, { metadata: { id, ...input }, path, fd, offset: 0, lastUsed: now() });
+      const upload: Upload = { metadata: { id, ...input }, path, fd, offset: 0, lastUsed: now() };
+      uploads.set(uploadId, upload); arm(uploadId, upload);
       return { uploadId, attachmentId: id, offset: 0 };
     },
     status(channel: string, uploadId: string) { return { offset: get(channel, uploadId).offset }; },
@@ -124,7 +141,7 @@ export function createUploadManager(options: {
       try { fsyncSync(directory); } finally { closeSync(directory); }
       // If this callback fails, the published orphan is recovered by the owner.
       // Remove the live handle so a retry cannot publish the same staging path.
-      uploads.delete(uploadId); closeSync(upload.fd);
+      uploads.delete(uploadId); if (upload.timer) clearTimeout(upload.timer); closeSync(upload.fd);
       options.publishReady(upload.metadata);
       completed.set(uploadId, { channel, metadata: upload.metadata });
       return { ...upload.metadata };

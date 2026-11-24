@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createUploadManager, UploadError } from "../src/capabilities/attachments/upload.ts";
@@ -57,6 +57,15 @@ describe("managed upload staging", () => {
     uploads.abort("a", uploadId);
     await expect(result).rejects.toThrow();
     expect(published).toBe(false);
+    uploads.close();
+  });
+  test("idle uploads are actively reclaimed without another request", async () => {
+    const root = mkdtempSync(join(tmpdir(), "attachment-test-")); roots.push(root);
+    const uploads = createUploadManager({ root, idleMs: 20, validateImage() {}, publishReady() {} });
+    const { uploadId } = uploads.begin({ channel: "a", filename: "x", mediaType: "text/plain", bytes: 1, sha256: "0".repeat(64) });
+    await Bun.sleep(80);
+    expect(readdirSync(root)).toEqual([]);
+    expect(() => uploads.status("a", uploadId)).toThrow(UploadError);
     uploads.close();
   });
 });
