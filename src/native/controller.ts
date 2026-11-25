@@ -504,8 +504,10 @@ export class NativeController implements ConversationController, ChannelPort {
             } else if (event.outcome === "interrupted" && turn.cancelRequested) {
               cancelled(true);
             } else {
-              const reason = event.error ?? event.outcome;
-              finish(() => reject(new NativeTurnError(event.outcome as "failed" | "interrupted", `native turn ${turn.harnessId} ${event.outcome}: ${reason}`,
+              const prefix = `${event.outcome}: `;
+              const reason = event.error?.startsWith(prefix) ? event.error.slice(prefix.length) : event.error;
+              const detail = reason && reason !== event.outcome ? `: ${reason}` : "";
+              finish(() => reject(new NativeTurnError(event.outcome as "failed" | "interrupted", `native turn ${turn.harnessId} ${event.outcome}${detail}`,
                 event.uncertainCalls, event.contextFailure)), true);
             }
             return;

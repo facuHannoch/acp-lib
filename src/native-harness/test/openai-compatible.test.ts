@@ -64,7 +64,7 @@ test("loopback provider sees the exact request and redirects never receive a sec
     for (redirect of [new URL("/other", server.url).href, target.url.href]) {
       status = 307;
       const before = requests.length;
-      expect(await readEvents(baseUrl, request, credential)).toEqual([{ type: "failure", kind: "provider", message: "redirect_refused" }]);
+      expect(await readEvents(baseUrl, request, credential)).toEqual([{ type: "failure", kind: "provider", message: "redirect_refused", diagnostic: { provider: "chat_completions", category: "redirect" } }]);
       expect(requests).toHaveLength(before + 1);
       expect(requests.at(-1)?.headers.get("authorization")).toBe(`Bearer ${credential}`);
       expect(requests.at(-1)?.headers.has("http-referer")).toBe(false);
@@ -72,7 +72,7 @@ test("loopback provider sees the exact request and redirects never receive a sec
     for (status of [401, 503]) {
       const events = await readEvents(baseUrl, request, credential);
       expect(events).toEqual([{ type: "failure", kind: status === 401 ? "invalid_request" : "transient",
-        message: `Chat Completions HTTP ${status}` }]);
+        message: `Chat Completions HTTP ${status}`, diagnostic: { provider: "chat_completions", category: "http", status } }]);
     }
   } finally { server.stop(true); target.stop(true); }
 });
@@ -171,6 +171,8 @@ test("compatible tool fragments, length finish, abort and runner timeout", async
     expect(await ongoing).toEqual([]);
     reached = new Promise<void>(resolve => { started = resolve; });
     const harness = createInProcessHarness({ modelTimeoutMs: 200 });
+    const ended: unknown[] = [];
+    harness.client.onChannelEvent(({ event }) => { if (event.type === "turn_ended") ended.push(event); });
     try {
       await harness.client.initialize();
       await harness.client.createSession({ sessionId: "timeout", config: config(base), participants: [], channels: {} });
@@ -179,6 +181,7 @@ test("compatible tool fragments, length finish, abort and runner timeout", async
       const deadline = performance.now() + 2000;
       while (!(await harness.client.idle()).idle && performance.now() < deadline) await Bun.sleep(5);
       expect((await harness.client.modelCalls()).calls).toMatchObject([{ outcome: "timeout", attempts: [{ outcome: "timeout" }] }]);
+      expect(ended).toMatchObject([{ outcome: "failed", error: "timeout: Model request deadline exceeded" }]);
     } finally { harness.close(); }
   } finally { server.stop(true); }
 });

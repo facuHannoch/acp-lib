@@ -24,7 +24,7 @@ test("scripted stdio: partial reply times out without retry while another channe
     await until(() => events.some(event => event.channel === "bob" && event.event.type === "turn_ended" && event.event.outcome === "completed"), "Bob completes");
     await until(() => events.some(event => event.channel === "alice" && event.event.type === "turn_ended" && event.event.outcome === "failed"), "Alice times out");
     expect(events.find(event => event.channel === "alice" && event.event.type === "text_incomplete")?.event).toMatchObject({ messageId: delta.messageId, reason: "timeout" });
-    expect(events.find(event => event.channel === "alice" && event.event.type === "turn_ended")?.event).toMatchObject({ outcome: "failed", error: "timeout" });
+    expect(events.find(event => event.channel === "alice" && event.event.type === "turn_ended")?.event).toMatchObject({ outcome: "failed", error: "timeout: Model request deadline exceeded" });
     expect(events.findIndex(event => event.channel === "bob" && event.event.type === "turn_ended")).toBeLessThan(events.findIndex(event => event.channel === "alice" && event.event.type === "turn_ended"));
     expect(events.some(event => event.channel === "alice" && event.event.type === "message_completed")).toBe(false);
     expect(existsSync(effects) ? readFileSync(effects, "utf8") : "").toBe("");
@@ -69,3 +69,91 @@ for (const mode of ["in-process", "stdio"] as const) for (const text of ["final"
       const loaded = await harness.client.channelMessages({ channel: "alice" }); expect(loaded.messages.filter(message => message.actor.kind === "agent").map(message => message.messageId)).toEqual(completed.map(event => event.messageId!));
     } finally { await harness.close(); rmSync(home, { recursive: true, force: true }); }
   }, 15000);
+
+test("provider failures reach stdio and survive reopen without echoed secrets", async () => {
+  let mode: "429" | "500" | "transport" | "incomplete" = "429";
+  const canary = "fixture-key";
+  const fixture = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    if (mode === "429" || mode === "500") return new Response(request.headers.get("authorization"), { status: Number(mode) });
+    if (mode === "incomplete") return new Response(": incomplete\n\n", { headers: { "content-type": "text/event-stream" } });
+    return new Response();
+  } });
+  const home = mkdtempSync(join(tmpdir(), "harness-provider-reason-"));
+  let harness = spawnHarness({ home, providerEndpoint: fixture.url.href });
+  const events: ChannelEvent[] = [];
+  try {
+    harness.client.onChannelEvent(event => events.push(event));
+    await harness.client.initialize();
+    await harness.client.createSession({ sessionId: "s", participants: [], channels: {}, config: {
+      version: 1, system: "", model: { protocol: "openrouter", model: "fixture", apiKeyEnv: "OPENROUTER_API_KEY" },
+      defaultPolicy: "allow", policies: { allow: { fallback: "allow", tools: {} } },
+    } });
+    const cases = [
+      ["429", "failed: OpenRouter HTTP 429"],
+      ["500", "failed: OpenRouter HTTP 500"],
+      ["incomplete", "incomplete: Model response ended before completion"],
+      ["transport", "failed: OpenRouter transport failed"],
+    ] as const;
+    for (const [kind, reason] of cases) {
+      mode = kind;
+      if (kind === "transport") await fixture.stop(true);
+      await harness.client.push(push(kind, kind));
+      await until(() => events.some(event => event.channel === kind && event.event.type === "turn_ended"), kind);
+      const event = events.find(event => event.channel === kind && event.event.type === "turn_ended")!.event;
+      expect(event).toMatchObject({ outcome: "failed", error: reason });
+      expect(JSON.stringify(event).includes(canary)).toBe(false);
+    }
+    await harness.close();
+    harness = spawnHarness({ home, providerEndpoint: fixture.url.href });
+    await harness.client.initialize();
+    await harness.client.openSession({ sessionId: "s" });
+    const loaded = await harness.client.reconcileChannel({ channel: "429", itemIds: ["429"], turnIds: ["1"] });
+    expect(JSON.stringify(loaded)).toContain("failed: OpenRouter HTTP 429");
+  } finally { await harness.close(); await fixture.stop(true); rmSync(home, { recursive: true, force: true }); }
+}, 12000);
+
+for (const adapter of ["throwing model", "arbitrary attempt"] as const) {
+  test(`${adapter} cannot persist unchecked provider diagnostics`, async () => {
+    const { createInProcessHarness } = await import("../src/testing.ts");
+    const { bindModelAttempt } = await import("../src/capabilities/model/attempt.ts");
+    const home = mkdtempSync(join(tmpdir(), "harness-provider-canary-"));
+    const canary = crypto.randomUUID();
+    const unsafe = `https://example.com/?token=${canary} Authorization: Bearer ${canary}`;
+    const open = () => createInProcessHarness({ home, environment: { OPENROUTER_API_KEY: canary }, captureRequests: true,
+      providerFactory() {
+        const model = async () => { throw new Error(unsafe); };
+        return adapter === "throwing model" ? model : bindModelAttempt(model, { scripted: false,
+          create: () => async function* () {
+            yield { type: "failure", kind: "provider", message: unsafe, providerFailure: unsafe,
+              diagnostic: { provider: "openrouter", category: "http", status: unsafe as unknown as number } };
+          } });
+      },
+    });
+    const events: ChannelEvent[] = [];
+    let harness = open();
+    try {
+      harness.client.onChannelEvent(event => events.push(event));
+      await harness.client.initialize();
+      await harness.client.createSession({ sessionId: "fixture", participants: [], channels: {}, config: {
+        version: 1, system: "", model: { protocol: "openrouter", model: "fixture", apiKeyEnv: "OPENROUTER_API_KEY" },
+        defaultPolicy: "allow", policies: { allow: { fallback: "allow", tools: {} } },
+      } });
+      await harness.client.push(push("channel", "item"));
+      await until(() => events.some(({ event }) => event.type === "turn_ended"), "provider failure");
+      expect(JSON.stringify(events).includes(canary)).toBe(false);
+      expect(events.find(({ event }) => event.type === "turn_ended")?.event)
+        .toMatchObject({ outcome: "failed", error: "failed: Model provider failed" });
+      expect(JSON.stringify(await harness.client.modelCalls()).includes(canary)).toBe(false);
+      expect(JSON.stringify([...harness.models]).includes(canary)).toBe(false);
+      await harness.client.suspend();
+      expect(Buffer.from(await harness.client.exportArchive()).includes(canary)).toBe(false);
+      await harness.close();
+      harness = open();
+      await harness.client.initialize();
+      await harness.client.openSession({ sessionId: "fixture" });
+      const loaded = await harness.client.reconcileChannel({ channel: "channel", itemIds: ["item"], turnIds: ["1"] });
+      expect(JSON.stringify(loaded).includes(canary)).toBe(false);
+      expect(JSON.stringify(loaded)).toContain("failed: Model provider failed");
+    } finally { await harness.close(); rmSync(home, { recursive: true, force: true }); }
+  });
+}

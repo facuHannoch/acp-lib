@@ -34,9 +34,10 @@ export type ModelAttemptEvent =
   | { type: "failure"; kind: "transient" | "invalid_request" | "invalid_config" | "provider"; message: string; providerRequestId?: string;
       code?: "unsupported_image" | "attachment_unavailable" | "transfer_limit"; attachmentIds?: readonly string[];
       contextFailure?: import("./context.ts").ContextLimitFailure;
-      /** Safe provider diagnosis for the turn outcome. Adapters must construct
-       * this from fixed labels and status codes, never from the response body. */
-      providerFailure?: string };
+      providerFailure?: string;
+      /** Only validated provider/category/status values may enter durable diagnostics. */
+      diagnostic?: { provider: "openrouter" | "chat_completions"; category: "http"; status: number }
+        | { provider: "openrouter" | "chat_completions"; category: "transport" | "redirect" | "protocol" } };
 /** One attempt emits exactly one terminal response or failure unless aborted;
  * EOF without a terminal is incomplete. A consumer ignores events after the
  * first terminal, timeout or abort. The adapter assembles and validates tools. */

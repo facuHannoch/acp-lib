@@ -170,6 +170,20 @@ describe("a turn's early output is held until the prepared prompt attaches", () 
   });
 });
 
+test("native turn errors remove only the exact repeated outcome prefix", async () => {
+  for (const [error, suffix] of [
+    [undefined, "failed"], ["failed", "failed"], ["failed: useful detail", "failed: useful detail"],
+    ["failed elsewhere", "failed: failed elsewhere"], ["timeout: deadline", "failed: timeout: deadline"],
+  ] as const) {
+    const { controller, emit } = standIn();
+    await controller.start();
+    emit({ type: "turn_started", turnId: "1", items: [] });
+    emit({ type: "turn_ended", turnId: "1", outcome: "failed", ...(error === undefined ? {} : { error }) });
+    await expect(controller.prepareTurn("native-turn-1", { handlers: {} }).prompt())
+      .rejects.toMatchObject({ outcome: "failed", message: `native turn 1 ${suffix}` });
+  }
+});
+
 describe("inputs and the turns that take them", () => {
   test("a later native dispatch hook rejects the run before pushing any inputs", async () => {
     const { controller, pushes, records, turns } = standIn();
