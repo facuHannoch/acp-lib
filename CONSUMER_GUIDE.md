@@ -1250,7 +1250,8 @@ for local token and byte limits, the measured budget.
 When a native inference attempt fails, the prompt rejection and
 `turn_failed` event include the harness diagnostic. A metered conversation
 rejects with `AgentSessionOperationError` whose `cause` is a
-`NativeTurnError`. Both errors carry the same message. Use
+`NativeTurnError`. Both errors carry the same message, for example
+`native turn 1 failed: Chat Completions HTTP 429`. Use
 `NativeTurnError.outcome` for the turn classification. `"interrupted"`
 records an external interruption. A provider deadline leaves the turn
 `"failed"` and records `"timeout"` on the model call.

@@ -71,13 +71,14 @@ for (const failure of ["429", "500", "transport", "timeout", "interrupted"] as c
         : `failed: Chat Completions HTTP ${failure}`;
       const expectedOutcome = failure === "interrupted" ? "interrupted" : "failed";
       expect(typed.outcome).toBe(expectedOutcome);
-      expect(typed.message).toMatch(/^native turn \S+ (failed|interrupted): /);
-      expect(typed.message).toEndWith(reason);
+      const turnId = typed.message.split(" ")[2]!;
+      const detail = reason.replace(/^(failed|interrupted): /, "");
+      expect(typed.message).toBe(`native turn ${turnId} ${expectedOutcome}: ${detail}`);
       expect(authenticated).toBe(requested);
       expect(requested).toBeGreaterThan(0);
       await until(() => events.some(event => event.kind === "turn_failed"), "public failure event");
       expect(events.filter(event => event.kind === "turn_failed").map(event => event.error)).toEqual([String(error)]);
-      for (const event of events.filter(event => event.kind === "provider_notice")) expect(JSON.stringify(event)).toContain(reason);
+      for (const event of events.filter(event => event.kind === "provider_notice")) expect(JSON.stringify(event)).toContain(detail);
 
       const id = agent.id;
       await agent.close();
@@ -85,7 +86,7 @@ for (const failure of ["429", "500", "transport", "timeout", "interrupted"] as c
       const opened = await resumed.conversations.open(channel.id);
       const reopened = resumed.nativeHarness!;
       await reopened.start();
-      const restored = await reopened.reconcileChannel({ channel: channel.id, turnIds: [typed.message.split(" ")[2]!] });
+      const restored = await reopened.reconcileChannel({ channel: channel.id, turnIds: [turnId] });
       expect(restored.turns).toContainEqual(expect.objectContaining({ state: expectedOutcome, reason }));
       const calls = await reopened.modelCalls();
       expect(calls.calls).toContainEqual(expect.objectContaining({ outcome: failure === "timeout" ? "timeout" : expectedOutcome }));
