@@ -28,7 +28,8 @@ export interface ProtocolConfig {
   policies?: Record<string, import("./config-permissions.ts").ToolPolicy>;
 }
 /** Executable-only grant from the trusted native control connection. */
-export interface InferenceRelayGrant { baseUrl: string; bearerToken: string; expiresAtMs: number }
+export type InferenceRelayGrant = { baseUrl: string; bearerToken: string } &
+  ({ lifetime: { mode: "process" }; expiresAtMs?: never } | { expiresAtMs: number; lifetime?: never });
 export interface CreateParams {
   inferenceRelayGrant?: InferenceRelayGrant;
   /** Executable owning launcher material, never saved. */

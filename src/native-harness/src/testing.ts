@@ -1,4 +1,4 @@
-import { inferenceRelayAttempt } from "./capabilities/model/inference-relay.ts";
+import { createRelayAuthority, inferenceRelayAttempt } from "./capabilities/model/inference-relay.ts";
 import { resolveInferenceRelayGrant } from "./util/inference-relay.ts";
 import { isCompatibleModel } from "./contracts/config-permissions.ts";
 import { validateMcpRuntimeHeaders } from "./util/mcp-config.ts";
@@ -200,6 +200,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         return result;
       };
       const revisions = new Map<string, number>();
+      const relayAuthority = relayGrant && createRelayAuthority(relayGrant);
       const session = createSession({
         ...(script && options.reminderTime !== undefined && Number.isSafeInteger(options.reminderTime)
           ? { reminderClock: { ...wallReminderClock, now: () => options.reminderTime! } } : {}), ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
@@ -213,7 +214,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
               const metadata = attachments ? (id: string) => {
                 const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
               } : undefined;
-              return relayGrant ? inferenceRelayAttempt(compatible.model, relayGrant, metadata)
+              return relayAuthority ? inferenceRelayAttempt(compatible.model, relayAuthority, metadata)
                 : managedCompatibleAttempt(compatible, conversation, compatibleKey, undefined, metadata);
             } });
           return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };

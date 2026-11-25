@@ -23,6 +23,9 @@ function safeDiagnostic(event: Extract<ModelAttemptEvent, { type: "failure" }>):
   if (provider && diagnostic) {
     if (diagnostic.category === "http" && Number.isInteger(diagnostic.status) && diagnostic.status >= 400 && diagnostic.status <= 599)
       return `${provider} HTTP ${diagnostic.status}`;
+    if (diagnostic.category === "relay_refusal" && typeof diagnostic.reason === "string" &&
+      /^(?:native_grant_revoked|native_authentication_required|native_source_rejected|native_admission_rejected|native_policy_mismatch|native_allowance_exhausted|native_provider_authentication_failed|native_provider_model_failed|native_unavailable)$/.test(diagnostic.reason))
+      return `Inference relay refused: ${diagnostic.reason}`;
     if (diagnostic.category === "relay_expired" && diagnostic.provider === "chat_completions") return "Inference relay credential expired";
     if (diagnostic.category === "transport") return `${provider} transport failed`;
     if (diagnostic.category === "redirect") return `${provider} redirect refused`;
@@ -145,7 +148,7 @@ export async function runModelCall(options: RunModelCallOptions): Promise<{ resp
       const context = parseContextLimitFailure(`context_limit:${JSON.stringify(terminal.contextFailure)}`);
       if (context) return finish("failed", "Model context limit exceeded", undefined, context);
     }
-    if (failure !== "transient" || output || ordinal >= Math.min(1, settings.maxRetries)) {
+    if (failure !== "transient" || (terminal?.type === "failure" && terminal.noRetry) || output || ordinal >= Math.min(1, settings.maxRetries)) {
       const candidate = terminal?.type === "failure" ? terminal.providerFailure : undefined;
       const providerFailure = typeof candidate === "string" &&
         /^OpenCode Go HTTP (?:[45][0-9]{2}(?: \((?:missing_session_id|invalid_api_key|access_denied|rate_limited)\))?|3[0-9]{2} \(redirect_refused\))$/.test(candidate)

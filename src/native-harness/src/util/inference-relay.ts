@@ -34,13 +34,21 @@ export function resolveInferenceRelayGrant(model: ManagedModel, value: unknown,
   }
   if (value === undefined) return failure("is required");
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).some(key => !["baseUrl", "bearerToken", "expiresAtMs"].includes(key))) return failure("is invalid");
-  const { baseUrl, bearerToken, expiresAtMs } = value as Partial<InferenceRelayGrant>;
+    || Object.keys(value).some(key => !["baseUrl", "bearerToken", "expiresAtMs", "lifetime"].includes(key))) return failure("is invalid");
+  const record = value as Record<string, unknown>;
+  const { baseUrl, bearerToken, expiresAtMs, lifetime } = record;
   if (typeof bearerToken !== "string" || !/^[A-Za-z0-9._~+/-]{1,2048}={0,2}$/.test(bearerToken)
-    || typeof expiresAtMs !== "number" || !Number.isSafeInteger(expiresAtMs)) return failure("is invalid");
+    || Object.hasOwn(record, "expiresAtMs") === Object.hasOwn(record, "lifetime")) return failure("is invalid");
+  const processBound = Object.hasOwn(record, "lifetime");
+  if (processBound) {
+    if (!lifetime || Array.isArray(lifetime) || typeof lifetime !== "object" || !("mode" in lifetime) || lifetime.mode !== "process" ||
+      Object.keys(lifetime).length !== 1 || !Object.hasOwn(lifetime, "mode")) return failure("is invalid");
+  } else if (typeof expiresAtMs !== "number" || !Number.isSafeInteger(expiresAtMs)) return failure("is invalid");
   let endpoint: string;
   try { endpoint = canonicalRelayUrl(baseUrl); } catch { return failure("is invalid"); }
   if (endpoint !== model.baseUrl) return failure("does not match the configured endpoint");
+  if (processBound) return { baseUrl: endpoint, bearerToken, lifetime: { mode: "process" } };
+  if (typeof expiresAtMs !== "number") return failure("is invalid");
   if (expiresAtMs <= now) return failure("has expired");
   return { baseUrl: endpoint, bearerToken, expiresAtMs };
 }

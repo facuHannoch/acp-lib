@@ -35,9 +35,11 @@ export type ModelAttemptEvent =
       code?: "unsupported_image" | "attachment_unavailable" | "transfer_limit"; attachmentIds?: readonly string[];
       contextFailure?: import("./context.ts").ContextLimitFailure;
       providerFailure?: string;
+      noRetry?: true;
       /** Only validated provider/category/status values may enter durable diagnostics. */
       diagnostic?: { provider: "openrouter" | "chat_completions"; category: "http"; status: number }
-        | { provider: "openrouter" | "chat_completions"; category: "transport" | "redirect" | "protocol" | "relay_expired" } };
+        | { provider: "openrouter" | "chat_completions"; category: "transport" | "redirect" | "protocol" | "relay_expired" }
+        | { provider: "chat_completions"; category: "relay_refusal"; reason: string } };
 /** One attempt emits exactly one terminal response or failure unless aborted;
  * EOF without a terminal is incomplete. A consumer ignores events after the
  * first terminal, timeout or abort. The adapter assembles and validates tools. */
