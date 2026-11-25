@@ -1247,6 +1247,24 @@ A failed turn reports `context_limit` and leaves the channel usable. The
 underlying `NativeTurnError.contextFailure` gives the applicable limit and,
 for local token and byte limits, the measured budget.
 
+When a native inference attempt fails, the prompt rejection and
+`turn_failed` event include the harness diagnostic. A metered conversation
+rejects with `AgentSessionOperationError` whose `cause` is a
+`NativeTurnError`. Both errors carry the same message. Use
+`NativeTurnError.outcome` for the turn classification. `"interrupted"`
+records an external interruption. A provider deadline leaves the turn
+`"failed"` and records `"timeout"` on the model call.
+
+Provider diagnostics identify HTTP status where available, for example
+`Chat Completions HTTP 429` or `OpenRouter HTTP 500`. Other diagnostics
+identify a transport failure, refused redirect, invalid response,
+configuration error, or model request deadline. The harness uses fixed
+fallback wording when it has no validated provider detail. Remote
+response bodies, headers and URLs are excluded from these failure
+diagnostics. Reconciliation preserves the recorded reason, and the next
+prompt can run when the provider recovers.
+
+
 ```ts
 import { NativeInputStoppedError, type Agent, type ItemsReceipt } from "@qlairoslabs/acp-client";
 
