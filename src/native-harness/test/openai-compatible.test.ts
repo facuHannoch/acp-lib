@@ -102,7 +102,7 @@ test("checkpoint binds source identity and portable import retains only the cred
       must(store.beginChannelSuspend("a"));
       must(store.checkpointTurn(turn.turnId));
     } finally { store.close(); }
-    const renamed = { ...original, model: { ...original.model, apiKeyEnv: "REPLACEMENT" } };
+    const renamed = { ...original, model: { ...original.model, apiKeyEnv: "REPLACEMENT", contextBudget: { contextWindowTokens: 128_000 } } };
     for (const model of [{ ...renamed.model, model: "other" }, { ...renamed.model, baseUrl: original.model.baseUrl + "/other" }]) {
       const harness = createInProcessHarness({ home, environment: { REPLACEMENT: credential } });
       try {

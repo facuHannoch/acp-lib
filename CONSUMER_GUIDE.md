@@ -1153,13 +1153,26 @@ environment, or use a scripted model with a local JSONL scenario for offline
 development. Keep the harness home on durable storage. Backend kind stays fixed
 across a conversation's mode changes and handoffs.
 
+### Compiled launchers
+
+A compiled Bun application can import `serve(home)` from
+`@qlairoslabs/acp-client/native-harness` and call it from its own subprocess
+command. For example, route `agents __native-harness serve --home <directory>`
+to `await serve(directory)` in the application, then set `harness.command` to
+`[process.execPath, "__native-harness", "serve", "--home", directory]`.
+Handle that command before normal application startup and keep stdout reserved
+for the harness protocol. The command override includes all arguments, so pass
+the same directory as `harness.home`.
+
+### Configuration
+
 ```ts
 import { Agent, ADAPTERS, type AgentHarnessConfig } from "@qlairoslabs/acp-client";
 
 export async function openNative(
   directory: string,
   model: AgentHarnessConfig["config"]["model"] = {
-    protocol: "openrouter", model: "openai/gpt-4.1-mini", apiKeyEnv: "OPENROUTER_API_KEY",
+    protocol: "openrouter", model: "openai/gpt-6-luna", apiKeyEnv: "OPENROUTER_API_KEY",
   },
 ) {
   return Agent.open({
@@ -1196,14 +1209,43 @@ and passed through unchanged on every open. Besides `scripted` and `openrouter`,
 Completions endpoint chosen by the consumer. `baseUrl` is HTTPS or a literal loopback address over HTTP (`127.x` or `::1`,
 not `localhost`) with no credentials, query or fragment; the harness appends the Chat Completions path and follows no
 redirects; `apiKeyEnv` names a variable in the harness's environment, is optional for keyless endpoints and is read only
-when the session opens. The library accepts and forwards this arm today (compile-time and open-request tests); the harness
-runtime that executes it is still being implemented, so an open with this arm is not yet usable end to end. For an offline
-equivalent, pass `{ protocol: "scripted", script: "/path/to/scenario.jsonl" }`
+when the session opens. For an offline equivalent, pass
+`{ protocol: "scripted", script: "/path/to/scenario.jsonl" }`
 as the second argument. Function parameters are JSON Schema. Functions return
 JSON values and receive a context with invocation identity and an abort signal.
 Harness policies grant `allow`, `ask` or `deny` by tool name and define a
 fallback. This host responder grants one call to the read-only lookup.
 Subscribe to `items_receipt` when you need delivery evidence.
+
+To use an OpenCode Go API key with the native harness, make the key
+available in the harness process and pass the Go preset to `openNative`.
+
+```ts
+const agent = await openNative(directory, {
+  protocol: "opencode-go",
+  model: "deepseek-v4.1-flash",
+});
+```
+
+The harness reads `OPENCODE_API_KEY` by default. Set `apiKeyEnv` if your
+launcher supplies a different variable, such as `OPENCODE_GO_API_KEY`.
+The preset sends a stable routing header per channel and uses Go's Chat
+Completions endpoint. DeepSeek V4.1 Flash may require allowing the Global
+region in the Go workspace. [OpenCode Go model settings](https://opencode.ai/docs/console/go/#enable-restricted-models)
+
+Set `harness.config.model.contextBudget` on OpenRouter, OpenCode Go or OpenAI-compatible models
+to fit a larger inference request. For example, a model with a 128,000-token
+window can use `contextBudget: { contextWindowTokens: 128_000, outputReserveTokens: 4096 }`.
+The reserve only affects local fitting. Set `maxOutputTokens` to also request an
+upstream cap. This uses `max_tokens` with OpenRouter and
+`max_completion_tokens` with a custom Chat Completions endpoint that supports it.
+The estimate uses UTF-8 request size for text and a separate image allowance.
+Use `estimationMarginTokens` to leave extra room. The independent serialized
+request cap defaults to 64 MiB and can be lowered with `maxRequestBytes`.
+The harness fits optional history around the complete policy-filtered offer.
+A failed turn reports `context_limit` and leaves the channel usable. The
+underlying `NativeTurnError.contextFailure` gives the applicable limit and,
+for local token and byte limits, the measured budget.
 
 ```ts
 import { NativeInputStoppedError, type Agent, type ItemsReceipt } from "@qlairoslabs/acp-client";
