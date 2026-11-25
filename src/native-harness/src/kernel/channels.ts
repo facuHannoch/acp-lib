@@ -185,7 +185,8 @@ export function createChannelScheduler(
       // Record the failure unless stop already ended the turn; either way the
       // channel stays usable.
       const attachmentFailure = error && typeof error === "object" && "attachmentFailure" in error ? error.attachmentFailure as import("../contracts/attachments.ts").AttachmentFailure | undefined : undefined;
-      const outcome = attachmentFailure ? attachmentFailureReason(attachmentFailure) : error && typeof error === "object" && "outcome" in error && typeof error.outcome === "string" ? error.outcome : String(error);
+      const outcome = attachmentFailure ? attachmentFailureReason(attachmentFailure) : error && typeof error === "object" && "outcome" in error && typeof error.outcome === "string" ? ("turnFailureDetail" in error && typeof error.turnFailureDetail === "string" ? `${error.outcome}: ${error.turnFailureDetail}` : error.outcome)
+        : String(error);
       const failed = storage.finishTurn(turnId, { status: "failed", reason: outcome });
       release();
       if (failed.ok && failed.value.finished) { ended(failed.value.turn, failed.revision); settleChannel(channelId, failed.revision); }
