@@ -1,5 +1,6 @@
 import type { Message, ToolDefinition } from "../../contracts/loop.ts";
 import type { ContextCapture } from "../../contracts/context.ts";
+import { parseContextLimitFailure } from "../../contracts/context.ts";
 import type { InspectionStorageReads } from "../../contracts/inspection.ts";
 import type { StorageResult } from "../../contracts/storage.ts";
 import { composeSystemPrompt } from "../../capabilities/context/load-instructions.ts";
@@ -10,7 +11,7 @@ interface InspectedInference {
   turnId?: number;
   at: string;
   body: unknown;
-  context?: Pick<ContextCapture, "estimatedInputBytes" | "omitted" | "records"> & { revision: number; offeredTools: string[]; modelCallId?: string };
+  context?: Pick<ContextCapture, "estimatedInputBytes" | "budget" | "omitted" | "records"> & { revision: number; offeredTools: string[]; modelCallId?: string };
   response?: Extract<Message, { role: "assistant" }> | { omitted: true };
 }
 
@@ -40,8 +41,12 @@ export function createInspection(systemPrompt: string, tools: readonly ToolDefin
       const execution = stopped ? "stopped" : session.lifecycle !== "running" ? session.lifecycle
         : status.some(channel => channel.turn === "running" || (channel.lifecycle === "open" && channel.pending > 0)) ? "working" : "idle";
       return { session: { sessionId: session.sessionId, lifecycle: session.lifecycle, execution, revision, storage },
-        channels: status.map(channel => ({ ...channel, running: channel.turn === "running",
-          ...(channel.unresolved ? { error: `Turn ${channel.unresolved.turnId} ${channel.unresolved.status}: ${channel.unresolved.reason}` } : {}) })) };
+        channels: status.map(channel => {
+          const contextFailure = channel.unresolved && parseContextLimitFailure(channel.unresolved.reason);
+          return { ...channel, running: channel.turn === "running",
+            ...(channel.unresolved ? { error: `Turn ${channel.unresolved.turnId} ${channel.unresolved.status}: ${contextFailure ? "context_limit" : channel.unresolved.reason}` } : {}),
+            ...(contextFailure ? { contextFailure } : {}) };
+        }) };
     },
     liveContext() {
       const { entries, unfinished, revision } = read(reads.readInspectionPage());
@@ -68,6 +73,7 @@ export function createInspection(systemPrompt: string, tools: readonly ToolDefin
     capture(value: ContextCapture) {
       const { channelId, turnId, timelineRevision } = value.context;
       captures.set(channelId, { turnId, metadata: { revision: timelineRevision, estimatedInputBytes: value.estimatedInputBytes,
+        ...(value.budget ? { budget: value.budget } : {}),
         omitted: value.omitted, records: value.records, offeredTools: value.context.tools.map(tool => tool.name) } });
     },
     modelCall(channelId: string, turnId: number, callId: string) {

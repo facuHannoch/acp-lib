@@ -1,3 +1,4 @@
+import { parseContextLimitFailure } from "../../contracts/context.ts";
 import type { ModelAttempt, ModelAttemptEvent, ModelCallStore, ModelExecutionSettings, ModelRequest, ModelResponse, CallOutcome } from "../../contracts/model-execution.ts";
 import type { StorageResult, TimelineEntry } from "../../contracts/storage.ts";
 
@@ -6,11 +7,13 @@ export const MODEL_EXECUTION_DEFAULTS: Readonly<ModelExecutionSettings> = { time
 export class ModelCallError extends Error {
   readonly turnFailureDetail?: string;
   constructor(readonly outcome: Exclude<CallOutcome, "running" | "succeeded">, message: string,
-    readonly attachmentFailure?: import("../../contracts/attachments.ts").AttachmentFailure) {
+    readonly attachmentFailure?: import("../../contracts/attachments.ts").AttachmentFailure,
+    readonly contextFailure?: import("../../contracts/context.ts").ContextLimitFailure,
+    readonly providerFailure?: string) {
     super(message);
     this.name = "ModelCallError";
     const detail = Array.from(message.replace(/[\p{Cc}\p{Cf}]/gu, " ").trim().slice(0, 480)).slice(0, 240).join("");
-    if (detail && detail !== outcome) this.turnFailureDetail = detail;
+    if (!providerFailure && detail && detail !== outcome) this.turnFailureDetail = detail;
   }
 }
 function safeDiagnostic(event: Extract<ModelAttemptEvent, { type: "failure" }>): string {
@@ -67,11 +70,13 @@ export async function runModelCall(options: RunModelCallOptions): Promise<{ resp
   options.started?.(call.callId);
   let deadline = 0, output = false;
   const finish = (outcome: Exclude<CallOutcome, "running" | "succeeded">, detail: string = outcome,
-    attachmentFailure?: import("../../contracts/attachments.ts").AttachmentFailure): never => {
+    attachmentFailure?: import("../../contracts/attachments.ts").AttachmentFailure,
+    contextFailure?: import("../../contracts/context.ts").ContextLimitFailure,
+    providerFailure?: string): never => {
     const result = options.store.finishCall(call.callId, outcome);
     if (!result.ok && !(outcome === "interrupted" && result.error.code === "invalid_state")) take(result);
     if (output) options.incomplete?.({ messageId: call.messageId, reason: outcome });
-    throw new ModelCallError(outcome, detail, attachmentFailure);
+    throw new ModelCallError(outcome, detail, attachmentFailure, contextFailure, providerFailure);
   };
   for (let ordinal = 0; ordinal <= Math.min(1, settings.maxRetries); ordinal++) {
     if (options.signal?.aborted) return finish("interrupted");
@@ -135,8 +140,19 @@ export async function runModelCall(options: RunModelCallOptions): Promise<{ resp
       return finish("failed", "Model attachment rejected", { code: terminal.code,
         attachmentIds: [...new Set((terminal.attachmentIds ?? []).filter(id => ids.has(id)))] });
     }
-    if (failure !== "transient" || output || ordinal >= Math.min(1, settings.maxRetries)) return finish(failure === "incomplete" ? "incomplete" : "failed",
-      terminal?.type === "failure" ? safeDiagnostic(terminal) : "Model response ended before completion");
+    if (terminal?.type === "failure" && terminal.contextFailure) {
+      const context = parseContextLimitFailure(`context_limit:${JSON.stringify(terminal.contextFailure)}`);
+      if (context) return finish("failed", "Model context limit exceeded", undefined, context);
+    }
+    if (failure !== "transient" || output || ordinal >= Math.min(1, settings.maxRetries)) {
+      const candidate = terminal?.type === "failure" ? terminal.providerFailure : undefined;
+      const providerFailure = typeof candidate === "string" &&
+        /^OpenCode Go HTTP (?:[45][0-9]{2}(?: \((?:missing_session_id|invalid_api_key|access_denied|rate_limited)\))?|3[0-9]{2} \(redirect_refused\))$/.test(candidate)
+        ? candidate : undefined;
+      return finish(failure === "incomplete" ? "incomplete" : "failed",
+        providerFailure ?? (terminal?.type === "failure" ? safeDiagnostic(terminal) : "Model response ended before completion"),
+        undefined, undefined, providerFailure);
+    }
     if (deadline - Date.now() < settings.retryDelayMs) return finish("timeout", "Model request deadline exceeded");
     const delay = await new Promise<"ready" | "interrupted">(resolve => {
       const done = (result: "ready" | "interrupted") => { clearTimeout(wait); options.signal?.removeEventListener("abort", interrupted); resolve(result); };

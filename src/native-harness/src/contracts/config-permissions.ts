@@ -4,9 +4,26 @@ import type { McpServer } from "./mcp.ts";
  * Script files and credential environment variables are destination resources. */
 export type ToolDecision = "allow" | "ask" | "deny";
 export interface ToolPolicy { fallback: ToolDecision; mcp?: "allow" | "deny"; tools: Record<string, ToolDecision> }
+/** Opt-in request sizing for a managed Chat Completions model. Decision 0037. */
+export interface ModelContextBudget {
+  contextWindowTokens: number;
+  outputReserveTokens?: number;
+  maxOutputTokens?: number;
+  estimationMarginTokens?: number;
+  maxRequestBytes?: number;
+}
 export type ManagedModel = { protocol: "scripted"; script: string; imageInput?: boolean }
-  | { protocol: "openrouter"; model: string; apiKeyEnv: string; imageInput?: boolean }
-  | { protocol: "openai-compatible"; providerId: string; model: string; baseUrl: string; apiKeyEnv?: string };
+  | { protocol: "openrouter"; model: string; apiKeyEnv: string; imageInput?: boolean; contextBudget?: ModelContextBudget }
+  | { protocol: "openai-compatible"; providerId: string; model: string; baseUrl: string; apiKeyEnv?: string; contextBudget?: ModelContextBudget }
+  | { protocol: "opencode-go"; model: string; apiKeyEnv?: string; contextBudget?: ModelContextBudget };
+
+/** Both text-only managed sources use the same Chat Completions client. */
+export type CompatibleModel = Extract<ManagedModel, { protocol: "openai-compatible" | "opencode-go" }>;
+export const OPENCODE_GO_BASE_URL = "https://opencode.ai/inference/go/openai/v1";
+export const OPENCODE_GO_KEY_ENV = "OPENCODE_API_KEY";
+export function isCompatibleModel(model: ManagedModel | undefined): model is CompatibleModel {
+  return model?.protocol === "openai-compatible" || model?.protocol === "opencode-go";
+}
 /** Decision 0035: independent portable web backends, with credential names only. */
 export interface ExaSearchConfig { backend: "exa"; apiKeyEnv?: string; maxResults?: number; excerptBytes?: number; deadlineMs?: number }
 export type WebFetchConfig = { backend: "exa"; apiKeyEnv?: string; deadlineMs?: number } | { backend: "http"; deadlineMs?: number };

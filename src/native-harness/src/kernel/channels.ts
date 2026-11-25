@@ -4,6 +4,7 @@ import type { EventSink, SessionEventSink } from "../contracts/events.ts";
 import type { ChannelControls, ChannelStatus, ControlResult, LifecycleResult, SessionStatus } from "../contracts/session.ts";
 import type { AcceptItem, SessionLifecycle, SessionStorage, StorageError, StorageResult, StorageSnapshot, StoredTurn, TimelineEntry } from "../contracts/storage.ts";
 import { attachmentFailureReason, parseAttachmentFailure } from "../contracts/attachments.ts";
+import { parseContextLimitFailure } from "../contracts/context.ts";
 import { attachmentView } from "../contracts/attachments.ts";
 
 export interface ChannelScheduler {
@@ -108,8 +109,10 @@ export function createChannelScheduler(
   }
   const ended = (turn: StoredTurn, revision: number) => {
     if (turn.state.status !== "failed" && turn.state.status !== "interrupted") return;
+    const contextFailure = parseContextLimitFailure(turn.state.reason);
     emit({ channel: turn.channelId, revision, event: { type: "turn_ended", turnId: String(turn.turnId), outcome: turn.state.status,
-      error: turn.state.reason, ...(parseAttachmentFailure(turn.state.reason) ? { attachmentFailure: parseAttachmentFailure(turn.state.reason) } : {}),
+      error: contextFailure ? "context_limit" : turn.state.reason, ...(contextFailure ? { contextFailure } : {}),
+      ...(parseAttachmentFailure(turn.state.reason) ? { attachmentFailure: parseAttachmentFailure(turn.state.reason) } : {}),
       ...(turn.state.uncertainCallIds.length ? { uncertainCalls: turn.state.uncertainCallIds } : {}) } });
   };
   const takenMessages = (entries: readonly TimelineEntry[]) => entries.flatMap(entry => {

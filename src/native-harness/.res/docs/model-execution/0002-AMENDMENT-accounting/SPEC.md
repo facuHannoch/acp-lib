@@ -3,10 +3,11 @@
 Status: draft for review. Amends [model execution](../0001-DESIGN/SPEC.md).
 
 R5 compares acp-client's in-turn metering against the model-call records the
-harness already exposes. Billing-grade accounting additionally needs evidence
-that the ledger is complete and that each reported quantity can be interpreted
-and attributed. Native `billing_required` remains refused until the harness
-contract and acp-client certification pass their respective gates.
+harness already exposes. This amendment improves reporting by recording what
+ran, verifying which records were received, and identifying quantities or
+prices that remain unknown. This increment is report-only. Native
+`billing_required` remains unavailable. Any future certification or change
+to its semantics requires a separate decision.
 
 The starting point is the R5 grounding and review on `integration-r456`.
 Pin the final R5 revision at contract review and reconcile any changes to its
@@ -43,7 +44,7 @@ with zero attempts is distinguishable from a turn whose accounting is
 unavailable. A complete ledger can still have unknown usage or price for
 individual attempts.
 
-## Between-turn work and strict admission
+## Between-turn work
 
 When the harness gains a producer for between-turn model calls, associate
 each call with a channel, a nullable turn ID, and a stable accounting ID.
@@ -52,13 +53,28 @@ without another prompt. Keep agent-wide work without a channel separate.
 Support for between-turn accounting requires a producer and an end-to-end
 verification gate.
 
-Before enabling strict billing, define how the host confirms the accounting
-capability before open or resume can admit work, including pending input and
-work started by the harness. If accounting becomes unavailable, preserve
-already produced output and known evidence. Refuse further work for the
-affected strict channel until reconciliation. The harness owns the accounting
-evidence and admission controls. acp-client owns pricing, accounting commits,
-and certification of its integration.
+## Reporting and reconciliation
+
+Accounting does not gate execution. Missing, incomplete or unpriced
+evidence must never block a channel, interrupt a turn, or suppress an
+already produced response. This applies on startup, reconnect, resume,
+and to work admitted by the harness such as reminders.
+
+Report ledger completeness independently of quantities and cost coverage.
+Distinguish a verified empty ledger from missing evidence. Show known usage
+and cost as subtotals when accounting is incomplete, and label missing,
+unknown or unpriced items explicitly. Preserve provider-reported amounts
+separately from estimates calculated from price schedules. A gap must never
+be filled with zero or an inferred charge.
+
+The harness owns durable execution evidence and the seal. acp-client owns
+verification, rating, reporting and idempotent accrual. If a read or
+accounting write fails, preserve the last committed position, expose the gap
+and retry reconciliation independently of turn execution. Later evidence
+updates the affected record and totals using the same durable IDs so a
+reconnect or retry cannot count the same evidence twice. Record the scope
+of any reported totals so separate paid web-tool evidence can be shown
+without implying that all external costs are covered.
 
 ## Acceptance
 
@@ -70,9 +86,11 @@ and certification of its integration.
    torn read. Verify a sealed empty turn and unavailable evidence have
    different outcomes. Reopen after a crash and verify known usage remains
    recoverable without double counting.
-3. Verify incompatible startup, missing evidence, and incomplete or unpriced
-   usage in the acp-client integration. Check that strict admission closes on
-   the affected channel while preserving results already produced.
+3. Simulate missing seals, partial provider reports, unpriced usage, a failed
+   read and a failed accounting write. Verify that each gap is visible, known
+   evidence and replies are preserved, and the same channel completes later
+   turns and reopens normally. Recover the missing evidence and verify the
+   reported totals update without duplicate accrual.
 4. When between-turn work is introduced, verify scoped retrieval and durable
    accounting after idle and restart without a subsequent prompt.
 

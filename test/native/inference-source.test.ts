@@ -12,7 +12,8 @@ type Model = AgentHarnessConfig["config"]["model"];
 // Compile-time: the public config accepts every ManagedModel arm of the harness SDK, without casts.
 const arms = [
   { protocol: "scripted", script: "/tmp/scenario.jsonl" },
-  { protocol: "openrouter", model: "openai/gpt-4.1-mini", apiKeyEnv: "OPENROUTER_API_KEY" },
+  { protocol: "openrouter", model: "openai/gpt-6-luna", apiKeyEnv: "OPENROUTER_API_KEY" },
+  { protocol: "opencode-go", model: "deepseek-v4.1-flash" },
   { protocol: "openai-compatible", providerId: "local", model: "qwen2.5-coder", baseUrl: "http://127.0.0.1:11434/v1" },
   { protocol: "openai-compatible", providerId: "gateway", model: "gpt-4.1", baseUrl: "https://llm.example.com/v1", apiKeyEnv: "GATEWAY_KEY" },
 ] satisfies Model[];

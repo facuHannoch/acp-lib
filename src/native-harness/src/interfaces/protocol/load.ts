@@ -2,6 +2,7 @@ import type { ItemStatus, LoadResult, StatusResult, StoredMessage, TurnStatus } 
 import type { SessionStatus } from "../../contracts/session.ts";
 import type { StorageSnapshot, StoredTurn } from "../../contracts/storage.ts";
 import { parseAttachmentFailure } from "../../contracts/attachments.ts";
+import { parseContextLimitFailure } from "../../contracts/context.ts";
 import { MAX_FRAME_BYTES } from "./framing.ts";
 
 /** Room left in a frame for the JSON-RPC envelope around a result. */
@@ -11,8 +12,10 @@ export class FrameLimit extends Error {}
 
 export function turnStatus(turn: StoredTurn): TurnStatus {
   const state = turn.state;
+  const contextFailure = state.status === "failed" ? parseContextLimitFailure(state.reason) : undefined;
   return { turnId: String(turn.turnId), channel: turn.channelId, items: turn.itemIds, state: state.status,
-    ...(state.status === "failed" || state.status === "interrupted" ? { reason: state.reason, uncertainCalls: state.uncertainCallIds,
+    ...(state.status === "failed" || state.status === "interrupted" ? { reason: contextFailure ? "context_limit" : state.reason,
+      ...(contextFailure ? { contextFailure } : {}), uncertainCalls: state.uncertainCallIds,
       ...(parseAttachmentFailure(state.reason) ? { attachmentFailure: parseAttachmentFailure(state.reason) } : {}) } : {}) };
 }
 

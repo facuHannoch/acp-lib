@@ -1,3 +1,4 @@
+import { isCompatibleModel } from "./contracts/config-permissions.ts";
 import { validateMcpRuntimeHeaders } from "./util/mcp-config.ts";
 import { openMcpRegistry } from "./capabilities/tools/mcp/registry.ts";
 import { createWebRegistry, directWebFetch } from "./capabilities/tools/web/registry.ts";
@@ -19,7 +20,7 @@ import type { LoadedScenario } from "./contracts/scenario.ts";
 export type { LoadedScenario, ScenarioHeader, ScenarioModelRecord, ScenarioRecord, ScenarioSend } from "./contracts/scenario.ts";
 export { loadScenario, parseScenario } from "./capabilities/model/scenario-file.ts";
 import { bindModelAttempt } from "./capabilities/model/attempt.ts";
-import { openAICompatibleAttempt, openRouterAttempt } from "./capabilities/model/openrouter-stream.ts";
+import { managedCompatibleAttempt, openRouterAttempt } from "./capabilities/model/openrouter-stream.ts";
 import { openRouter } from "./capabilities/model/openrouter.ts";
 import { notifyChannelDefinition } from "./capabilities/tools/builtin/notify-channel.ts";
 import { echoDefinition, executeEcho } from "./capabilities/tools/testing/echo.ts";
@@ -143,13 +144,13 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const runtimeHeaders = mcpRuntimeHeaders === undefined ? undefined : validateMcpRuntimeHeaders(mcpRuntimeHeaders, config.mcpServers);
     const script = config.model.protocol === "scripted" ? await (options.scenarioLoader ?? loadScenario)(config.model.script) : undefined;
     const credential = config.model.protocol === "openrouter" ? resolveCredential(config.model, options.environment ?? process.env) : undefined;
-    let imageInput = !!paths && !options.adapter && config.model.protocol !== "openai-compatible" && config.model.imageInput === true && (config.model.protocol === "scripted" || !options.providerFactory) && imageValidationAvailable();
-    const compatible = config.model.protocol === "openai-compatible" ? config.model : undefined;
+    let imageInput = !!paths && !options.adapter && !isCompatibleModel(config.model) && config.model.imageInput === true && (config.model.protocol === "scripted" || !options.providerFactory) && imageValidationAvailable();
+    const compatible = isCompatibleModel(config.model) ? config.model : undefined;
     const environment = options.environment ?? process.env;
     let compatibleKey = compatible && mode === "create" ? resolveCompatibleCredential(compatible, environment) : undefined;
-    const compatibilityKey = compatible ? compatibleInferenceKey(compatible, config.system, [...BUILTINS, notifyChannelDefinition].map(tool => tool.name)) : script ? scriptedCompatibilityKey(script.modelDigest, config.system + (config.model.protocol !== "openai-compatible" && config.model.imageInput === true ? "\n[image-input-enabled]" : ""))
+    const compatibilityKey = compatible ? compatibleInferenceKey(compatible, config.system, [...BUILTINS, notifyChannelDefinition].map(tool => tool.name)) : script ? scriptedCompatibilityKey(script.modelDigest, config.system + (!isCompatibleModel(config.model) && config.model.imageInput === true ? "\n[image-input-enabled]" : ""))
       : createHash("sha256").update(JSON.stringify([config.system, config.model.protocol === "openrouter" && config.model.model,
-        [...BUILTINS, notifyChannelDefinition].map(tool => tool.name), ...(config.model.protocol !== "openai-compatible" && config.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
+        [...BUILTINS, notifyChannelDefinition].map(tool => tool.name), ...(!isCompatibleModel(config.model) && config.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
     if (mode === "create" && paths) mkdirSync(paths.directory, { recursive: true });
     const makeWebTools = () => {
       const result = createWebRegistry(config, environment, { exa: options.webTransport ?? webFixture ?? exaHttpsTransport, http: options.webHttp ?? directWebFetch });
@@ -196,7 +197,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
           const model: Model = async () => { throw new Error("Chat Completions requires a model attempt"); };
           bindModelAttempt(model, { scripted: false,
             ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }),
-            create: () => openAICompatibleAttempt(compatible.baseUrl, compatible.model, compatibleKey, fetch, undefined, attachments ? id => {
+            create: () => managedCompatibleAttempt(compatible, { sessionId, channelId: turn.channelId }, compatibleKey, undefined, attachments ? id => {
               const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
             } : undefined) });
           return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };

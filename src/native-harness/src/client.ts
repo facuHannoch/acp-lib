@@ -6,7 +6,8 @@ export { createStdioTransport } from "./interfaces/protocol/stdio-client.ts";
 export type { StdioConnection } from "./contracts/protocol.ts";
 export type { ChannelEvent } from "./contracts/events.ts";
 export type { InitializeParams, CreateParams, PushParams, NotifyParams, ProtocolConfig, ClientTransport, PendingChannelChange, ChannelChangeResult, LoadResult, StatusResult, ChannelStatusResult, ItemStatus, TurnStatus, StoredMessage } from "./contracts/protocol.ts";
-export type { ManagedConfig, ManagedModel, ToolPolicy, ToolDecision, ItemPolicy, ApprovalRequest, ApprovalAnswer, ApprovalCloseReason } from "./contracts/config-permissions.ts";
+export type { ManagedConfig, ManagedModel, ModelContextBudget, ToolPolicy, ToolDecision, ItemPolicy, ApprovalRequest, ApprovalAnswer, ApprovalCloseReason } from "./contracts/config-permissions.ts";
+export type { ContextLimitFailure, ContextBudgetMeasurement } from "./contracts/context.ts";
 
 export type { ModelCallSummary, ModelAttemptSummary, ModelUsage, ModelTextEvent, ModelTextPage } from "./contracts/model-execution.ts";
 export { aggregateUsage } from "./capabilities/model/usage.ts";

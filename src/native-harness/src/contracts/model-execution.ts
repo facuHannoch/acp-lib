@@ -3,6 +3,8 @@ import type { StorageResult, TimelineEntry } from "./storage.ts";
 
 /** One immutable logical request, identical across the attempts of a call. */
 export interface ModelRequest { messages: readonly Message[]; tools: readonly ToolDefinition[];
+  /** Effective managed budget for this immutable request. */
+  contextBudget?: import("./config-permissions.ts").ModelContextBudget;
   /** IDs first included at this inference boundary, in take order. The first
    * boundary includes the initial input group. Later boundaries include inputs
    * taken since the preceding boundary, including across checkpoint resume.
@@ -30,10 +32,12 @@ export type ModelAttemptEvent =
   | { type: "usage"; usage: ModelUsage }
   | { type: "response"; response: ModelResponse; providerRequestId?: string }
   | { type: "failure"; kind: "transient" | "invalid_request" | "invalid_config" | "provider"; message: string; providerRequestId?: string;
+      code?: "unsupported_image" | "attachment_unavailable" | "transfer_limit"; attachmentIds?: readonly string[];
+      contextFailure?: import("./context.ts").ContextLimitFailure;
+      providerFailure?: string;
       /** Only validated provider/category/status values may enter durable diagnostics. */
       diagnostic?: { provider: "openrouter" | "chat_completions"; category: "http"; status: number }
-        | { provider: "openrouter" | "chat_completions"; category: "transport" | "redirect" | "protocol" };
-      code?: "unsupported_image" | "attachment_unavailable" | "transfer_limit"; attachmentIds?: readonly string[] };
+        | { provider: "openrouter" | "chat_completions"; category: "transport" | "redirect" | "protocol" } };
 /** One attempt emits exactly one terminal response or failure unless aborted;
  * EOF without a terminal is incomplete. A consumer ignores events after the
  * first terminal, timeout or abort. The adapter assembles and validates tools. */

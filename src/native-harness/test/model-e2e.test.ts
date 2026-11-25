@@ -124,7 +124,7 @@ for (const adapter of ["throwing model", "arbitrary attempt"] as const) {
         const model = async () => { throw new Error(unsafe); };
         return adapter === "throwing model" ? model : bindModelAttempt(model, { scripted: false,
           create: () => async function* () {
-            yield { type: "failure", kind: "provider", message: unsafe,
+            yield { type: "failure", kind: "provider", message: unsafe, providerFailure: unsafe,
               diagnostic: { provider: "openrouter", category: "http", status: unsafe as unknown as number } };
           } });
       },
