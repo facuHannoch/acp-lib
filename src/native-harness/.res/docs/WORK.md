@@ -25,6 +25,7 @@ amendment is proposed.
 | [Long-running mock mode](long-running-mock/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `e13b405`, closure at `448521f`, integrated into `aiagent/haurness-l`. |
 | [Channel messaging 0001 · External notices](channel-messaging/0001-DESIGN-external-notices/SPEC.md) | Generic Gate 2 accepted | Generic behavior approved at `f522072`, closure at `713a76a`. Worker delivery must prove recovery from a committed final ACP worker record and the uncertainty fallback. |
 | [Web tools 0001 · Search and page fetching](web-tools/0001-DESIGN/SPEC.md) | Proposed for M2 | Define the rest of the initial tool set before starting implementation. |
+| [Web tools 0002 · Service egress](web-tools/0002-AMENDMENT-service-egress/SPEC.md) | Proposed | Shared proxy transport for fixed-origin built-ins. Exa search and fetch are the first callers. [Plan](web-tools/0002-AMENDMENT-service-egress/PLAN.md). |
 | [Shell execution 0001 · Shell tool](shell-execution/0001-DESIGN/SPEC.md) | Proposed for M2 | Define the rest of the initial tool set first. Foreground execution precedes runner-managed background jobs. |
 | [Timeline retrieval 0001 · Search and read](timeline-retrieval/0001-DESIGN/SPEC.md) | Gate 1 accepted | Runtime approved at `67072c5`, closure at `6be4a76`, integrated into `alpha` at `f0eb7d8`. |
 | [Bounded context 0001 · Inference context](bounded-context/0001-DESIGN/SPEC.md) | Gate 1 drafted | Review [decision 0026](../decisions/0026-bounded-context.md) before bounded storage reads in Gate 2. |
