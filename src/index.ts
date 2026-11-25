@@ -806,4 +806,5 @@ export type { ReminderErrorCode, ReminderSchedule, ReminderScheduleInput } from 
 export type { Reminder } from "./persistence/reminders.ts";
 export type { ReminderCreate, ReminderEdit, ReminderView, ReminderEvent } from "./native/reminders/service.ts";
 
+export type { InferenceRelayGrant, InferenceRelayGrantProvider } from "./native/inference-relay.ts";
 export type { McpRuntimeHeaders, McpRuntimeHeadersProvider, NativeInputPolicy, NativeMcpStatus } from "./native/mcp.ts";

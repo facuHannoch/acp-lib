@@ -117,6 +117,7 @@ export interface AgentHarnessConfig {
   /** The harness configuration, sent on every open. */
   readonly config: import("../native/reminders/routine-wire.ts").RoutineConfigInput;
   /** Fresh secret material for each executable native harness open. */
+  readonly inferenceRelayGrant?: import("../native/inference-relay.ts").InferenceRelayGrantProvider;
   readonly mcpRuntimeHeaders?: import("../native/mcp.ts").McpRuntimeHeadersProvider;
   /** The harness home, a path in the harness's environment. It must survive process restarts. */
   readonly home: string;

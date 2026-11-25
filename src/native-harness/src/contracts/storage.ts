@@ -66,6 +66,9 @@ export interface StorageOpenOptions {
    * Changing only the system preserves open but blocks checkpoint resume.
    * Callers that omit this option retain the existing behavior. */
   requiredScriptDigest?: string;
+  /** Optional executable-open guard, checked under storage ownership before
+   * recovery. An error message denies the open without committing recovery. */
+  checkExecution?: () => string | undefined;
   /** Validated policies for this owner; legacy callers use the legacy policy. */
   config?: import("./config-permissions.ts").ManagedConfig;
 }

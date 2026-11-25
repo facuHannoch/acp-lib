@@ -342,6 +342,8 @@ export function createMemoryStorageAdapter(adapterOptions: { mediaRoot?: string 
         tables.transaction(() => {
           checkUnattendedGuard(tables, config?.limits?.unattendedTurns);
           if (referencesCompatible(tables, config)) {
+            const denied = options.checkExecution?.();
+            if (denied !== undefined) throw new Fail("invalid_config", denied);
             recover(tables, undefined, reminderEvents);
             bindUnattendedGuard(tables, config?.limits?.unattendedTurns);
           }

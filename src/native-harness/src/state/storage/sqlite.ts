@@ -636,6 +636,10 @@ export function createSqliteStorageAdapter(path: string, adapterOptions: { media
           refreshReplyIds(owner);
           refreshModelCalls(owner);
           const compatible = meta.formatVersion < 4 || referencesCompatible(tables, config);
+          if (compatible) {
+            const denied = options.checkExecution?.();
+            if (denied !== undefined) throw new Fail("invalid_config", denied);
+          }
           if (meta.formatVersion >= 4 && meta.formatVersion < 6 && compatible) addExternalSource(owner);
           if (compatible)
             recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); addExternalSource(owner); } : undefined, reminderEvents);

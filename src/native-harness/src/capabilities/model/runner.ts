@@ -23,6 +23,7 @@ function safeDiagnostic(event: Extract<ModelAttemptEvent, { type: "failure" }>):
   if (provider && diagnostic) {
     if (diagnostic.category === "http" && Number.isInteger(diagnostic.status) && diagnostic.status >= 400 && diagnostic.status <= 599)
       return `${provider} HTTP ${diagnostic.status}`;
+    if (diagnostic.category === "relay_expired" && diagnostic.provider === "chat_completions") return "Inference relay credential expired";
     if (diagnostic.category === "transport") return `${provider} transport failed`;
     if (diagnostic.category === "redirect") return `${provider} redirect refused`;
     if (diagnostic.category === "protocol") return `${provider} returned an invalid response`;

@@ -37,7 +37,7 @@ export type ModelAttemptEvent =
       providerFailure?: string;
       /** Only validated provider/category/status values may enter durable diagnostics. */
       diagnostic?: { provider: "openrouter" | "chat_completions"; category: "http"; status: number }
-        | { provider: "openrouter" | "chat_completions"; category: "transport" | "redirect" | "protocol" } };
+        | { provider: "openrouter" | "chat_completions"; category: "transport" | "redirect" | "protocol" | "relay_expired" } };
 /** One attempt emits exactly one terminal response or failure unless aborted;
  * EOF without a terminal is incomplete. A consumer ignores events after the
  * first terminal, timeout or abort. The adapter assembles and validates tools. */

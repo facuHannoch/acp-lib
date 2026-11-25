@@ -14,7 +14,7 @@ export interface ModelContextBudget {
 }
 export type ManagedModel = { protocol: "scripted"; script: string; imageInput?: boolean }
   | { protocol: "openrouter"; model: string; apiKeyEnv: string; imageInput?: boolean; contextBudget?: ModelContextBudget }
-  | { protocol: "openai-compatible"; providerId: string; model: string; baseUrl: string; apiKeyEnv?: string; contextBudget?: ModelContextBudget }
+  | { protocol: "openai-compatible"; providerId: string; model: string; baseUrl: string; contextBudget?: ModelContextBudget } & ({ credentialMode?: never; apiKeyEnv?: string } | { credentialMode: "relay"; apiKeyEnv?: never })
   | { protocol: "opencode-go"; model: string; apiKeyEnv?: string; contextBudget?: ModelContextBudget };
 
 /** Both text-only managed sources use the same Chat Completions client. */

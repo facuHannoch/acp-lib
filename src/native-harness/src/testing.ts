@@ -1,3 +1,5 @@
+import { inferenceRelayAttempt } from "./capabilities/model/inference-relay.ts";
+import { resolveInferenceRelayGrant } from "./util/inference-relay.ts";
 import { isCompatibleModel } from "./contracts/config-permissions.ts";
 import { validateMcpRuntimeHeaders } from "./util/mcp-config.ts";
 import { openMcpRegistry } from "./capabilities/tools/mcp/registry.ts";
@@ -133,7 +135,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     }
     return memory;
   };
-  const server = createProtocolServer(async ({ mode, sessionId, config: inline, tools, mcpRuntimeHeaders }) => {
+  const server = createProtocolServer(async ({ mode, sessionId, config: inline, tools, mcpRuntimeHeaders, inferenceRelayGrant }) => {
     // Decision 0021: the catalog's names must not collide with the built-ins.
     const catalog = tools && parseCatalog(tools, [...BUILTINS, ...webDefinitions].map(tool => tool.name));
     const paths = options.home ? managedSessionPaths(sessionId, options.home) : undefined;
@@ -143,11 +145,14 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const config = chooseManagedConfig({ mode, sidecar: paths?.config ?? noSidecar, inline, saved: stored?.ok ? stored.value : undefined });
     const runtimeHeaders = mcpRuntimeHeaders === undefined ? undefined : validateMcpRuntimeHeaders(mcpRuntimeHeaders, config.mcpServers);
     const script = config.model.protocol === "scripted" ? await (options.scenarioLoader ?? loadScenario)(config.model.script) : undefined;
+    const relayRequested = config.model.protocol === "openai-compatible" && config.model.credentialMode === "relay";
+    let relayGrant = mode === "create" || !relayRequested
+      ? resolveInferenceRelayGrant(config.model, inferenceRelayGrant) : undefined;
     const credential = config.model.protocol === "openrouter" ? resolveCredential(config.model, options.environment ?? process.env) : undefined;
     let imageInput = !!paths && !options.adapter && !isCompatibleModel(config.model) && config.model.imageInput === true && (config.model.protocol === "scripted" || !options.providerFactory) && imageValidationAvailable();
     const compatible = isCompatibleModel(config.model) ? config.model : undefined;
     const environment = options.environment ?? process.env;
-    let compatibleKey = compatible && mode === "create" ? resolveCompatibleCredential(compatible, environment) : undefined;
+    let compatibleKey = compatible && !relayGrant && mode === "create" ? resolveCompatibleCredential(compatible, environment) : undefined;
     const compatibilityKey = compatible ? compatibleInferenceKey(compatible, config.system, [...BUILTINS, notifyChannelDefinition].map(tool => tool.name)) : script ? scriptedCompatibilityKey(script.modelDigest, config.system + (!isCompatibleModel(config.model) && config.model.imageInput === true ? "\n[image-input-enabled]" : ""))
       : createHash("sha256").update(JSON.stringify([config.system, config.model.protocol === "openrouter" && config.model.model,
         [...BUILTINS, notifyChannelDefinition].map(tool => tool.name), ...(!isCompatibleModel(config.model) && config.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
@@ -158,7 +163,11 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       return result.value;
     };
     let webTools = mode === "create" ? makeWebTools() : undefined;
-    const opened = adapter.open({ mode, identity: { sessionId, compatibilityKey }, config, requiredScriptDigest: script?.modelDigest });
+    const checkExecution = mode === "open" && relayRequested ? () => {
+      try { relayGrant = resolveInferenceRelayGrant(config.model, inferenceRelayGrant); }
+      catch (error) { return error instanceof Error ? error.message : "Inference relay grant is invalid"; }
+    } : undefined;
+    const opened = adapter.open({ mode, identity: { sessionId, compatibilityKey }, config, requiredScriptDigest: script?.modelDigest, checkExecution });
     if (!opened.ok) {
       const code = opened.error.code;
       throw new SessionOpenError(code === "not_found" || code === "already_exists" || code === "owner_conflict" || code === "incompatible" || code === "invalid_config" ? code : "storage_failure", opened.error.message);
@@ -173,11 +182,13 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       const execution = storage.executionCompatible();
       if (!execution.ok) throw new Error(execution.error.message);
       if (!execution.value) {
+        if (inferenceRelayGrant !== undefined) throw new SessionOpenError("invalid_config", "Inference relay grant requires executable access");
         if (runtimeHeaders !== undefined) throw new SessionOpenError("invalid_config", "Runtime MCP headers require executable access");
         imageInput = false;
       }
       if (execution.value && mode === "open") {
-        if (compatible) compatibleKey = resolveCompatibleCredential(compatible, environment);
+        if (relayRequested && !relayGrant) relayGrant = resolveInferenceRelayGrant(config.model, inferenceRelayGrant);
+        if (compatible && !relayGrant) compatibleKey = resolveCompatibleCredential(compatible, environment);
         webTools = makeWebTools();
       }
       if (execution.value && config.mcpServers) mcp = await openMcpRegistry(config, environment, runtimeHeaders, options.mcpFixtureCa);
@@ -197,9 +208,14 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
           const model: Model = async () => { throw new Error("Chat Completions requires a model attempt"); };
           bindModelAttempt(model, { scripted: false,
             ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }),
-            create: () => managedCompatibleAttempt(compatible, { sessionId, channelId: turn.channelId }, compatibleKey, undefined, attachments ? id => {
-              const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
-            } : undefined) });
+            create: () => {
+              const conversation = { sessionId, channelId: turn.channelId };
+              const metadata = attachments ? (id: string) => {
+                const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
+              } : undefined;
+              return relayGrant ? inferenceRelayAttempt(compatible.model, relayGrant, metadata)
+                : managedCompatibleAttempt(compatible, conversation, compatibleKey, undefined, metadata);
+            } });
           return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
         }
         if (config.model.protocol === "openrouter") {

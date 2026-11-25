@@ -30,7 +30,7 @@ export async function launchNativeConnection(config: NativeHarnessHostConfig, lo
   void (async () => {
     // Diagnostics only: the protocol is on stdout.
     const text = await new Response(child.stderr).text().catch(() => "");
-    if (text.trim()) log.warn("native_harness_stderr", config.mcpRuntimeHeaders ? { redacted: true } : { text: text.slice(-4000) });
+    if (text.trim()) log.warn("native_harness_stderr", (config.mcpRuntimeHeaders || config.inferenceRelayGrant) ? { redacted: true } : { text: text.slice(-4000) });
   })();
   let notify: (event: ReminderNotification) => void = () => {};
   const transport = createStdioTransport({

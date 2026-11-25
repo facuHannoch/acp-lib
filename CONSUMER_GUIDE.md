@@ -1233,6 +1233,16 @@ The preset sends a stable routing header per channel and uses Go's Chat
 Completions endpoint. DeepSeek V4.1 Flash may require allowing the Global
 region in the Go workspace. [OpenCode Go model settings](https://opencode.ai/docs/console/go/#enable-restricted-models)
 
+For an operator-managed native inference relay, declare
+`credentialMode: "relay"` on the `openai-compatible` model and set its
+`baseUrl` to the exact relay URL. Omit `apiKeyEnv`. Supply a trusted
+`harness.inferenceRelayGrant` callback. On each executable create or reopen
+it receives `{ sessionId, signal }` and returns
+`{ baseUrl, bearerToken, expiresAtMs }` for that session. Use a short-lived
+relay credential and keep upstream provider keys on the relay side. Prefer
+HTTPS. The native control connection must be trusted, and plaintext requires
+an isolated hop.
+
 Set `harness.config.model.contextBudget` on OpenRouter, OpenCode Go or OpenAI-compatible models
 to fit a larger inference request. For example, a model with a 128,000-token
 window can use `contextBudget: { contextWindowTokens: 128_000, outputReserveTokens: 4096 }`.

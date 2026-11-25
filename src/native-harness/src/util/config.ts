@@ -1,3 +1,4 @@
+import { canonicalRelayUrl } from "./inference-relay.ts";
 import { validateMcpServers } from "./mcp-config.ts";
 import { validateWebConfig } from "./web-config.ts";
 import { OPENCODE_GO_KEY_ENV, type CompatibleModel, type ManagedConfig, type ModelContextBudget, type ToolDecision, type ToolPolicy } from "../contracts/config-permissions.ts";
@@ -71,11 +72,19 @@ export function validateManagedConfig(input: unknown, legacy = false): ManagedCo
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) fail("config.model.apiKeyEnv", "expected an environment variable name");
     selectedModel = { protocol: "openrouter", model: model.model === undefined ? "deepseek/deepseek-v4.1-flash" : name(model.model, "config.model.model"), apiKeyEnv: reference, ...imageInput, ...modelContextBudget(model.contextBudget) };
   } else if (model.protocol === "openai-compatible") {
-    keys(model, ["protocol", "providerId", "model", "baseUrl", "apiKeyEnv", "contextBudget"], "config.model");
-    const reference = model.apiKeyEnv === undefined ? undefined : name(model.apiKeyEnv, "config.model.apiKeyEnv");
-    if (reference !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) fail("config.model.apiKeyEnv", "expected an environment variable name");
-    selectedModel = { protocol: "openai-compatible", providerId: name(model.providerId, "config.model.providerId"),
-      model: name(model.model, "config.model.model"), baseUrl: baseUrl(model.baseUrl), ...(reference === undefined ? {} : { apiKeyEnv: reference }), ...modelContextBudget(model.contextBudget) };
+    keys(model, ["protocol", "providerId", "model", "baseUrl", "apiKeyEnv", "contextBudget", "credentialMode"], "config.model");
+    const shared = { protocol: "openai-compatible" as const, providerId: name(model.providerId, "config.model.providerId"),
+      model: name(model.model, "config.model.model"), ...modelContextBudget(model.contextBudget) };
+    if (model.credentialMode === "relay") {
+      if (Object.hasOwn(model, "apiKeyEnv")) return fail("config.model.apiKeyEnv", "relay mode requires runtime credentials");
+      try { selectedModel = { ...shared, credentialMode: "relay", baseUrl: canonicalRelayUrl(model.baseUrl) }; }
+      catch { return fail("config.model.baseUrl", "invalid inference relay URL"); }
+    } else {
+      if (model.credentialMode !== undefined) return fail("config.model.credentialMode", "expected relay");
+      const reference = model.apiKeyEnv === undefined ? undefined : name(model.apiKeyEnv, "config.model.apiKeyEnv");
+      if (reference !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) fail("config.model.apiKeyEnv", "expected an environment variable name");
+      selectedModel = { ...shared, baseUrl: baseUrl(model.baseUrl), ...(reference === undefined ? {} : { apiKeyEnv: reference }) };
+    }
   } else if (model.protocol === "opencode-go") {
     keys(model, ["protocol", "model", "apiKeyEnv", "contextBudget"], "config.model");
     const reference = model.apiKeyEnv === undefined ? OPENCODE_GO_KEY_ENV : name(model.apiKeyEnv, "config.model.apiKeyEnv");
@@ -130,6 +139,8 @@ export function resolveCredential(model: Extract<ManagedConfig["model"], { proto
 
 export function resolveCompatibleCredential(model: CompatibleModel,
   environment: Record<string, string | undefined>): string | undefined {
+  if (model.protocol === "openai-compatible" && model.credentialMode === "relay")
+    return fail("config.model.credentialMode", "relay mode requires an executable native control connection grant");
   const reference = model.apiKeyEnv ?? (model.protocol === "opencode-go" ? OPENCODE_GO_KEY_ENV : undefined);
   if (reference === undefined) return;
   const value = environment[reference];

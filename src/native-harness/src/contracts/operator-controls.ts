@@ -71,6 +71,7 @@ export interface OperatorMethods {
 
 export interface LoadResultOpenParams {
   /** Executable owning launcher material, never saved. */
+  inferenceRelayGrant?: import("./protocol.ts").InferenceRelayGrant;
   mcpRuntimeHeaders?: import("./mcp.ts").McpRuntimeHeaders;
   sessionId: string;
   config?: ProtocolConfig;

@@ -27,7 +27,10 @@ export interface ProtocolConfig {
   defaultPolicy?: string;
   policies?: Record<string, import("./config-permissions.ts").ToolPolicy>;
 }
+/** Executable-only grant from the trusted native control connection. */
+export interface InferenceRelayGrant { baseUrl: string; bearerToken: string; expiresAtMs: number }
 export interface CreateParams {
+  inferenceRelayGrant?: InferenceRelayGrant;
   /** Executable owning launcher material, never saved. */
   mcpRuntimeHeaders?: import("./mcp.ts").McpRuntimeHeaders;
   sessionId: string;

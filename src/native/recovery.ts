@@ -1,3 +1,4 @@
+import { executableRelayOpen, type InferenceRelayGrantProvider } from "./inference-relay.ts";
 import { executableMcpOpen, type McpRuntimeHeadersProvider } from "./mcp.ts";
 import { activatesRoutine, RoutineAdmission } from "./reminders/routine-guard.ts";
 import type { ReminderChange } from "../persistence/reminders.ts";
@@ -52,7 +53,7 @@ export async function readCompleteMessage(client: HarnessClient, messageId: stri
 
 /** The catalog and startup edits are installed before recovered work can start. */
 export async function openOrCreate(
-  client: HarnessClient, config: { sessionId: string; config?: RoutineConfigInput; mcpRuntimeHeaders?: McpRuntimeHeadersProvider },
+  client: HarnessClient, config: { sessionId: string; config?: RoutineConfigInput; mcpRuntimeHeaders?: McpRuntimeHeadersProvider; inferenceRelayGrant?: InferenceRelayGrantProvider },
   batch: PendingChannelChange[], tools: Parameters<HarnessClient["openSession"]>[0]["tools"], signal: AbortSignal, reminders?: ReminderSync,
 ) {
   const admission = reminders?.routineAdmission ?? new RoutineAdmission();
@@ -72,10 +73,10 @@ export async function openOrCreate(
         sessionId: config.sessionId, config: admission.configForOpen(config.config), ...changes,
         ...(staged.length ? { reminderChanges: staged } : {}),
       };
-      const send = (request: typeof params) => executableMcpOpen(config.mcpRuntimeHeaders, signal, material => {
-        const executable = { ...request, ...(material === undefined ? {} : { mcpRuntimeHeaders: material }) };
+      const send = (request: typeof params) => executableRelayOpen(config.inferenceRelayGrant, config.sessionId, signal, grant => executableMcpOpen(config.mcpRuntimeHeaders, signal, material => {
+        const executable = { ...request, ...(grant === undefined ? {} : { inferenceRelayGrant: grant }), ...(material === undefined ? {} : { mcpRuntimeHeaders: material }) };
         return create ? client.createSession({ ...executable, participants: [], channels: {} }) : client.openSession(executable);
-      });
+      }));
       try {
         return await send(params);
       } catch (error) {

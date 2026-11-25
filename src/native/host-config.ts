@@ -30,6 +30,7 @@ export interface NativeHarnessHostConfig {
   /** Sent on every open. Session configuration is fixed while the session is open. */
   readonly config: RoutineConfigInput;
   /** Fresh secret material for each executable native harness open. */
+  readonly inferenceRelayGrant?: import("./inference-relay.ts").InferenceRelayGrantProvider;
   readonly mcpRuntimeHeaders?: import("./mcp.ts").McpRuntimeHeadersProvider;
   /** The harness home, a path in the harness's environment. Must survive process restarts. */
   readonly home: string;
