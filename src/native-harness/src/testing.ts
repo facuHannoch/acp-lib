@@ -1,8 +1,9 @@
+import { resolveServiceEgress } from "./capabilities/tools/web/service-egress.ts";
 import { isCompatibleModel } from "./contracts/config-permissions.ts";
 import { validateMcpRuntimeHeaders } from "./util/mcp-config.ts";
 import { openMcpRegistry } from "./capabilities/tools/mcp/registry.ts";
-import { createWebRegistry, directWebFetch } from "./capabilities/tools/web/registry.ts";
-import { exaHttpsTransport } from "./capabilities/tools/web/exa-transport.ts";
+import { createWebRegistry, directWebFetch, webUnavailable } from "./capabilities/tools/web/registry.ts";
+import { exaServiceTransport } from "./capabilities/tools/web/exa-transport.ts";
 import { webDefinitions } from "./capabilities/tools/web/definitions.ts";
 import { compatibleInferenceKey } from "./runtime/config/inference-key.ts";
 import { wallReminderClock } from "./runtime/reminder-timer.ts";
@@ -101,6 +102,8 @@ function withFaults(storage: SessionStorage, hit: (point: string) => void): Sess
  * protocol. In memory by default; durable when given a home or an adapter. */
 const BUILTINS = [echoDefinition, recordDefinition, holdDefinition];
 export function createScriptedServer(options: ScriptedServerOptions = {}) {
+  const webEgress = resolveServiceEgress(options.environment ?? process.env);
+  const exa = exaServiceTransport(webEgress);
   let fixtureEndpoint: string | undefined;
   if (options.providerEndpoint) {
     const url = new URL(options.providerEndpoint);
@@ -153,7 +156,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         [...BUILTINS, notifyChannelDefinition].map(tool => tool.name), ...(!isCompatibleModel(config.model) && config.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
     if (mode === "create" && paths) mkdirSync(paths.directory, { recursive: true });
     const makeWebTools = () => {
-      const result = createWebRegistry(config, environment, { exa: options.webTransport ?? webFixture ?? exaHttpsTransport, http: options.webHttp ?? directWebFetch });
+      const result = createWebRegistry(config, environment, { exa: options.webTransport ?? webFixture ?? exa, http: options.webHttp ?? directWebFetch }, webEgress);
       if (!result.ok) throw new SessionOpenError("invalid_config", result.error.message);
       return result.value;
     };
@@ -248,7 +251,8 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         } });
         return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
       } });
-      return { session, config, imageInput, ...(mcp ? { mcpStatus: mcp.status, stopMcp: mcp.close } : {}), ...(attachments ? { attachments } : {}), close() { void mcp?.close(); attachments?.close(); opened.value.close(); }, commitConfig() {
+      const unavailable = webUnavailable(config, webEgress);
+      return { session, config, imageInput, ...(Object.keys(unavailable).length ? { webUnavailable: unavailable } : {}), ...(mcp ? { mcpStatus: mcp.status, stopMcp: mcp.close } : {}), ...(attachments ? { attachments } : {}), close() { void mcp?.close(); attachments?.close(); opened.value.close(); }, commitConfig() {
         const saved = storage.saveConfig(config);
         if (!saved.ok && saved.error.code !== "incompatible") throw new SessionOpenError("storage_failure", saved.error.message);
       }, exportArchive: () => storage.exportArchive() };

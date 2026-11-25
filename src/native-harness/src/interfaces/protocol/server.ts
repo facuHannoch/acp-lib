@@ -49,6 +49,7 @@ export interface OpenedSession {
   exportArchive?(): StorageResult<SessionArchive>;
   attachments?: ReturnType<typeof createManagedAttachmentService>;
   imageInput?: boolean;
+  webUnavailable?: import("../../contracts/web.ts").WebUnavailable;
   mcpStatus?(): Record<string, import("../../contracts/mcp.ts").McpServerStatus>;
   stopMcp?(): Promise<void>;
 }
@@ -199,7 +200,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const image = opened.imageInput && (opened.session.reminders?.executable() ?? true)
       ? { imageInput: true as const, imageLimits: { formats: ["image/png", "image/jpeg", "image/webp"], fileBytes: ATTACHMENT_LIMITS.fileBytes,
         turnBytes: ATTACHMENT_LIMITS.imageBytesPerTurn, maxImages: ATTACHMENT_LIMITS.references, maxSide: ATTACHMENT_LIMITS.imageSide, maxPixels: ATTACHMENT_LIMITS.imagePixels } } : {};
-    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision, ...image, ...(opened.mcpStatus ? { mcpServers: opened.mcpStatus() } : {}) };
+    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision, ...image, ...(opened.webUnavailable ? { webUnavailable: opened.webUnavailable } : {}), ...(opened.mcpStatus ? { mcpServers: opened.mcpStatus() } : {}) };
   }
 
   function holdAfterResponse(start?: () => void) {
@@ -459,6 +460,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     if (method === "session/status") {
       keys(p, []);
       return { ...wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()),
+        ...(current.webUnavailable ? { webUnavailable: current.webUnavailable } : {}),
         ...(current.mcpStatus ? { mcpServers: current.mcpStatus() } : {}) };
     }
     if (method === "session/suspend" || method === "session/resume") {

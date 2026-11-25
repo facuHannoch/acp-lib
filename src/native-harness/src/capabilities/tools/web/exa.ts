@@ -1,3 +1,4 @@
+import { ServiceTransportError } from "./service-egress.ts";
 import { ExaResponseLimit } from "./exa-transport.ts";
 import { directUrl } from "./direct-address.ts";
 import { fetchPreview, searchPreview, type WebHit } from "./preview.ts";
@@ -66,6 +67,9 @@ export async function runExa(input: { operation: "web_search" | "web_fetch"; arg
     if (input.key && url!.includes(input.key)) return failed("page_unavailable", usage);
     const content = fetchPreview({ url: url!, title: typeof results[0].title === "string" ? redact(results[0].title) : null, text: redact(results[0].text), truncated: false, coverage: "unknown" });
     return content === undefined ? failed("result_too_large", usage) : { ok: true, content, usage };
-  } catch (error) { return failed(cause ?? (error instanceof ExaResponseLimit ? "response_too_large" : "provider_error")); }
+  } catch (error) {
+    const result = failed(cause ?? (error instanceof ExaResponseLimit ? "response_too_large" : "provider_error"));
+    return !result.ok && !cause && error instanceof ServiceTransportError ? { ...result, message: error.message } : result;
+  }
   finally { clearTimeout(timeout); input.signal?.removeEventListener("abort", abort); }
 }
