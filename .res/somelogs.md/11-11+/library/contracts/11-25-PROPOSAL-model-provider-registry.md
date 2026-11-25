@@ -1,6 +1,6 @@
 # Proposal: a model-provider registry for the native harness
 
-Status: DRAFT for the harness team, 2026-11-25 (core-p, from the user's requirement 5 and a check of how opencode, Hermes
+Status: DRAFT revision 2 (harness feedback folded in), 2026-11-25 (core-p, from the user's requirement 5 and a check of how opencode, Hermes
 and pi do it). Not a decision. Answers to the open questions are marked as ASSUMPTIONS so the harness team can start and the
 user can correct them.
 
@@ -34,10 +34,13 @@ Shared shape: named provider + wire protocol + base URL + key by reference + mod
      protocol: "openai-completions" | "anthropic-messages" | "openai-responses",
      baseUrl: string,               // HTTPS, or literal loopback HTTP (decision 0034 rules)
      apiKeyEnv?: string,            // reference only; resolved when the session opens; optional for keyless endpoints
-     headers?: Record<string, { env: string } | string>,   // follow-up; values by env reference, never logged
-     compat?: { supportsDeveloperRole?: boolean, maxTokensField?: "max_tokens" | "max_completion_tokens", ... },
+     headers?: Record<string, { env: string }>,   // follow-up, NOT in the first slice; values ONLY by env reference (no literals), never logged
+     compat?: {},   // empty on day one: no flag is justified by the current code; first candidates if a fixture rejects the request:
+                    // `streamUsage` (stream_options.include_usage) and `toolChoiceAuto` (explicit tool_choice:'auto').
+                    // A developer-role switch or token-field selector does not exist in the serializer today.
      models?: Record<modelId, { name?: string, upstreamId?: string, contextWindow?: number, maxOutputTokens?: number,
                                input?: ("text" | "image")[], reasoning?: boolean }>
+                               // DESCRIPTIVE only (for a picker) until the selected adapter really supports the field
    }
    ```
 3. **Model selection.** `harness.config.model` becomes either the existing arms (unchanged, compatible) or a registry
@@ -73,3 +76,24 @@ credentials. Usage, context-window budgeting and image support read the model en
 - Interaction with 0034: keep the inline arm as sugar, or deprecate it once the registry exists?
 - Does the runtime (`openai-compatible` execution, now implemented) already structure its client so a protocol is a module?
 - Redaction and headers: same rules as 0034 (no URL credentials; secrets by env reference; nothing in durable/diagnostic surfaces).
+
+## Revision 2: harness feedback (haurness-l, against alpha 8068558) and what it changes
+
+- The runtime has a shared `ModelAttempt` runner; Chat Completions is one concrete implementation (`openrouter-stream.ts`, with
+  OpenRouter and 0034 wrappers and `chat-request.ts` serialization). There is no configured protocol registry yet. A new wire
+  protocol is its own adapter module behind `ModelAttempt`. So layer 1 is "add adapter modules" and layer 2 is new work.
+- Compat flags: none justified on day one. `compat` starts empty; the first candidates, only if a target fixture rejects the
+  existing request, are `stream_options.include_usage` and explicit `tool_choice:'auto'`. No developer-role switch or token-field
+  selector exists in the serializer, so those are removed from the draft.
+- Model `input`/vision/reasoning metadata is descriptive until the selected adapter supports it.
+- Headers: env references only, no literal strings (the type is now `{ env: string }`), and headers are NOT in the first slice.
+- First slice proposed for the user to approve: protocol `openai-completions` only (what exists), a `providers` registry with
+  `protocol`, `baseUrl`, `apiKeyEnv?`, `models?` (descriptive), and the `{ provider, model }` selection; then a small
+  reviewed TYPE-ONLY SDK commit, separate from runtime and picker wiring.
+
+### Decisions still needed (the harness team asked for explicit choices)
+
+1. **Fallback timing and checkpoint identity.** When does a fallback model take over (before any output only? after a transient
+   failure budget? never mid-stream), and does a turn resumed from a checkpoint keep the model it started with? Proposal: no
+   fallback in the first slice (drop `fallbackModel`), so checkpoint identity stays "protocol + provider ID + endpoint + model".
+2. **User approval of the first protocol and scope** (above), so the type-only SHA can be requested.
