@@ -13,6 +13,25 @@ export class ModelCallError extends Error {
     if (detail && detail !== outcome) this.turnFailureDetail = detail;
   }
 }
+function safeDiagnostic(event: Extract<ModelAttemptEvent, { type: "failure" }>): string {
+  const diagnostic = event.diagnostic;
+  const provider = diagnostic?.provider === "openrouter" ? "OpenRouter"
+    : diagnostic?.provider === "chat_completions" ? "Chat Completions" : undefined;
+  if (provider && diagnostic) {
+    if (diagnostic.category === "http" && Number.isInteger(diagnostic.status) && diagnostic.status >= 400 && diagnostic.status <= 599)
+      return `${provider} HTTP ${diagnostic.status}`;
+    if (diagnostic.category === "transport") return `${provider} transport failed`;
+    if (diagnostic.category === "redirect") return `${provider} redirect refused`;
+    if (diagnostic.category === "protocol") return `${provider} returned an invalid response`;
+  }
+  switch (event.kind) {
+    case "transient": return "Temporary model provider failure";
+    case "invalid_request": return "Model provider rejected the request";
+    case "invalid_config": return "Model provider configuration failed";
+    default: return "Model provider failed";
+  }
+}
+
 class ModelStorageError extends Error {}
 function take<T>(result: StorageResult<T>): T {
   if (!result.ok) throw new ModelStorageError(`Model call storage ${result.error.code}: ${result.error.message}`);
@@ -110,9 +129,14 @@ export async function runModelCall(options: RunModelCallOptions): Promise<{ resp
     const attemptOutcome = failure === "transient" ? "transient_failure" : failure === "provider" ? "provider_failure" : failure;
     take(options.store.finishAttempt(call.callId, attempt.attemptId, attemptOutcome));
     if (terminal?.type === "failure" && terminal.message === "script_exhausted" && options.scripted) return finish("failed", "script_exhausted");
-    if (terminal?.type === "failure" && terminal.code) return finish("failed", terminal.message, { code: terminal.code, attachmentIds: [...terminal.attachmentIds ?? []] });
+    if (terminal?.type === "failure" && (terminal.code === "unsupported_image" || terminal.code === "attachment_unavailable" || terminal.code === "transfer_limit")) {
+      const ids = new Set(request.messages.flatMap(message => "parts" in message
+        ? (message.parts ?? []).flatMap(part => part.type === "attachment" ? [part.id] : []) : []));
+      return finish("failed", "Model attachment rejected", { code: terminal.code,
+        attachmentIds: [...new Set((terminal.attachmentIds ?? []).filter(id => ids.has(id)))] });
+    }
     if (failure !== "transient" || output || ordinal >= Math.min(1, settings.maxRetries)) return finish(failure === "incomplete" ? "incomplete" : "failed",
-      terminal?.type === "failure" ? terminal.message : "Model response ended before completion");
+      terminal?.type === "failure" ? safeDiagnostic(terminal) : "Model response ended before completion");
     if (deadline - Date.now() < settings.retryDelayMs) return finish("timeout", "Model request deadline exceeded");
     const delay = await new Promise<"ready" | "interrupted">(resolve => {
       const done = (result: "ready" | "interrupted") => { clearTimeout(wait); options.signal?.removeEventListener("abort", interrupted); resolve(result); };

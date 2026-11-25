@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const isModelTimeout = (reason: string | undefined) => reason === "timeout" || reason?.startsWith("timeout: ") === true;
 const main = new URL("../../src/native-harness/src/interfaces/cli/main.ts", import.meta.url).pathname;
 type Outcome = "completed" | "failed" | "interrupted";
 type ExpectedOutcome = Outcome | "timeout";
@@ -202,7 +203,7 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
         if (!turn || turn.state === "running" || turn.state === "suspended") return;
         send.turnId = turn.turnId; send.outcome = turn.state; send.reason = turn.reason;
         const expected = options.expected?.[send.inputId] ?? "completed";
-        const actual = expected === "timeout" && turn.state === "failed" && turn.reason === "timeout" ? "timeout" : turn.state;
+        const actual = expected === "timeout" && turn.state === "failed" && isModelTimeout(turn.reason) ? "timeout" : turn.state;
         if (actual !== expected) throw new Error(`Unexpected outcome for ${send.inputId}: ${turn.state}`);
       }
     }
@@ -238,7 +239,7 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
           throw new Error(`Missing or repeated committed reply delivery on ${channel}`);
       }
       for (const entry of activity) if (entry.kind === "failed" || entry.kind === "interrupted") {
-        if (!sends.some(send => send.channel === entry.channel && send.turnId === entry.turnId && (options.expected?.[send.inputId] === entry.kind || (entry.kind === "failed" && options.expected?.[send.inputId] === "timeout" && send.reason === "timeout"))))
+        if (!sends.some(send => send.channel === entry.channel && send.turnId === entry.turnId && (options.expected?.[send.inputId] === entry.kind || (entry.kind === "failed" && options.expected?.[send.inputId] === "timeout" && isModelTimeout(send.reason)))))
           throw new Error(`Unexpected ${entry.kind} turn on ${entry.channel}`);
       }
       for (const tool of toolFailures) {

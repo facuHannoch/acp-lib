@@ -111,3 +111,49 @@ test("provider failures reach stdio and survive reopen without echoed secrets", 
     expect(JSON.stringify(loaded)).toContain("failed: OpenRouter HTTP 429");
   } finally { await harness.close(); await fixture.stop(true); rmSync(home, { recursive: true, force: true }); }
 }, 12000);
+
+for (const adapter of ["throwing model", "arbitrary attempt"] as const) {
+  test(`${adapter} cannot persist unchecked provider diagnostics`, async () => {
+    const { createInProcessHarness } = await import("../src/testing.ts");
+    const { bindModelAttempt } = await import("../src/capabilities/model/attempt.ts");
+    const home = mkdtempSync(join(tmpdir(), "harness-provider-canary-"));
+    const canary = crypto.randomUUID();
+    const unsafe = `https://example.com/?token=${canary} Authorization: Bearer ${canary}`;
+    const open = () => createInProcessHarness({ home, environment: { OPENROUTER_API_KEY: canary }, captureRequests: true,
+      providerFactory() {
+        const model = async () => { throw new Error(unsafe); };
+        return adapter === "throwing model" ? model : bindModelAttempt(model, { scripted: false,
+          create: () => async function* () {
+            yield { type: "failure", kind: "provider", message: unsafe,
+              diagnostic: { provider: "openrouter", category: "http", status: unsafe as unknown as number } };
+          } });
+      },
+    });
+    const events: ChannelEvent[] = [];
+    let harness = open();
+    try {
+      harness.client.onChannelEvent(event => events.push(event));
+      await harness.client.initialize();
+      await harness.client.createSession({ sessionId: "fixture", participants: [], channels: {}, config: {
+        version: 1, system: "", model: { protocol: "openrouter", model: "fixture", apiKeyEnv: "OPENROUTER_API_KEY" },
+        defaultPolicy: "allow", policies: { allow: { fallback: "allow", tools: {} } },
+      } });
+      await harness.client.push(push("channel", "item"));
+      await until(() => events.some(({ event }) => event.type === "turn_ended"), "provider failure");
+      expect(JSON.stringify(events).includes(canary)).toBe(false);
+      expect(events.find(({ event }) => event.type === "turn_ended")?.event)
+        .toMatchObject({ outcome: "failed", error: "failed: Model provider failed" });
+      expect(JSON.stringify(await harness.client.modelCalls()).includes(canary)).toBe(false);
+      expect(JSON.stringify([...harness.models]).includes(canary)).toBe(false);
+      await harness.client.suspend();
+      expect(Buffer.from(await harness.client.exportArchive()).includes(canary)).toBe(false);
+      await harness.close();
+      harness = open();
+      await harness.client.initialize();
+      await harness.client.openSession({ sessionId: "fixture" });
+      const loaded = await harness.client.reconcileChannel({ channel: "channel", itemIds: ["item"], turnIds: ["1"] });
+      expect(JSON.stringify(loaded).includes(canary)).toBe(false);
+      expect(JSON.stringify(loaded)).toContain("failed: Model provider failed");
+    } finally { await harness.close(); rmSync(home, { recursive: true, force: true }); }
+  });
+}

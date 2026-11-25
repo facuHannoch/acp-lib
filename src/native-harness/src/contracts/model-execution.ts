@@ -30,6 +30,9 @@ export type ModelAttemptEvent =
   | { type: "usage"; usage: ModelUsage }
   | { type: "response"; response: ModelResponse; providerRequestId?: string }
   | { type: "failure"; kind: "transient" | "invalid_request" | "invalid_config" | "provider"; message: string; providerRequestId?: string;
+      /** Only validated provider/category/status values may enter durable diagnostics. */
+      diagnostic?: { provider: "openrouter" | "chat_completions"; category: "http"; status: number }
+        | { provider: "openrouter" | "chat_completions"; category: "transport" | "redirect" | "protocol" };
       code?: "unsupported_image" | "attachment_unavailable" | "transfer_limit"; attachmentIds?: readonly string[] };
 /** One attempt emits exactly one terminal response or failure unless aborted;
  * EOF without a terminal is incomplete. A consumer ignores events after the

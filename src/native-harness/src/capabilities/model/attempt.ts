@@ -9,8 +9,8 @@ export function completeModelAttempt(model: Model): ModelAttempt {
       const answer = await model(request.messages, request.tools, signal);
       if (signal.aborted) return;
       yield { type: "response", response: { ...answer, stopReason: answer.calls.length ? "tool_calls" : "complete" } };
-    } catch (error) {
-      if (!signal.aborted) yield { type: "failure", kind: "provider", message: String(error) };
+    } catch {
+      if (!signal.aborted) yield { type: "failure", kind: "provider", message: "Model provider failed" };
     }
   };
 }

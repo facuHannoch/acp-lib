@@ -68,16 +68,17 @@ function chatAttempt(apiKey: string | undefined, model: string, fetcher: typeof 
       for (const url of imageUrls) { safe = safe.replaceAll(url, "[REDACTED_IMAGE]"); const encoded = url.slice(url.indexOf(",") + 1); if (encoded) safe = safe.replaceAll(encoded, "[REDACTED_IMAGE]"); }
       return safe;
     };
+    const diagnosticProvider = endpoint ? "chat_completions" as const : "openrouter" as const;
     const errorText = () => endpoint ? "Chat Completions transport failed" : "OpenRouter transport failed";
     onRequest?.(imageUrls.length ? redact(body) : body);
     let response: Response;
     try { response = await fetcher(endpoint ?? "https://openrouter.ai/api/v1/chat/completions", { method: "POST", headers: { ...(apiKey === undefined ? {} : { Authorization: `Bearer ${apiKey}` }), "Content-Type": "application/json" }, body, signal, ...(endpoint ? { redirect: "manual" } : {}) }); }
-    catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: errorText() }; return; }
+    catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: errorText(), diagnostic: { provider: diagnosticProvider, category: "transport" } }; return; }
     if (!response.ok) {
       void response.body?.cancel().catch(() => {});
-      if (endpoint && response.status >= 300 && response.status < 400) { yield { type: "failure", kind: "provider", message: "redirect_refused" }; return; }
+      if (endpoint && response.status >= 300 && response.status < 400) { yield { type: "failure", kind: "provider", message: "redirect_refused", diagnostic: { provider: diagnosticProvider, category: "redirect" } }; return; }
       const provider = endpoint ? "Chat Completions" : "OpenRouter";
-      yield { type: "failure", kind: response.status === 429 || response.status >= 500 ? "transient" : "invalid_request", message: `${provider} HTTP ${response.status}` }; return;
+      yield { type: "failure", kind: response.status === 429 || response.status >= 500 ? "transient" : "invalid_request", message: `${provider} HTTP ${response.status}`, diagnostic: { provider: diagnosticProvider, category: "http", status: response.status } }; return;
     }
     const safeRequestId = (id: string | undefined) => endpoint && apiKey && id?.includes(apiKey) ? undefined : id;
     const requestId = safeRequestId(response.headers.get("x-request-id") ?? undefined);
@@ -126,7 +127,7 @@ function chatAttempt(apiKey: string | undefined, model: string, fetcher: typeof 
         ...(reasoning ? { reasoning } : {}), ...(reasoningDetails.length ? { reasoning_details: reasoningDetails } : {}),
         ...(calls.length ? { tool_calls: calls.map(call => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })) } : {}) } }) }, ...(providerId ? { providerRequestId: providerId } : {}) };
       yield event;
-    } catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: errorText() }; }
+    } catch (error) { if (!signal.aborted) yield { type: "failure", kind: "transient", message: errorText(), diagnostic: { provider: diagnosticProvider, category: "transport" } }; }
     finally { if (endpoint) void reader.cancel().catch(() => {}); reader.releaseLock(); }
   };
 }

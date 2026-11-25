@@ -181,7 +181,7 @@ test("an explicitly expected model timeout is reported as a terminal input outco
   const run = await rehearsal([send("alice", "slow"), { type: "model", channelId: "alice", wait: "cancel" }],
     { expected: { slow: "timeout" }, env: { HARNESS_TEST_MODEL_TIMEOUT_MS: "100" } });
   const output = await run.run();
-  expect(output.sends).toMatchObject([{ inputId: "slow", outcome: "failed", reason: "timeout" }]);
+  expect(output.sends).toMatchObject([{ inputId: "slow", outcome: "failed", reason: "timeout: Model request deadline exceeded" }]);
   expect(output.replies.alice).toEqual([]);
   expect(run.exits).toEqual([0]);
 }, 12_000);
