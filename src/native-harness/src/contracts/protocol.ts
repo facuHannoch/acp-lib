@@ -130,6 +130,7 @@ export interface TurnStatus {
   state: "running" | "suspended" | "completed" | "failed" | "interrupted";
   reason?: string;
   attachmentFailure?: import("./attachments.ts").AttachmentFailure;
+  contextFailure?: import("./context.ts").ContextLimitFailure;
   /** Recorded calls with no recorded result; never replayed by the harness. */
   uncertainCalls?: string[];
 }

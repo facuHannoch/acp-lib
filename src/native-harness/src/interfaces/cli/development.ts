@@ -13,7 +13,7 @@ import { openRouter } from "../../capabilities/model/openrouter.ts";
 import { loadScenario, scriptedCompatibilityKey } from "../../capabilities/model/scenario-file.ts";
 import { scenarioAttempt } from "../../capabilities/model/scenario-attempt.ts";
 import { bindModelAttempt } from "../../capabilities/model/attempt.ts";
-import { openAICompatibleAttempt, openRouterAttempt } from "../../capabilities/model/openrouter-stream.ts";
+import { managedCompatibleAttempt, openRouterAttempt } from "../../capabilities/model/openrouter-stream.ts";
 import { currentTimeDefinition, executeCurrentTime } from "../../capabilities/tools/builtin/current-time.ts";
 import { debugToolDefinitions, debugToolHandlers } from "../../capabilities/tools/debug/index.ts";
 import { notifyChannelDefinition } from "../../capabilities/tools/builtin/notify-channel.ts";
@@ -21,7 +21,7 @@ import { createMemoryStorageAdapter } from "../../state/storage/memory.ts";
 import { createSqliteStorageAdapter } from "../../state/storage/sqlite.ts";
 import { createInspection } from "../inspector/state.ts";
 import { observeModel, observeSession } from "../inspector/observe.ts";
-import type { ManagedConfig } from "../../contracts/config-permissions.ts";
+import { isCompatibleModel, type ManagedConfig } from "../../contracts/config-permissions.ts";
 import { chooseManagedConfig } from "../../runtime/config/paths.ts";
 import { resolveCompatibleCredential, resolveCredential, validateManagedConfig } from "../../runtime/config/managed.ts";
 import { createManagedAttachmentService } from "../../capabilities/attachments/service.ts";
@@ -93,7 +93,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
     managedConfig = { ...managedConfig, system: options.debugInstructions };
   const systemPrompt = options.instructions ?? options.debugInstructions ?? managedConfig?.system ?? options.systemPrompt;
   const scriptPath = managedConfig?.model.protocol === "scripted" ? managedConfig.model.script : undefined;
-  const compatible = managedConfig?.model.protocol === "openai-compatible" ? managedConfig.model : undefined;
+  const compatible = isCompatibleModel(managedConfig?.model) ? managedConfig.model : undefined;
   const creating = !options.database || !!options.create;
   const environment = options.environment ?? process.env;
   let compatibleKey = compatible && creating ? resolveCompatibleCredential(compatible, environment) : undefined;
@@ -105,9 +105,9 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const scriptedTools = script ? options.scriptedTools : undefined;
   const tools = [currentTimeDefinition, ...(scriptedTools?.tools ?? []),
     ...(options.debugTools ? debugToolDefinitions : []), notifyChannelDefinition];
-  let imageInput = managedConfig?.model.protocol !== "openai-compatible" && managedConfig?.model.imageInput === true && (managedConfig.model.protocol === "scripted" || !options.providerFactory) && imageValidationAvailable();
-  const compatibilityKey = compatible ? compatibleInferenceKey(compatible, systemPrompt, tools.map(tool => tool.name)) : script ? scriptedCompatibilityKey(script.modelDigest, systemPrompt + (managedConfig?.model.protocol !== "openai-compatible" && managedConfig?.model.imageInput === true ? "\n[image-input-enabled]" : ""))
-    : createHash("sha256").update(JSON.stringify([systemPrompt, providerModel!.model, tools.map(tool => tool.name), ...(managedConfig?.model.protocol !== "openai-compatible" && managedConfig?.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
+  let imageInput = !!managedConfig && !isCompatibleModel(managedConfig.model) && managedConfig.model.imageInput === true && (managedConfig.model.protocol === "scripted" || !options.providerFactory) && imageValidationAvailable();
+  const compatibilityKey = compatible ? compatibleInferenceKey(compatible, systemPrompt, tools.map(tool => tool.name)) : script ? scriptedCompatibilityKey(script.modelDigest, systemPrompt + (managedConfig && !isCompatibleModel(managedConfig.model) && managedConfig.model.imageInput === true ? "\n[image-input-enabled]" : ""))
+    : createHash("sha256").update(JSON.stringify([systemPrompt, providerModel!.model, tools.map(tool => tool.name), ...(managedConfig && !isCompatibleModel(managedConfig.model) && managedConfig.model.imageInput === true ? ["image-input-enabled"] : [])])).digest("hex");
   const tempMedia = sqlite ? undefined : mkdtempSync(join(tmpdir(), "harness-media-"));
   const mediaRoot = options.database ? options.mediaRoot ?? `${options.database}.media` : join(tempMedia!, "media");
   if (!sqlite) adapter = createMemoryStorageAdapter({ mediaRoot });
@@ -161,7 +161,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
             };
           } });
         } else if (compatible) {
-          bindModelAttempt(model, { scripted: false, create: () => openAICompatibleAttempt(compatible.baseUrl, compatible.model, compatibleKey, fetch,
+          bindModelAttempt(model, { scripted: false, create: () => managedCompatibleAttempt(compatible, { sessionId, channelId: turn.channelId }, compatibleKey,
             body => inspection.request(turn.channelId, body, turn.turnId), attachments ? id => {
               const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
             } : undefined) });

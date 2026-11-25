@@ -1,6 +1,7 @@
 import { validateMcpServers } from "./mcp-config.ts";
 import { validateWebConfig } from "./web-config.ts";
-import type { ManagedConfig, ToolDecision, ToolPolicy } from "../contracts/config-permissions.ts";
+import { OPENCODE_GO_KEY_ENV, type CompatibleModel, type ManagedConfig, type ModelContextBudget, type ToolDecision, type ToolPolicy } from "../contracts/config-permissions.ts";
+import { effectiveContextBudget, MAX_MODEL_REQUEST_BYTES } from "./context-budget.ts";
 
 /** The upgrade preserves the behavior of sessions created before policies existed. */
 export const LEGACY_POLICY = "__legacy_allow";
@@ -17,6 +18,24 @@ const keys = (value: Record<string, unknown>, allowed: string[], field: string) 
 };
 const name = (value: unknown, field: string): string => typeof value === "string" && value.trim() ? value : fail(field, "expected a nonempty string");
 const decision = (value: unknown, field: string): ToolDecision => value === "allow" || value === "ask" || value === "deny" ? value : fail(field, "expected allow, ask or deny");
+
+function modelContextBudget(input: unknown): { contextBudget?: ModelContextBudget } {
+  if (input === undefined) return {};
+  const field = "config.model.contextBudget", raw = record(input, field);
+  const optional = ["outputReserveTokens", "maxOutputTokens", "estimationMarginTokens", "maxRequestBytes"] as const;
+  keys(raw, ["contextWindowTokens", ...optional], field);
+  function integer(key: keyof ModelContextBudget, min: number, max = Number.MAX_SAFE_INTEGER) {
+    const value = raw[key];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max)
+      return fail(`${field}.${key}`, `expected an integer from ${min} to ${max}`);
+    return value;
+  }
+  const contextBudget: ModelContextBudget = { contextWindowTokens: integer("contextWindowTokens", 1) };
+  for (const key of optional) if (raw[key] !== undefined)
+    contextBudget[key] = integer(key, key === "estimationMarginTokens" ? 0 : 1, key === "maxRequestBytes" ? MAX_MODEL_REQUEST_BYTES : undefined);
+  if (effectiveContextBudget(contextBudget).inputBudgetTokens <= 0) fail(field, "expected a positive input allowance after reserves");
+  return { contextBudget };
+}
 
 function baseUrl(value: unknown): string {
   const field = "config.model.baseUrl", raw = name(value, field);
@@ -47,17 +66,22 @@ export function validateManagedConfig(input: unknown, legacy = false): ManagedCo
     keys(model, ["protocol", "script", "imageInput"], "config.model");
     selectedModel = { protocol: "scripted", script: name(model.script, "config.model.script"), ...imageInput };
   } else if (model.protocol === "openrouter") {
-    keys(model, ["protocol", "model", "apiKeyEnv", "imageInput"], "config.model");
+    keys(model, ["protocol", "model", "apiKeyEnv", "imageInput", "contextBudget"], "config.model");
     const reference = model.apiKeyEnv === undefined ? "OPENROUTER_API_KEY" : name(model.apiKeyEnv, "config.model.apiKeyEnv");
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) fail("config.model.apiKeyEnv", "expected an environment variable name");
-    selectedModel = { protocol: "openrouter", model: model.model === undefined ? "deepseek/deepseek-v4.1-flash" : name(model.model, "config.model.model"), apiKeyEnv: reference, ...imageInput };
+    selectedModel = { protocol: "openrouter", model: model.model === undefined ? "deepseek/deepseek-v4.1-flash" : name(model.model, "config.model.model"), apiKeyEnv: reference, ...imageInput, ...modelContextBudget(model.contextBudget) };
   } else if (model.protocol === "openai-compatible") {
-    keys(model, ["protocol", "providerId", "model", "baseUrl", "apiKeyEnv"], "config.model");
+    keys(model, ["protocol", "providerId", "model", "baseUrl", "apiKeyEnv", "contextBudget"], "config.model");
     const reference = model.apiKeyEnv === undefined ? undefined : name(model.apiKeyEnv, "config.model.apiKeyEnv");
     if (reference !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) fail("config.model.apiKeyEnv", "expected an environment variable name");
     selectedModel = { protocol: "openai-compatible", providerId: name(model.providerId, "config.model.providerId"),
-      model: name(model.model, "config.model.model"), baseUrl: baseUrl(model.baseUrl), ...(reference === undefined ? {} : { apiKeyEnv: reference }) };
-  } else return fail("config.model.protocol", "expected scripted, openrouter or openai-compatible");
+      model: name(model.model, "config.model.model"), baseUrl: baseUrl(model.baseUrl), ...(reference === undefined ? {} : { apiKeyEnv: reference }), ...modelContextBudget(model.contextBudget) };
+  } else if (model.protocol === "opencode-go") {
+    keys(model, ["protocol", "model", "apiKeyEnv", "contextBudget"], "config.model");
+    const reference = model.apiKeyEnv === undefined ? OPENCODE_GO_KEY_ENV : name(model.apiKeyEnv, "config.model.apiKeyEnv");
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) return fail("config.model.apiKeyEnv", "expected an environment variable name");
+    selectedModel = { protocol: "opencode-go", model: name(model.model, "config.model.model"), apiKeyEnv: reference, ...modelContextBudget(model.contextBudget) };
+  } else return fail("config.model.protocol", "expected scripted, openrouter, openai-compatible or opencode-go");
   const isLegacy = legacy && raw.defaultPolicy === undefined && raw.policies === undefined;
   const defaultPolicy = isLegacy ? LEGACY_POLICY : name(raw.defaultPolicy, "config.defaultPolicy");
   const policiesInput = isLegacy ? { [LEGACY_POLICY]: { fallback: "allow", tools: {} } } : record(raw.policies, "config.policies");
@@ -104,10 +128,11 @@ export function resolveCredential(model: Extract<ManagedConfig["model"], { proto
 }
 
 
-export function resolveCompatibleCredential(model: Extract<ManagedConfig["model"], { protocol: "openai-compatible" }>,
+export function resolveCompatibleCredential(model: CompatibleModel,
   environment: Record<string, string | undefined>): string | undefined {
-  if (model.apiKeyEnv === undefined) return;
-  const value = environment[model.apiKeyEnv];
+  const reference = model.apiKeyEnv ?? (model.protocol === "opencode-go" ? OPENCODE_GO_KEY_ENV : undefined);
+  if (reference === undefined) return;
+  const value = environment[reference];
   if (!value?.trim() || /[\r\n]/.test(value)) return fail("config.model.apiKeyEnv", "configured credential is missing, empty or invalid");
   return value;
 }

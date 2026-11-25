@@ -42,7 +42,8 @@ import type { ChannelPort, ChannelView, NativeHarnessHost } from "./host.ts";
 export class NativeTurnError extends Error {
   /** Tool calls recorded with no recorded result. The harness never replays them; neither does the host. */
   readonly uncertainCalls: readonly string[];
-  constructor(readonly outcome: "failed" | "interrupted", message: string, uncertainCalls: readonly string[] = []) {
+  constructor(readonly outcome: "failed" | "interrupted", message: string, uncertainCalls: readonly string[] = [],
+    readonly contextFailure?: TurnStatus["contextFailure"]) {
     super(message);
     this.name = "NativeTurnError";
     this.uncertainCalls = uncertainCalls;
@@ -360,6 +361,7 @@ export class NativeController implements ConversationController, ChannelPort {
       if (status.state === "running" || status.state === "suspended") return;
       this.#accept(turn, { type: "turn_ended", turnId: status.turnId, outcome: status.state,
         ...(status.reason === undefined ? {} : { error: status.reason }),
+        ...(status.contextFailure ? { contextFailure: status.contextFailure } : {}),
         ...(status.uncertainCalls?.length ? { uncertainCalls: status.uncertainCalls } : {}) });
     };
 
@@ -503,7 +505,8 @@ export class NativeController implements ConversationController, ChannelPort {
               cancelled(true);
             } else {
               const reason = event.error ?? event.outcome;
-              finish(() => reject(new NativeTurnError(event.outcome as "failed" | "interrupted", `native turn ${turn.harnessId} ${event.outcome}: ${reason}`, event.uncertainCalls)), true);
+              finish(() => reject(new NativeTurnError(event.outcome as "failed" | "interrupted", `native turn ${turn.harnessId} ${event.outcome}: ${reason}`,
+                event.uncertainCalls, event.contextFailure)), true);
             }
             return;
           }

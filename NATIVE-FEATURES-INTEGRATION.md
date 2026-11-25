@@ -15,6 +15,24 @@ Route native sessions through the existing `native-harness` launcher path and le
 
 ## OpenAI-compatible inference
 
+### OpenCode Go and OpenRouter
+
+Pass one of these objects as `harness.config.model` on a native adapter.
+Use a package build containing the OpenCode Go preset before enabling it.
+
+```ts
+const go = { protocol: "opencode-go", model: "deepseek-v4.1-flash" } as const;
+const openRouter = { protocol: "openrouter", model: "openai/gpt-6-luna", apiKeyEnv: "OPENROUTER_API_KEY" } as const;
+```
+
+Supply `OPENCODE_API_KEY` in the native harness environment for Go. If your
+launcher uses `OPENCODE_GO_API_KEY`, set `apiKeyEnv: "OPENCODE_GO_API_KEY"`
+on the Go model. The preset handles the endpoint and per-channel routing.
+For DeepSeek V4.1 Flash, check the Go workspace's allowed regions.
+[OpenCode Go](https://opencode.ai/docs/console/go/#enable-restricted-models) · [OpenRouter GPT-6 Luna](https://openrouter.ai/openai/gpt-6-luna?view=api)
+
+### Custom endpoint
+
 Offer this option alongside the existing `scripted` and `openrouter` variants. Pass the following model object through unchanged:
 
 ```ts

@@ -1,3 +1,4 @@
+import { isCompatibleModel } from "./contracts/config-permissions.ts";
 import { isWebTool } from "./capabilities/tools/web/definitions.ts";
 import { guardedReminderDefinitions, executeReminderTool, isReminderTool, reminderAction, reminderDefinitions } from "./capabilities/tools/reminders/index.ts";
 import { createReminderRuntime } from "./runtime/reminders.ts";
@@ -13,6 +14,8 @@ import type { EventSink, SessionEventSink } from "./contracts/events.ts";
 import type { SessionStorage } from "./contracts/storage.ts";
 import { createMemoryStorageAdapter } from "./state/storage/memory.ts";
 import { CONTEXT_LIMITS, createSessionContext } from "./capabilities/context/session.ts";
+import { chatRequestSizer } from "./capabilities/model/chat-request.ts";
+import type { ContextLimitFailure } from "./contracts/context.ts";
 import { createChannelScheduler } from "./kernel/channels.ts";
 import { runTurn } from "./kernel/loop.ts";
 import { ModelCallError, runModelCall } from "./capabilities/model/runner.ts";
@@ -69,8 +72,16 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   const sessionReminderDefinitions = unattended.value === undefined ? reminderDefinitions : guardedReminderDefinitions;
   const identity = store.readSession();
   if (!identity.ok) throw new Error(identity.error.message);
-  const context = createSessionContext(store, identity.value.sessionId, options.systemPrompt, CONTEXT_LIMITS, options.captureContext);
-  const limitError = () => Object.assign(new Error("Required inference material exceeds the context budget"), { outcome: "context_limit" });
+  const modelConfig = owner.value?.model;
+  const contextBudget = modelConfig?.protocol !== "scripted" ? modelConfig?.contextBudget : undefined;
+  const sizeRequest = modelConfig && modelConfig.protocol !== "scripted" && contextBudget
+    ? chatRequestSizer(modelConfig.model, isCompatibleModel(modelConfig), contextBudget, id => {
+      const attachment = store.readManagedAttachment?.(id);
+      return attachment?.ok ? attachment.value?.metadata : undefined;
+    }) : undefined;
+  const context = createSessionContext(store, identity.value.sessionId, options.systemPrompt, CONTEXT_LIMITS, options.captureContext, sizeRequest);
+  const limitError = (detail?: ContextLimitFailure) => Object.assign(new Error("Required inference material exceeds the context budget"),
+    { outcome: detail ? `context_limit:${JSON.stringify(detail)}` : "context_limit" });
   const position = (channel: string, seq: string) => messagePosition(identity.value.sessionId, channel, Number(seq));
   const emit: EventSink = value => {
     const { channel, event } = value;
@@ -81,7 +92,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   };
   const config = owner.value ?? { version: 1 as const, system: options.systemPrompt, model: { protocol: "scripted" as const, script: "legacy" },
     defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow" as const, tools: {} } } };
-  if (options.imageInput && (config.model.protocol === "openai-compatible" || config.model.imageInput !== true)) throw new Error("Image input requires explicit model configuration");
+  if (options.imageInput && (isCompatibleModel(config.model) || config.model.imageInput !== true)) throw new Error("Image input requires explicit model configuration");
   if (options.config?.mcpServers !== undefined) {
     const canonical = (value: unknown) => JSON.stringify(value, (_key, object) =>
       object && typeof object === "object" && !Array.isArray(object)
@@ -111,7 +122,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
     const policySnapshot = () => {
       const read = store.readInferencePolicies(turn.turnId, CONTEXT_LIMITS);
       if (!read.ok) throw new Error(read.error.message);
-      if ("code" in read.value) throw limitError();
+      if ("code" in read.value) throw limitError(contextBudget ? { limit: "required_storage" } : undefined);
       return read.value;
     };
     /** The names offered by this turn's latest inference: what a call must match. */
@@ -230,13 +241,14 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       },
     }, async signal => {
       const built = context.build(turn, offer);
-      if (!built.ok) throw limitError();
+      if (!built.ok) throw limitError(built.detail);
       const { tools, fixedToolCount, messages, takenItemIds, representedItemIds: itemIds } = built.value;
       phase(turn.turnId, "model");
       const binding = getModelAttempt(services.model);
       let draftId: string | undefined;
       try {
-      const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools, takenItemIds, ...(fixedToolCount === undefined ? {} : { fixedToolCount }) },
+      const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools, takenItemIds,
+        ...(contextBudget ? { contextBudget } : {}), ...(fixedToolCount === undefined ? {} : { fixedToolCount }) },
         started: callId => {
           phase(turn.turnId, "model", callId);
           try { options.observeModelCall?.(turn.channelId, turn.turnId, callId); } catch { /* best-effort observation */ }
@@ -258,6 +270,8 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
         // A storage failure can occur after a draft was published but before the
         // runner can write a normal terminal outcome. The draft must still end.
         if (error instanceof ModelCallError && error.message === "script_exhausted") throw Object.assign(new Error(error.message), { outcome: "script_exhausted" });
+        if (error instanceof ModelCallError && error.contextFailure) throw limitError(error.contextFailure);
+        if (error instanceof ModelCallError && error.providerFailure) throw Object.assign(error, { outcome: error.providerFailure });
         if (draftId && !(error instanceof ModelCallError)) emit({ channel: turn.channelId,
           event: { type: "text_incomplete", turnId: String(turn.turnId), messageId: draftId, reason: "failed" } });
         throw error;

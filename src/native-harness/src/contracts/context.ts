@@ -46,9 +46,45 @@ export interface InferenceStorageReads {
 export interface ContextCapture {
   context: InferenceContext;
   estimatedInputBytes: number;
+  budget?: ContextBudgetMeasurement;
   /** Sequence numbers of selected and trimmed candidates from the bounded read. */
   records: { included: number[]; trimmed: number[] };
   omitted: { active: number; local: number; shared: number };
+}
+
+/** Safe numeric accounting of one configured provider-equivalent request. */
+export interface ContextBudgetMeasurement {
+  estimator: "chat-completions-utf8-v1";
+  contextWindowTokens: number;
+  outputReserveTokens: number;
+  estimationMarginTokens: number;
+  inputBudgetTokens: number;
+  estimatedInputTokens: number;
+  toolDefinitionBytes: number;
+  requestBytes: number;
+  maxRequestBytes: number;
+}
+
+export type ContextLimitFailure =
+  | { limit: "required_storage" | "provider_context" }
+  | { limit: "input_tokens" | "request_bytes"; budget: ContextBudgetMeasurement };
+
+/** The provider adapter prepares the fixed request fields once per tool offer. */
+export type ContextRequestSizer = (tools: readonly ToolDefinition[]) =>
+  (messages: readonly Message[]) => ContextBudgetMeasurement;
+
+export function parseContextLimitFailure(reason: string): ContextLimitFailure | undefined {
+  if (!reason.startsWith("context_limit:")) return;
+  try {
+    const value = JSON.parse(reason.slice("context_limit:".length));
+    if (value?.limit === "required_storage" || value?.limit === "provider_context") return { limit: value.limit };
+    if (!["input_tokens", "request_bytes"].includes(value?.limit) || value?.budget?.estimator !== "chat-completions-utf8-v1") return;
+    const fields = ["contextWindowTokens", "outputReserveTokens", "estimationMarginTokens", "inputBudgetTokens",
+      "estimatedInputTokens", "toolDefinitionBytes", "requestBytes", "maxRequestBytes"] as const;
+    if (fields.some(key => !Number.isSafeInteger(value.budget[key]) || value.budget[key] < 0)) return;
+    const budget = Object.fromEntries(fields.map(key => [key, value.budget[key]])) as Omit<ContextBudgetMeasurement, "estimator">;
+    return { limit: value.limit, budget: { ...budget, estimator: "chat-completions-utf8-v1" } };
+  } catch { return; }
 }
 
 /** One provider-neutral request. A retry reuses this capture. */
@@ -67,7 +103,7 @@ export interface InferenceContext {
 
 /** Size failures happen before reserving a model call or attempt. */
 export type ContextBuildResult = { readonly ok: true; readonly value: InferenceContext }
-  | { readonly ok: false; readonly code: "context_limit"; readonly message: string };
+  | { readonly ok: false; readonly code: "context_limit"; readonly message: string; readonly detail?: ContextLimitFailure };
 
 /** Attributed agent experience; system instructions are configuration, not events. */
 export interface ContextEntry {
