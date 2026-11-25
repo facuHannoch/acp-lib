@@ -31,5 +31,5 @@ export const ambiguous = (error: unknown) => { const code = codeOf(error); retur
 
 export function terminalStartupError(error: unknown): error is Error {
   return error instanceof HarnessIncompatibleError || (error instanceof Error && "code" in error &&
-    (error.code === "invalid_config" || error.code === "reminder_batch_retry_exhausted"));
+    (error.code === "invalid_config" || error.code === "reminder_batch_retry_exhausted" || error.code === "relay_cleanup_unconfirmed"));
 }

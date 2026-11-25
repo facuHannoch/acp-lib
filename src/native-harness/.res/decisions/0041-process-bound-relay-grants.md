@@ -18,7 +18,8 @@ authority only if still current. No automatic reopen follows revocation.
 Further dispatches under that authority fail locally.
 
 An optional host reference is a nonblank string of at most 256 UTF-8 bytes
-without control characters. Construct the wire grant explicitly and retain
+without control characters. An invalid reference cannot be correlated, so
+the issuer owns cleanup and the host does not invoke the hook. Construct the wire grant explicitly and retain
 the reference only in the host's issuance scope. Mark possible handoff before
 the executable RPC. Cleanup of referenced, failed or cancelled issuance uses
 `not_sent` before that boundary and `unknown` thereafter. A late provider
