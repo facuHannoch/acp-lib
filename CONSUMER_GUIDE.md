@@ -1830,11 +1830,16 @@ harness: {
 - **Deadlines.** `deadlineMs` on a tool overrides `defaultDeadlineMs`. When it
   passes, the model receives a timeout result that says the effect is unknown,
   and the turn continues.
-- **Large results.** A result over 16 384 bytes is written to a private
-  directory (`resultDirectory`, or a temporary one removed on stop) and the
-  model receives a preview and an ID. It reads parts with the built-in
-  `read_tool_result` tool. Only the conversation that produced a result can
-  read it. Results expire after `resultTtlMs` (24 hours by default).
+- **Large results.** Keep returning JSON values from handlers. ACP-client
+  counts the UTF-8 bytes of the full inline success result, including the
+  `{ ok: true, output }` wrapper. The default is 16 KiB. Use
+  `harness.functions.inlineBytes` to store results earlier. Values above
+  16 KiB are capped at 16 KiB. When a result exceeds the effective limit,
+  ACP-client stores the output JSON in `resultDirectory` or a temporary
+  directory removed on stop. The model receives a preview and an ID and can
+  page through the result using `read_tool_result`. Only the producing
+  conversation can read it. Results expire after `resultTtlMs` (24 hours by
+  default).
 - **Records.** `agent.nativeHarness.toolInvocation(id)` and
   `toolInvocations(turn)` return each call's state. A call that was dispatched
   but has no recorded result (crash, lost connection, interrupt) is
@@ -2491,6 +2496,16 @@ const unsubscribe = session.subscribe((notification: AgentSessionNotification) =
   }
 });
 ```
+
+For external ACP adapters, read `session.state.sessionStartFailure` when a
+recoverable startup refusal leaves the connection open without a provider
+session. Direct controller callers can read `sessionStartFailure` on the
+result of `HarnessController.start()`. The optional detail carries a safe
+display message and the adapter's numeric JSON-RPC `rpcCode` when available.
+Show the message if you want to surface the failure in the app. For an
+adapter that reliably signals authentication is required, offer its login
+flow and let the caller retry on the open connection. Successful session
+creation or load clears the detail.
 
 `onResponseChunk` and activity callbacks are provisional live streams. A
 `presentation_recorded` notification means the displayed item revision has been appended

@@ -71,6 +71,11 @@ failed TLS handshake or lost response leaves cost unknown unless Exa
 reports it. The transport diagnostic can distinguish these failures.
 Preserve the immutable dispatch record across crash and recovery.
 
+Cost reporting is observational. A usable Exa result is returned even
+when cost data is missing, with cost reported as `unknown`. Missing cost
+data never blocks the tool result or the turn. A transport failure
+returns a paired tool error and the turn can continue.
+
 Direct URL fetch retains the public-address and actual-peer checks in
 decision 0035. In proxy-required mode, a direct URL fetch backend must
 return a safe unavailable error before resolving or dialing a target.
@@ -101,9 +106,12 @@ address and how that address is bound to the connection.
 4. Check that stdio and the standalone CLI resolve the same startup
    policy, disable web egress for an invalid mode, and keep other
    capabilities available. Verify model, relay, and MCP routing.
-5. Verify complete previews and usage on success, absence of a paid
-   dispatch record for admission refusals, and unknown cost on tunnel,
-   TLS and lost-response failures after dispatch. Run both typechecks
-   and the repository regression suites.
+5. Verify complete previews on success with and without provider cost
+   data. A usable result without cost data reaches the next inference
+   and reports unknown cost. Check that an admission refusal creates no
+   paid dispatch record, and that tunnel, TLS and lost-response failures
+   after dispatch report unknown cost and return a paired tool error
+   without blocking the turn. Run both typechecks and the repository
+   regression suites.
 
 See the [implementation plan](PLAN.md).

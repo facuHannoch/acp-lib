@@ -15,6 +15,8 @@ import { closeSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync, statSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DEFAULT_INLINE_FUNCTION_RESULT_BYTES,
+  encodeInlineFunctionResult,
   FunctionError,
   type FunctionCall,
   type FunctionResult,
@@ -62,7 +64,7 @@ export interface NativeFunctionsConfig {
   readonly defaultDeadlineMs?: number;
   /** Where oversized results are kept. Default: a new private directory under the OS temp dir, removed on stop. */
   readonly resultDirectory?: string;
-  /** Serialized output above this is stored and returned by reference. Default 16 384 bytes. */
+  /** UTF-8 bytes of the complete inline success result. Capped at 16 384 bytes. */
   readonly inlineBytes?: number;
   /** How long a stored result can be read. Default 86 400 000 ms (24 hours). */
   readonly resultTtlMs?: number;
@@ -71,7 +73,7 @@ export interface NativeFunctionsConfig {
 }
 
 /** Adjustable defaults (native harness BUSINESS_RULES.md, tools and host callbacks). */
-export const NATIVE_FUNCTION_DEFAULTS = { inlineBytes: 16_384, previewChars: 512, resultTtlMs: 86_400_000 } as const;
+export const NATIVE_FUNCTION_DEFAULTS = { inlineBytes: DEFAULT_INLINE_FUNCTION_RESULT_BYTES, previewChars: 512, resultTtlMs: 86_400_000 } as const;
 
 const RESULT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -90,7 +92,7 @@ export interface NativeFunctionHost {
 }
 
 export function createNativeFunctionHost(config: NativeFunctionsConfig): NativeFunctionHost {
-  const inlineBytes = config.inlineBytes ?? NATIVE_FUNCTION_DEFAULTS.inlineBytes;
+  const inlineBytes = Math.min(config.inlineBytes ?? NATIVE_FUNCTION_DEFAULTS.inlineBytes, NATIVE_FUNCTION_DEFAULTS.inlineBytes);
   const ttl = config.resultTtlMs ?? NATIVE_FUNCTION_DEFAULTS.resultTtlMs;
   const enabled = new Set(Object.entries(config.tools).filter(([, tool]) => tool.group === "runtime" && tool.enabled).map(([name]) => name));
   const active = new Set<string>();
@@ -116,8 +118,10 @@ export function createNativeFunctionHost(config: NativeFunctionsConfig): NativeF
       try {
         const output = await tool.handler(call.arguments, { invocationId: call.invocationId, channel: call.channel, turnId: call.turnId, tool: call.tool, policyNames: [...call.policyNames], signal, ...(takenSender ? { takenSender } : {}) });
         const text = JSON.stringify(output ?? null);
+        if (text === undefined) throw new TypeError("The function result must be a JSON value");
+        // Send the measured JSON value so wire serialization cannot invoke the handler's toJSON again.
+        if (encodeInlineFunctionResult(text).bytes <= inlineBytes) return { output: JSON.parse(text) };
         const bytes = Buffer.byteLength(text);
-        if (bytes <= inlineBytes) return { output: output ?? null };
         // Too large to send inline: keep the bytes here and hand the harness a preview and an ID.
         const resultId = (config.newResultId ?? randomUUID)();
         if (!RESULT_ID.test(resultId)) throw new FunctionError("result_store_failed", "The result could not be stored");

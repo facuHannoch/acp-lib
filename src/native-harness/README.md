@@ -688,7 +688,8 @@ await client.openSession({ sessionId, tools: { catalog: [
   repeated. `tool_call` events carry `invocationId`.
 - **Phase.** `session/status` reports `activeTurn.phase`: `model`, `approval`
   or `tool`, since when, and the model call, approval request or invocation ID.
-- **Large results.** Above 16384 bytes the handler stores the result itself
+- **Large results.** The default inline limit is 16384 UTF-8 bytes, including
+  the success envelope. Above that limit the host stores the output JSON
   and returns a preview and a reference. The model reads parts with
   `read_tool_result`; the harness accepts only IDs recorded for the requesting
   channel and forwards the read to the host as `results/read`.

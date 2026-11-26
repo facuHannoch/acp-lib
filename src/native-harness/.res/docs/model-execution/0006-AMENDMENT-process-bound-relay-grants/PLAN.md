@@ -67,9 +67,9 @@ candidate. See the [amendment](SPEC.md).
   `openOrCreate` fallback and retry paths. Keep open cancellation
   separate from the cleanup timer. A resolved cleanup preserves
   the original failure. Timeout or rejection surfaces
-  `relay_cleanup_unconfirmed` and prevents further acquisition for
-  that open. Never include the reference or bearer in the outward
-  error.
+  `relay_cleanup_unconfirmed` and permanently prevents further acquisition
+  for that SDK host and harness process. Preserve the fence after a late
+  acknowledgement. Never include the reference or bearer in the outward error.
 - Account for the outer startup deadline in `src/native/host.ts`.
   It currently races against the open promise and can return before
   work in that promise has settled. Propagate cancellation promptly,
@@ -78,8 +78,9 @@ candidate. See the [amendment](SPEC.md).
   Preserve the typed unconfirmed outcome across the outer timeout and
   startup error mapping. If the provider itself is still pending,
   keep its original issuance scope for any late grant and prevent
-  that grant from being sent after cancellation. Avoid waiting
-  indefinitely on an unresponsive provider.
+  that grant from being sent after cancellation. Bound the wait on an
+  unresponsive provider and run one `not_sent` cleanup if it later returns an
+  issued grant with a reference.
 
 ## 4. Verify and hand off
 
@@ -95,10 +96,18 @@ candidate. See the [amendment](SPEC.md).
    and the outer host startup deadline. Verify cleanup with an
    already cancelled open signal, positive acknowledgment versus
    timeout or rejection, late provider and cleanup results,
-   unreferenced grants, and no reissue on unconfirmed cleanup.
+   unreferenced grants, and no reissue on unconfirmed cleanup even after a
+   late acknowledgement. Include a different host with its own process and
+   a fresh process and host recovering the saved session after fencing.
+   Check that automatic recovery and wake treat the fence as terminal and
+   preserve the fixed cleanup code through public error wrappers. Exercise
+   restart, prompt and conversation operations that require executable
+   startup, alongside a local metadata-only operation.
    Use canaries for the host reference and bearer across stdio,
    storage, diagnostics and archive output.
 3. Run focused relay and provider-error tests, both typechecks,
    and the root and harness regression suites. Send Clad1a the
-   exact candidate SHA and local fixture results. Node and Hub
-   acceptance stays with the platform workstream.
+   exact candidate SHA and local fixture results. Node and Hub acceptance
+   stays with the platform workstream. Verify automatic fencing or closure
+   of the old execution before replacement, process-exit grant withdrawal,
+   and a stuck agent report if the old execution cannot be fenced.

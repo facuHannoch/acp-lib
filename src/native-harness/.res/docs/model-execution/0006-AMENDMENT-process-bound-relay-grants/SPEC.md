@@ -35,9 +35,10 @@ refusal revokes it. Executable create and reopen still acquire a grant
 from the host. The harness checks the exact endpoint and credential
 mode under the existing relay contract.
 
-`grantRef` is optional and opaque. ACP-client retains it solely to
-correlate the host's failed-open cleanup. Construct the native control
-request from the wire fields explicitly. Keep the reference out of
+`grantRef` is optional and opaque. Require a nonblank string of at most
+256 UTF-8 bytes with no control or format characters. ACP-client retains
+it solely to correlate the host's failed-open cleanup. Construct the native
+control request from the wire fields explicitly. Keep the reference out of
 stdio, storage, archives and diagnostics. Keep both lifetime variants
 and the bearer runtime-only. Existing providers returning a numeric
 expiry and no reference keep working and receive no cleanup callback.
@@ -50,8 +51,8 @@ substitutes an expiry.
 Use the fixed HTTP status and JSON `error.type` pairs from
 `agents-node-protocol/NATIVE-INFERENCE.md` at agents commit
 `921ba2e11950d7da8a77444bb4f32b7e90c69183`. The harness interprets
-them only on the bound relay route. Parse a bounded response body and
-report fixed diagnostics.
+them only on the bound relay route. Read at most 16 KiB for at most one
+second, within the model deadline, and report fixed diagnostics.
 
 | HTTP | `error.type` |
 | --- | --- |
@@ -67,16 +68,18 @@ report fixed diagnostics.
 
 Capture the current grant identity and existing model attempt identity
 at dispatch. Only the exact 401 and `native_grant_revoked` pair revokes
-authority. Fail the affected inference with a fixed revocation
-diagnostic. Invalidate the captured grant only if it is still the
-current grant when the response is handled. A late refusal fails its
+authority. Fail the affected inference with
+`Inference relay refused: native_grant_revoked`. Invalidate the captured
+grant only if it is still current when the response is handled. A late refusal fails its
 original inference and leaves any replacement usable. Later dispatches
 with a revoked current grant fail before sending anything. An
-executable open with fresh authority can run later inference.
+explicit executable open with fresh authority can run later inference.
+ACP-client does not reopen automatically in response to revocation.
 
 All other pairs, status mismatches, malformed bodies, and transport
-failures leave the grant's revocation state unchanged. Never replay an
-inference automatically once the request may have been accepted.
+failures leave the grant's revocation state unchanged. For relay attempts,
+mark the request as possibly sent immediately before handing it to the
+transport. Never replay an inference automatically after that boundary.
 This applies to ambiguous `native_unavailable` failures and lost
 responses, even when no stream frame arrived. Preserve the original
 attempt's identity and normal settlement. The platform owns relay
@@ -88,8 +91,10 @@ Expose `harness.onInferenceRelayOpenFailure({ grantRef, delivery })`
 for executable create and reopen. When configured, call it if an issued grant with a
 reference belongs to an open attempt that fails or is cancelled,
 including cancellation after the provider resolves. Correlate cleanup
-with the original issuance, process and session. A provider whose
-result never reached ACP-client remains responsible for that issuance.
+with the original issuance, process and session. A grant reaching
+ACP-client after cancellation gets one `not_sent` cleanup and is never
+handed to the harness. A provider whose result never reaches ACP-client
+remains responsible for that issuance.
 
 - `not_sent` requires proof that the grant never reached the harness
   transport. Mark delivery as potentially sent before the first
@@ -99,17 +104,42 @@ result never reached ACP-client remains responsible for that issuance.
   possible delivery. Use it whenever evidence is ambiguous.
 
 Await the cleanup hook before completing the failed open or starting
-another issuance. Cleanup runs under its own deadline, independent of
-the open's cancellation. Configure it using the host-only
+another issuance. Bound the wait for a provider still pending after startup
+cancellation. Keep that issuance tracked so a late grant can still be cleaned
+up. Cleanup runs under its own deadline, independent of the open's
+cancellation. Configure it using the host-only
 `harness.inferenceRelayCleanupMs`, with a default of 10,000 ms.
 Accept a positive integer that fits the runtime timer range. A resolved
 hook acknowledges cleanup and preserves the original open failure.
-Hook rejection or deadline expiry surfaces the fixed, matchable
-`relay_cleanup_unconfirmed` code. This outcome stops automatic
-executable-open retries. The host decides how to fence the process
-before requesting new authority. A late cleanup completion cannot
-acknowledge a later grant. Keep the reference, bearer and raw callback
-errors out of all diagnostics.
+Hook rejection or expiry of the applicable wait surfaces a client-side
+`HarnessClientError` with code `relay_cleanup_unconfirmed` during executable
+startup. The same error refuses later startup attempts that would acquire
+another grant for the fenced execution. The code is not a harness RPC result,
+status field or session event. Issuance uses `harness.inferenceRelayGrant`;
+the executable `session/create` or `session/open` request carries the
+`inferenceRelayGrant` wire field. At the public ACP-client boundary, verify
+that wrappers preserve the cleanup code in the error or its cause.
+
+### Process fence and Hub recovery
+
+The fence lasts for the affected SDK host and native harness process. It
+blocks every later grant acquisition and grant-bearing reopen for that
+process, including manual calls, automatic recovery, and retry or fallback
+paths. Automatic recovery treats this error as terminal for that host. A new
+SDK host cannot reuse the fenced execution. A late acknowledgement
+may be recorded as a sanitized outcome and never clears the fence. Keep the
+reference, bearer and raw callback errors out of diagnostics.
+
+The fence is execution-local and is not persisted in the session database.
+Other sessions and agents using different native harness processes are
+unaffected, including within the same Hub. The Hub automatically closes or
+fences the old execution and verifies it can no longer use its grants before
+creating a fresh harness process and SDK host. Under the Node contract, process
+exit revokes all of that process's grants. A closed transport alone does not
+prove process exit. The replacement can then reopen the same saved session
+state. If the Hub cannot end or fence the old process, it reports a stuck agent
+and leaves that execution blocked. This amendment does not define a new SDK
+status field, event, or process-handle API for the Hub handoff.
 
 ## Acceptance
 
@@ -128,10 +158,12 @@ errors out of all diagnostics.
    classification for each case. Assert that the reference never
    reaches the harness.
 4. Verify cleanup succeeds after the open is cancelled. Verify the
-   default and overridden deadline, rejected or timed-out cleanup,
-   the fixed code, and zero new issuance on unconfirmed cleanup.
-   Preserve settlement of an admitted stream and legacy providers
-   without a reference. Run both typechecks and the native regression
-   suites.
+   default and overridden deadline, a stalled provider, exactly one cleanup
+   for a late grant, and rejected or timed-out cleanup. Verify the fixed code,
+   zero reissue after a late acknowledgement, and no reuse of the fenced
+   process by another host. Verify an independent process remains usable and a
+   fresh host and process can reopen after verified fencing. Preserve settlement
+   of an admitted stream and legacy providers without a reference. Run both
+   typechecks and the native regression suites.
 
 See the [implementation plan](PLAN.md).

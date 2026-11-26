@@ -1,8 +1,9 @@
 import type { StorageSnapshot } from "../../../contracts/storage.ts";
 import type { FunctionCall, FunctionExecutor, ResultReference, ToolLimits, ToolOutcome, ToolRegistration } from "../../../contracts/tools.ts";
+import { DEFAULT_INLINE_FUNCTION_RESULT_BYTES, encodeInlineFunctionResult } from "../../../contracts/tools.ts";
 
 /** Adjustable defaults (BUSINESS_RULES.md, tools and callbacks). */
-export const TOOL_LIMITS: Readonly<ToolLimits> = { inlineBytes: 16_384, previewBytes: 1_024, readBytes: 16_384 };
+export const TOOL_LIMITS: Readonly<ToolLimits> = { inlineBytes: DEFAULT_INLINE_FUNCTION_RESULT_BYTES, previewBytes: 1_024, readBytes: 16_384 };
 
 /** The wait for a callback ended for a reason that says nothing about its
  * effect on the host: the connection is gone. The call stays dispatched with
@@ -70,10 +71,10 @@ export async function runFunction(options: {
         note: "The full result is stored. Read it in parts with read_tool_result and this result_id." }),
         outcome: { status: "succeeded", reference: structuredClone(answer.reference) } };
     }
-    const content = JSON.stringify({ ok: true, output: (answer as { output?: unknown })?.output ?? null });
+    const { content, bytes: inlineBytes } = encodeInlineFunctionResult(JSON.stringify((answer as { output?: unknown })?.output ?? null) ?? "null");
     // A producer stores what does not fit and sends a reference. Bytes that
     // arrive inline anyway cannot be kept or shown in full.
-    if (bytes(content) > limits.inlineBytes) return failure("failed", "result_too_large", `The tool's result exceeds ${limits.inlineBytes} bytes and was not stored by its producer.`);
+    if (inlineBytes > limits.inlineBytes) return failure("failed", "result_too_large", `The tool's result exceeds ${limits.inlineBytes} bytes and was not stored by its producer.`);
     return { content, outcome: { status: "succeeded" } };
   } catch (error) {
     if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Turn interrupted");

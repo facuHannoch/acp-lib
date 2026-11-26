@@ -82,6 +82,22 @@ test("an oversized output is stored privately and read back in bounded parts tha
   expect(existsSync(directory)).toBe(true);
 });
 
+test("a lower inline threshold counts the success envelope", async () => {
+  const output = "€";
+  const configuredLimit = Buffer.byteLength(JSON.stringify({ ok: true, output }));
+  const config = {
+    resultDirectory: temp(),
+    tools: { example: { description: "", parameters: schema, handler: () => output } },
+  };
+  const signal = new AbortController().signal;
+  const exact = createNativeFunctionHost({ ...config, inlineBytes: configuredLimit });
+  const short = createNativeFunctionHost({ ...config, inlineBytes: configuredLimit - 1 });
+  expect(await exact.call(call("example"), signal)).toEqual({ output });
+  expect(await short.call(call("example"), signal)).toMatchObject({
+    reference: { bytes: Buffer.byteLength(JSON.stringify(output)) },
+  });
+});
+
 test("a backend that supervises its own turns runs under no host silence limit, even a configured one", () => {
   const limits = { firstOutputMs: 100, nextOutputMs: 100, toolMs: 100 };
   const native = { conversationCapabilities: { nativeSteering: true, backend: null, supervision: "backend" }, currentMode: undefined } as never;

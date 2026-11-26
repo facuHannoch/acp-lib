@@ -118,6 +118,15 @@ export type FunctionResult =
   | { output: unknown; preview?: never; reference?: never }
   | { output?: never; preview: string; reference: ResultReference };
 
+/** Default UTF-8 byte limit for the complete inline success envelope. */
+export const DEFAULT_INLINE_FUNCTION_RESULT_BYTES = 16_384;
+
+/** Wrap an already serialized JSON output and measure the content the harness stores. */
+export function encodeInlineFunctionResult(outputJson: string): { content: string; bytes: number } {
+  const content = `{"ok":true,"output":${outputJson}}`;
+  return { content, bytes: new TextEncoder().encode(content).length };
+}
+
 /** `results/read` parameters and result. The harness has already checked that
  * `channel` produced `resultId`; the host serves bytes it holds. */
 export interface ResultRead { resultId: string; invocationId: string; channel: string; offset: number; length: number }

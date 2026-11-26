@@ -188,6 +188,47 @@ describe("tools and host callbacks: the public checkpoint", () => {
     expect(await host.toolInvocation("1:t1")).toMatchObject({ state: "succeeded" });
   }, 60_000);
 
+  test("the stdio inline limit includes the UTF-8 success envelope", async () => {
+    const rig = await rigWith();
+    const resultId = "00000000-0000-4000-8000-000000000001";
+    const prefix = "€😀";
+    const exact = prefix + "x".repeat(16_384 - Buffer.byteLength(JSON.stringify({ ok: true, output: prefix })));
+    const oversized = exact + "x";
+    const serialized = JSON.stringify(oversized);
+    rig.script([
+      call("lookup", { q: "exact" }, "exact"), reply("Inline."),
+      call("lookup", { q: "oversized" }, "oversized"),
+      call("read_tool_result", { result_id: resultId, offset: 0, length: 8 }, "page"),
+      reply("Read."),
+    ]);
+    const seen: unknown[] = [];
+    const resultDirectory = join(rig.directory, "host-results");
+    const agent = await open(rig, {
+      inlineBytes: 100_000, resultDirectory, newResultId: () => resultId,
+      tools: { lookup: fn(({ q }) => {
+        seen.push(q);
+        return q === "exact" ? exact : oversized;
+      }) },
+    });
+    const conversation = await agent.conversations.create({ title: "Inline budget" });
+    const host = agent.nativeHarness!;
+
+    expect((await conversation.prompt("exact")).text).toBe("Inline.");
+    expect(await host.toolInvocation("1:exact")).toMatchObject({ state: "succeeded" });
+    expect((await host.toolInvocation("1:exact")).reference).toBeUndefined();
+    expect(existsSync(resultDirectory)).toBe(false);
+
+    expect((await conversation.prompt("oversized")).text).toBe("Read.");
+    expect(await host.toolInvocation("2:oversized")).toMatchObject({
+      state: "succeeded", reference: { resultId, bytes: Buffer.byteLength(serialized) },
+    });
+    expect(readFileSync(join(resultDirectory, resultId), "utf8")).toBe(serialized);
+    expect(toolResults(rig, conversation.id)).toContainEqual({
+      ok: true, text: `"${prefix}`, total_bytes: Buffer.byteLength(serialized), eof: false, next_offset: 8,
+    });
+    expect(seen).toEqual(["exact", "oversized"]);
+  }, 60_000);
+
   test("4a: a callback whose outcome is lost stays uncertain after reopen, and its handler never runs again", async () => {
     const rig = await rigWith();
     rig.script([call("lookup", { q: "x" }), reply("Done."), reply("Fresh.")]);

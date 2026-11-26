@@ -93,7 +93,7 @@ These rules are implemented from the
 | --- | --- | --- | --- |
 | Tool execution deadline | None unless the tool (`deadlineMs`) or the session (`defaultDeadlineMs`) sets one. The tool's value wins. | A host function can legitimately run for a long time. A consumer that wants a bound says so. | `runFunction` in `src/capabilities/tools/functions.ts` |
 | Deadline expiry | Cancel, commit one paired `tool_timeout` result with unknown effect, continue the turn. | The model can react. The effect is not assumed either way. | Same |
-| Inline result limit | 16384 bytes of serialized output. More must come as a preview and a reference. Inline bytes over the limit fail as `result_too_large`. | Keeps a callback response well inside one frame and the context small. | `TOOL_LIMITS.inlineBytes` |
+| Inline result limit | 16384 UTF-8 bytes of the complete serialized success result. More must come as a preview and a reference. Inline bytes over the limit fail as `result_too_large`. | Keeps a callback response well inside one frame and the context small. | `TOOL_LIMITS.inlineBytes` |
 | Preview size | At most 1024 bytes, cut by the harness if longer. | Enough to judge whether to read more. | `TOOL_LIMITS.previewBytes` |
 | Result read size | At most 16384 bytes per `read_tool_result` call. | Same bound as an inline result. | `TOOL_LIMITS.readBytes` |
 | Result access | Only the channel that produced a result can read it. | A result ID seen in shared history must not grant access. | `readResult` |

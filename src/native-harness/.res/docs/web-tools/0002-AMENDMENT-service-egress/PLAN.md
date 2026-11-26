@@ -1,7 +1,9 @@
 # Implementation plan for native service egress
 
-**Status** — Proposed. Implements the [service egress amendment](SPEC.md)
-over the [web-tool contract](../../../decisions/0035-web-search-fetch.md).
+**Status** — Decision 0040 and runtime `8c547c8` were independently
+reviewed by Clad1a. Integration is pending. This plan implements the
+[service egress amendment](SPEC.md) over the
+[web-tool contract](../../../decisions/0035-web-search-fetch.md).
 
 ## 1. Pin the contract and resolve the runtime policy
 
@@ -91,6 +93,12 @@ record and existing unknown-cost projection once that record exists.
 Admission refusal creates no paid dispatch. Leave
 `state/storage/web-tables.ts` and archive formats alone.
 
+A successful Exa preview travels through the same paired result path
+when provider cost is absent. Report `unknown` through the existing
+usage projection and continue inference with the complete preview.
+Transport failures return a paired tool error and continue the turn.
+Cost remains an observation in both cases.
+
 ## 4. Verify the production boundaries
 
 - Extend `test/web-exa.test.ts` for the direct path, request bounds, and
@@ -118,3 +126,25 @@ Admission refusal creates no paid dispatch. Leave
   the full root and harness suites. Send the exact tested revision to
   Clad1a for independent review. Hosted acceptance uses a launcher
   configured with the actual egress proxy as a separate deployment check.
+
+## 5. Verify the cost clarification and integrate
+
+1. Start from reviewed revision `8c547c8`. Clad1a independently passed
+   both typechecks, 561 harness tests and 1,809 root tests. Keep the
+   approved transport and decision 0040 as the integration baseline.
+2. Extend `src/native-harness/test/service-egress.test.ts` with a
+   successful proxied Exa response that omits cost data. Assert that
+   inspection reports cost `unknown`, the next inference receives the
+   complete JSON preview, and the turn completes. In the refused-tunnel
+   case, assert that the next inference gets a paired tool error and
+   can complete, with the same `unknown` cost. Retain the existing
+   assertions for an explicit zero estimate and an admission refusal.
+3. Exercise an ACP-client replacement harness process with the same
+   launcher configuration. Assert that it still uses the configured
+   proxy with `NO_PROXY` set and makes zero direct attempts. A fixture
+   using a new raw harness process only verifies the harness policy.
+4. Carry the clarified spec and focused tests onto an isolated
+   integration candidate. Rerun the focused cases, both typechecks and
+   the combined suite on the exact candidate. Send Clad1a any delta
+   for review. Check the candidate against current `alpha` before
+   landing. A hosted smoke test remains a separate deployment check.
