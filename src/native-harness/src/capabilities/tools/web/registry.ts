@@ -1,3 +1,4 @@
+import type { ServiceEgress } from "./service-egress.ts";
 import { fetchDirect } from "./direct.ts";
 import { DirectHttpError } from "./direct-address.ts";
 import type { CheckedWebRegistration } from "../../../contracts/web.ts";
@@ -8,9 +9,21 @@ import { runExa, type ExaTransport, type WebResponse } from "./exa.ts";
 
 /** Adapter implementations are supplied by the trusted assembly, never config. */
 export type DirectFetch = (url: string, signal: AbortSignal, deadlineMs: number) => Promise<WebResponse>;
+export function webUnavailable(config: WebConfig, egress: ServiceEgress): import("../../../contracts/web.ts").WebUnavailable {
+  if (egress.mode === "unavailable") return {
+    ...(config.webSearch ? { web_search: egress.reason } : {}),
+    ...(config.webFetch ? { web_fetch: egress.reason } : {}),
+  };
+  return egress.mode === "proxy-required" && config.webFetch?.backend === "http"
+    ? { web_fetch: "direct_fetch_requires_direct_egress" } : {};
+}
+
 /** Build once per executable open; credentials remain inside executor closures. */
 export function createWebRegistry(config: WebConfig, env: Readonly<Record<string, string | undefined>>,
-  providers: { exa: ExaTransport; http?: DirectFetch }): Validated<readonly CheckedWebRegistration[]> {
+  providers: { exa: ExaTransport; http?: DirectFetch }, egress: ServiceEgress = { mode: "direct" }): Validated<readonly CheckedWebRegistration[]> {
+  if (egress.mode === "unavailable") config = {};
+  else if (egress.mode === "proxy-required" && config.webFetch?.backend === "http")
+    config = { ...config, webFetch: undefined };
   const credentials = resolveWebCredentials(config, env);
   if (!credentials.ok) return credentials;
   if (config.webFetch?.backend === "http" && !providers.http) return { ok: false, error: { code: "invalid_config", message: "HTTP fetch adapter is unavailable" } };

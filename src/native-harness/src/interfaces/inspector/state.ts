@@ -26,7 +26,8 @@ function read<T>(result: StorageResult<T>) {
  * dirty. Only HTTP reads request data from storage. */
 export function createInspection(systemPrompt: string, tools: readonly ToolDefinition[],
   reads: InspectionStorageReads, storage: string,
-  webInvocations?: (turnId: number) => import("../../contracts/tools.ts").ToolInvocation[]) {
+  webInvocations?: (turnId: number) => import("../../contracts/tools.ts").ToolInvocation[],
+  webUnavailable: import("../../contracts/web.ts").WebUnavailable = {}) {
   const instructions = composeSystemPrompt(systemPrompt);
   const captures = new Map<string, { turnId: number; metadata: NonNullable<InspectedInference["context"]> }>();
   const channels = new Map<string, InspectedInference[]>();
@@ -40,7 +41,7 @@ export function createInspection(systemPrompt: string, tools: readonly ToolDefin
       const { revision, session, channels: status } = read(reads.readInspectionStatus());
       const execution = stopped ? "stopped" : session.lifecycle !== "running" ? session.lifecycle
         : status.some(channel => channel.turn === "running" || (channel.lifecycle === "open" && channel.pending > 0)) ? "working" : "idle";
-      return { session: { sessionId: session.sessionId, lifecycle: session.lifecycle, execution, revision, storage },
+      return { session: { sessionId: session.sessionId, lifecycle: session.lifecycle, execution, revision, storage, ...(Object.keys(webUnavailable).length ? { webUnavailable } : {}) },
         channels: status.map(channel => {
           const contextFailure = channel.unresolved && parseContextLimitFailure(channel.unresolved.reason);
           return { ...channel, running: channel.turn === "running",

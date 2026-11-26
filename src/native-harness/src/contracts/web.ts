@@ -14,3 +14,6 @@ export interface CheckedWebRegistration {
   dispatch: WebDispatchEvidence;
   execute(args: unknown, signal: AbortSignal): Promise<WebToolResponse>;
 }
+
+/** Entry-local startup refusal, without proxy authority or credential material. */
+export type WebUnavailable = Partial<Record<"web_search" | "web_fetch", "invalid_egress_mode" | "invalid_egress_proxy" | "direct_fetch_requires_direct_egress">>;

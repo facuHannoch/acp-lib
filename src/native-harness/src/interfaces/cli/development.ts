@@ -1,6 +1,7 @@
+import { resolveServiceEgress } from "../../capabilities/tools/web/service-egress.ts";
 import { openMcpRegistry } from "../../capabilities/tools/mcp/registry.ts";
-import { createWebRegistry, directWebFetch } from "../../capabilities/tools/web/registry.ts";
-import { exaHttpsTransport } from "../../capabilities/tools/web/exa-transport.ts";
+import { createWebRegistry, directWebFetch, webUnavailable } from "../../capabilities/tools/web/registry.ts";
+import { exaServiceTransport } from "../../capabilities/tools/web/exa-transport.ts";
 import { compatibleInferenceKey } from "../../runtime/config/inference-key.ts";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -96,6 +97,8 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const compatible = isCompatibleModel(managedConfig?.model) ? managedConfig.model : undefined;
   const creating = !options.database || !!options.create;
   const environment = options.environment ?? process.env;
+  const webEgress = resolveServiceEgress(environment);
+  const exa = exaServiceTransport(webEgress);
   let compatibleKey = compatible && creating ? resolveCompatibleCredential(compatible, environment) : undefined;
   const providerModel = managedConfig?.model.protocol === "openrouter" ? managedConfig.model : undefined;
   const apiKey = providerModel ? (useLegacyCredential ? options.provider!.apiKey : resolveCredential(providerModel, options.environment ?? process.env)) : undefined;
@@ -112,7 +115,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const mediaRoot = options.database ? options.mediaRoot ?? `${options.database}.media` : join(tempMedia!, "media");
   if (!sqlite) adapter = createMemoryStorageAdapter({ mediaRoot });
   const makeWebTools = () => {
-    const result = createWebRegistry(managedConfig ?? {}, environment, { exa: options.webTransport ?? exaHttpsTransport, http: directWebFetch });
+    const result = createWebRegistry(managedConfig ?? {}, environment, { exa: options.webTransport ?? exa, http: directWebFetch }, webEgress);
     if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
     return result.value;
   };
@@ -140,7 +143,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
     let session: PersistentSession;
     const inspection = createInspection(systemPrompt, [...tools, ...(webTools ?? []).map(value => value.definition),
       ...[...(mcp?.bindings.values() ?? [])].map(value => value.definition)], storage, options.database ?? "memory",
-      turnId => session.tools?.invocations(turnId) ?? []);
+      turnId => session.tools?.invocations(turnId) ?? [], webUnavailable(managedConfig ?? {}, webEgress));
     const captureScript = (options.environment ?? process.env).HARNESS_CAPTURE_SCRIPT_REQUESTS === "1";
     session = createSession({
       systemPrompt, storage, config: managedConfig, imageInput, webTools, mcpTools: mcp?.bindings, captureContext: (!script || captureScript) ? inspection.capture : undefined,
