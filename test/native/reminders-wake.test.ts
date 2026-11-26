@@ -287,3 +287,48 @@ test("discardExhausted refuses while the native host is running", async () => {
     expect(await conversation.reminders.discardExhausted("absent")).toBe(false);
   } finally { await fixture.clean(); }
 });
+
+test("relay cleanup uncertainty ends automatic reopen and preserves the public cause", async () => {
+  const fixture = await nativeRig();
+  const peer = new ReminderPeer();
+  const failure = new HarnessClientError("relay_cleanup_unconfirmed", "Inference relay cleanup unconfirmed");
+  let first: Awaited<ReturnType<ReminderPeer["connect"]>> | undefined;
+  let attempts = 0;
+  fixture.harness.connect = async () => {
+    if (++attempts === 1) return first = await peer.connect();
+    throw failure;
+  };
+  try {
+    const agent = await fixture.open(), host = agent.nativeHarness!;
+    const detach = host.attach("outstanding", { busy: () => true, reconcile() {}, event() {}, failed() {}, disconnected() {} });
+    try {
+      await host.start();
+      await first!.kill();
+      await until(() => host.state === "failed" || attempts > 2, "relay cleanup failure");
+      expect(attempts).toBe(2);
+      expect(host.failure).toBe(failure);
+      await expect(host.start()).rejects.toMatchObject({ code: "failed", cause: failure });
+    } finally { detach(); }
+  } finally { await fixture.clean(); }
+});
+
+test("a reminder wake stops on relay cleanup uncertainty and exposes the fixed error", async () => {
+  const fixture = await nativeRig();
+  const peer = new ReminderPeer();
+  const clock = new ReminderClock();
+  const failure = new HarnessClientError("relay_cleanup_unconfirmed", "Inference relay cleanup unconfirmed");
+  let attempts = 0;
+  fixture.harness.reminderTimer = clock;
+  fixture.harness.connect = async () => { attempts++; throw failure; };
+  try {
+    const agent = await fixture.open(), host = agent.nativeHarness!;
+    await agent.persistence.reminders!.updateDeadline({ sessionId: peer.sessionId, nextDueAt: 0, revision: 1 });
+    await until(() => clock.delays.length === 1, "armed cold wake");
+    clock.tickAt(1000);
+    await until(() => host.failure !== null, "relay cleanup wake failure");
+    expect(host.failure).toBe(failure);
+    expect(host.reminderWakeState).toBe("failed");
+    expect(clock.delays).toEqual([]);
+    expect(attempts).toBe(1);
+  } finally { await fixture.clean(); }
+});

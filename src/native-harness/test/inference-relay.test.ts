@@ -98,3 +98,90 @@ test("expiry on an open relay session prevents dispatch", async () => {
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test("process-bound relay classifies exact pairs without replay and revokes only its current authority", async () => {
+  const pairs = [
+    [401, "native_authentication_required"], [403, "native_source_rejected"], [403, "native_admission_rejected"],
+    [403, "native_policy_mismatch"], [429, "native_allowance_exhausted"], [502, "native_provider_authentication_failed"],
+    [502, "native_provider_model_failed"], [503, "native_unavailable"],
+    [403, "native_grant_revoked"], [401, "malformed"], [401, "native_grant_revoked"],
+  ] as const;
+  let index = 0;
+  const relay = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+    const [status, type] = pairs[index++]!;
+    return type === "malformed" ? new Response("raw relay canary", { status })
+      : Response.json({ error: { type, message: "raw relay canary" } }, { status });
+  } });
+  const harness = createInProcessHarness();
+  const config = configFor(relay.url.origin + "/v1");
+  try {
+    await harness.client.initialize();
+    const grant = { baseUrl: config.model.baseUrl, bearerToken: "fixture", lifetime: { mode: "process" as const } };
+    const create = { sessionId: "relay", config, participants: [], channels: {} };
+    for (const bad of [{ ...grant, expiresAtMs: 100 }, { baseUrl: grant.baseUrl, bearerToken: grant.bearerToken }])
+      await expect(harness.client.createSession({ ...create, inferenceRelayGrant: bad as typeof grant })).rejects.toMatchObject({ code: "invalid_config" });
+    await harness.client.createSession({ ...create, inferenceRelayGrant: grant });
+    for (let i = 0; i <= pairs.length; i++) {
+      const ended = Promise.withResolvers<string | undefined>(), channel = "c" + i;
+      const detach = harness.client.onChannelEvent(value => {
+        if (value.channel === channel && value.event.type === "turn_ended") ended.resolve(value.event.error);
+      });
+      try {
+        await harness.client.push({ channel, item: { kind: "user_message", sender: "user", id: channel, content: [{ type: "text", text: "go" }] } });
+        const reason = await ended.promise;
+        const pair = pairs[i];
+        expect(reason).toContain(i === 8 ? "HTTP 403" : i === 9 ? "HTTP 401" : pair?.[1] ?? "native_grant_revoked");
+        expect(reason).not.toContain("raw relay canary");
+        expect(index).toBe(Math.min(i + 1, pairs.length));
+      } finally { detach(); }
+    }
+    expect((await harness.client.modelCalls()).calls.every(call => call.attempts.length === 1)).toBe(true);
+  } finally { await harness.close(); await relay.stop(true); }
+});
+
+test("a captured relay refusal cannot revoke replacement authority", async () => {
+  const { createRelayAuthority } = await import("../src/capabilities/model/inference-relay.ts");
+  const grant = { baseUrl: "http://127.0.0.1", bearerToken: "one", lifetime: { mode: "process" as const } };
+  const authority = createRelayAuthority(grant);
+  const old = authority.capture();
+  authority.replace({ ...grant, bearerToken: "two" });
+  authority.revoke(old);
+  expect(authority.capture().revoked).toBe(false);
+});
+
+test("an admitted relay POST with a lost response is never replayed", async () => {
+  const { createServer } = await import("node:net");
+  const { once } = await import("node:events");
+  let posts = 0;
+  const relay = createServer(socket => {
+    socket.once("data", () => {
+      posts++;
+      socket.end("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n: partial\n\n");
+    });
+  });
+  const listening = once(relay, "listening");
+  relay.listen(0, "127.0.0.1");
+  await listening;
+  const address = relay.address();
+  if (!address || typeof address === "string") throw Error("Missing fixture listener");
+  const harness = createInProcessHarness({ modelTimeoutMs: 2200 });
+  try {
+    const baseUrl = `http://127.0.0.1:${address.port}`, signal = AbortSignal.timeout(4000);
+    const ended = Promise.withResolvers<void>();
+    signal.addEventListener("abort", () => ended.reject(new Error("Lost reply fixture did not settle")), { once: true });
+    await harness.client.initialize();
+    await harness.client.createSession({ sessionId: "relay", config: configFor(baseUrl), participants: [], channels: {},
+      inferenceRelayGrant: { baseUrl, bearerToken: "fixture", lifetime: { mode: "process" } } });
+    harness.client.onChannelEvent(({ event }) => { if (event.type === "turn_ended") ended.resolve(); });
+    await harness.client.push({ channel: "a", item: { kind: "user_message", sender: "user", id: "go", content: [{ type: "text", text: "go" }] } });
+    await ended.promise;
+    const { calls } = await harness.client.modelCalls();
+    expect(calls[0]?.attempts).toHaveLength(1);
+    expect(posts).toBe(1);
+  } finally {
+    await harness.close();
+    const closed = once(relay, "close");
+    relay.close();
+    await closed;
+  }
+});

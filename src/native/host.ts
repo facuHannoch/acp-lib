@@ -1,3 +1,4 @@
+import { RelayIssuanceFence } from "./inference-relay.ts";
 import type { NativeConnection, NativeHarnessHostConfig } from "./host-config.ts";
 export type { NativeConnection, NativeHarnessHostConfig, NativeApprovalRequest, NativeApprovalResponder } from "./host-config.ts";
 import { idleMilliseconds, ReminderIdleSupervisor } from "./reminders/idle.ts";
@@ -86,6 +87,7 @@ export class NativeHarnessHost {
   readonly sessionId: string;
   readonly records: NativeHostRecords;
   #config: NativeHarnessHostConfig;
+  #relayFence: RelayIssuanceFence;
   #restartTransition?: Promise<void>;
   readonly #log: Logger;
   reminderSync?: ReminderSync;
@@ -188,6 +190,7 @@ export class NativeHarnessHost {
 
   constructor(config: NativeHarnessHostConfig, channels?: ChannelPersistence, workerDelivery?: WorkerDeliveryRepository) {
     this.#config = config;
+    this.#relayFence = new RelayIssuanceFence(config.inferenceRelayCleanupMs);
     this.sessionId = config.sessionId;
     this.#log = config.logger ?? noopLogger;
     this.#approvals = new NativeApprovals(config.approvalResponder, this.#log);
@@ -422,6 +425,7 @@ export class NativeHarnessHost {
     const deadline = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      await this.#relayFence.awaitIdle();
       const opening = (async () => {
         connection = await (this.#config.connect ?? (() => launchNativeConnection(this.#config, this.#log)))();
         this.launches += 1;
@@ -460,6 +464,7 @@ export class NativeHarnessHost {
       // A failed start is reported to whoever needed the harness. It is not retried automatically:
       // the next use tries again. Only a loss with work outstanding is reopened by the host itself.
       this.#setState("stopped");
+      if (deadline.signal.aborted) await this.#relayFence.awaitIdle();
       throw error;
     } finally {
       clearTimeout(timer);
@@ -514,7 +519,7 @@ export class NativeHarnessHost {
     // can run. An edit made after this line is sent through the live channel methods once open.
     const batch = await this.#changes.startupBatch(signal);
     await this.reminderSync?.initialize(initialized.description);
-    const opened = await openOrCreate(client, this.#config, batch, functions?.catalog(), signal, this.reminderSync);
+    const opened = await openOrCreate(client, this.#config, batch, functions?.catalog(), signal, this.reminderSync, this.#relayFence);
     for (const event of earlyReminders.splice(0)) reminderEvent(event);
     await this.reminderSync?.settled();
     signal.throwIfAborted();
