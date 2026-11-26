@@ -120,10 +120,18 @@ export interface ListSessionsOptions {
   cursor?: string;
 }
 
+/** A recoverable ACP startup refusal on an initialized connection. */
+export interface AcpSessionStartFailure {
+  /** The adapter's original JSON-RPC error code, when available. */
+  readonly rpcCode?: number;
+  readonly message: string;
+}
+
 export interface ConnectResult {
   sessionId: string;
   /** true = resumed an existing session; false = started fresh (incl. resume fallback). */
   resumed: boolean;
+  sessionStartFailure?: AcpSessionStartFailure;
 }
 
 export interface SwitchSessionOptions {

@@ -14,7 +14,7 @@
  */
 import type { NativeTurnMetering } from "../metering/native/source.ts";
 import type { ClientPrompt } from "../agent-client.ts";
-import type { ConnectResult } from "../client.ts";
+import type { AcpSessionStartFailure, ConnectResult } from "../client.ts";
 import type { AgentMode, ControllerStartEvent, HarnessController } from "../controller.ts";
 import type { ConfigOptions } from "../config-options.ts";
 import type { ConversationCapabilities } from "./capabilities.ts";
@@ -93,6 +93,7 @@ export interface ConversationController {
   startFresh(onProgress?: (event: ControllerStartEvent) => void): Promise<StartResult>;
   stop(): Promise<void>;
   readonly isConnected: boolean;
+  readonly sessionStartFailure?: AcpSessionStartFailure;
   subscribeConnection(listener: () => void): () => void;
   /** How long a cancelled turn gets before the supervisor escalates; undefined when the adapter sets none. */
   readonly cancelGraceMs: number | undefined;

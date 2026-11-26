@@ -40,7 +40,10 @@ function handle(message: any): void {
       return;
     case "session/new":
       if (!authenticated) {
-        send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "Authentication required" } });
+        const detail = process.argv.includes("--startup-error-canary")
+          ? { message: "Authentication required: startup-error-canary", data: { detail: "startup-error-canary" } }
+          : { message: "Authentication required" };
+        send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, ...detail } });
         return;
       }
       counter += 1;

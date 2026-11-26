@@ -11,6 +11,7 @@ export type { WorkerPersistence, WorkerRow } from "./persistence/workers.ts";
 export { AcpClient } from "./client.ts";
 export type {
   AcpClientConfig,
+  AcpSessionStartFailure,
   StartSessionOptions,
   ListSessionsOptions,
   SwitchSessionOptions,

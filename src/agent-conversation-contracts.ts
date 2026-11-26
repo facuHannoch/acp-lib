@@ -4,6 +4,7 @@ import type { ConversationPermissionEvent } from "./permissions/conversation.ts"
 import type { OperationActivity } from "./operations/contracts.ts";
 import type { ItemsReceipt, TurnCause } from "./conversation-controller/contracts.ts";
 import type { AgentMode } from "./controller.ts";
+import type { AcpSessionStartFailure } from "./client.ts";
 import type { MessageEvent, PendingMessageId, PromptEndedBy } from "./steering/contracts.ts";
 import type { Adapter } from "./adapters.ts";
 import type { ContextWindowStatus, ProviderCostSnapshot } from "./metering/context.ts";
@@ -35,6 +36,7 @@ export interface AgentSessionState {
   readonly operation: OperationActivity | null;
   readonly pendingHold: { readonly failedTurnId: string } | null;
   readonly providerConnection: "connected" | "disconnected" | "reconnecting";
+  readonly sessionStartFailure?: AcpSessionStartFailure;
   readonly phase: AgentSessionPhase;
   /** True only while an operation is executing; queued work is reported separately. */
   readonly isBusy: boolean;

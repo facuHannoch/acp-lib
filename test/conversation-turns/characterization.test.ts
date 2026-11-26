@@ -21,12 +21,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent } from "../../src/agent.ts";
 import { AgentSession, type AgentSessionConfig } from "../../src/agent-session.ts";
+import { AcpClient } from "../../src/client.ts";
 import { HarnessController, type ControllerStartEvent } from "../../src/controller.ts";
 import { PtyClient } from "../../src/degraded/index.ts";
 import type { AgentSessionNotification } from "../../src/agent-conversation-contracts.ts";
 import type { OperationLifecycleConfig } from "../../src/operations/contracts.ts";
 import { FileAgentSessionStore } from "../../src/persistence/file-registry-store.ts";
 import { SessionManager } from "../../src/session-manager.ts";
+import { noopLogger } from "../../src/logger.ts";
 import { normalize } from "./normalize.ts";
 import { type ContractWatch, type Mode, watchContract } from "./contract-watch.ts";
 import { canonicalManagedEvents, canonicalOwnedRecords } from "./pair-rule.ts";
@@ -491,10 +493,17 @@ describe("characterization, once", () => {
 
   test("session creation refused for authentication: start resolves without a context, connection usable (controller)", async () => {
     const directory = await tempDir();
+    const warnings: unknown[] = [];
     const controller = new HarnessController({
-      adapter: { command: ["bun", AUTH_REQUIRED] },
+      adapter: { command: ["bun", AUTH_REQUIRED, "--startup-error-canary"] },
       adapterId: "fixture",
       cwd: directory,
+      logger: {
+        ...noopLogger,
+        warn: (event, meta) => {
+          if (event === "session_start_failed") warnings.push(meta);
+        },
+      },
     });
     cleanups.push(() => controller.stop());
     const progress: ControllerStartEvent[] = [];
@@ -505,8 +514,16 @@ describe("characterization, once", () => {
       authMethods: controller.authMethods,
     };
     const again = await controller.start((event) => progress.push(event));
+    expect(result.sessionStartFailure).toEqual({
+      rpcCode: -32000,
+      message: "The ACP adapter refused to start a session.",
+    });
+    expect(again.sessionStartFailure).toEqual(result.sessionStartFailure);
+    expect(warnings).toEqual([result.sessionStartFailure]);
     const authenticated = await settle(controller.authenticate("fixture-login"));
     const fresh = await settle(controller.startFresh((event) => progress.push(event)));
+    expect(controller.sessionStartFailure).toBeUndefined();
+    expect((await controller.start()).sessionStartFailure).toBeUndefined();
     const prompted = await settle(controller.prompt("after login"));
     const afterLogin = { isConnected: controller.isConnected, currentSessionId: controller.currentSessionId };
     await controller.stop();
@@ -523,12 +540,55 @@ describe("characterization, once", () => {
       transcriptPath: join(directory, "auth.jsonl"),
     }).then(async (conversation) => {
       cleanups.push(() => conversation.stop());
+      expect(conversation.state.sessionStartFailure?.rpcCode).toBe(-32000);
       const state = { internalSessionId: conversation.internalSessionId, providerConnection: conversation.state.providerConnection };
       const prompted = await settle(conversation.prompt("before login"));
       await conversation.stop();
       return { state, prompted };
     }));
     snapshot({ directory }, { outcome, transcript: await readJsonl(join(directory, "auth.jsonl")) });
+  }, 20_000);
+
+  test("conversation state clears the startup refusal after login and a successful prompt", async () => {
+    const directory = await tempDir();
+    const conversation = await AgentSession.create({
+      adapter: { command: ["bun", AUTH_REQUIRED] },
+      adapterId: "fixture",
+      agentSessionId: "auth-retry",
+      cwd: directory,
+      transcriptPath: join(directory, "auth-retry.jsonl"),
+    });
+    cleanups.push(() => conversation.stop());
+    expect(conversation.state.sessionStartFailure?.rpcCode).toBe(-32000);
+    const notifications: AgentSessionNotification[] = [];
+    conversation.subscribe((notification) => notifications.push(notification));
+    await conversation.authenticate("fixture-login");
+    expect(conversation.state.sessionStartFailure?.rpcCode).toBe(-32000);
+    await conversation.prompt("after login");
+    expect(conversation.state.sessionStartFailure).toBeUndefined();
+    expect(notifications.some(({ event }) =>
+      event.kind === "state_changed" && event.state.internalSessionId === "auth-fixture-session-1" &&
+      event.state.sessionStartFailure === undefined,
+    )).toBe(true);
+  }, 20_000);
+
+  test("recoverable ACP startup failure without a JSON-RPC code uses a fixed reason", async () => {
+    const directory = await tempDir();
+    const startSession = spyOn(AcpClient.prototype, "startSession")
+      .mockRejectedValueOnce(new Error("startup-error-canary"));
+    try {
+      const controller = new HarnessController({
+        adapter: { command: ["bun", AUTH_REQUIRED] },
+        adapterId: "fixture",
+        cwd: directory,
+      });
+      cleanups.push(() => controller.stop());
+      expect((await controller.start()).sessionStartFailure).toEqual({
+        message: "The ACP adapter refused to start a session.",
+      });
+    } finally {
+      startSession.mockRestore();
+    }
   }, 20_000);
 
   test("bridge from degraded mode and from normal mode (the temporary PTY)", async () => {

@@ -153,7 +153,14 @@ test("a stopped raw load does not fall back to session/new", async () => {
 test("a genuine session creation failure retains the initialized client for authentication", async () => {
   const controller = new HarnessController({ adapter, adapterId: "test", env: { LIFECYCLE_FAIL_CONTROL: "session/new" } });
   try {
-    expect(await controller.start()).toEqual({ sessionId: "", resumed: false });
+    expect(await controller.start()).toEqual({
+      sessionId: "",
+      resumed: false,
+      sessionStartFailure: {
+        rpcCode: -32603,
+        message: "The ACP adapter refused to start a session.",
+      },
+    });
     expect(controller.isConnected).toBe(true);
     expect(controller.currentSessionId).toBeNull();
   } finally { await controller.stop(); }

@@ -1827,12 +1827,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
   /** Immutable current state. Late subscribers read this before listening for deltas. */
   get state(): AgentSessionState {
+    const sessionStartFailure = this.controller.sessionStartFailure;
     return Object.freeze({
       pendingHold: this.steering.hold,
       operation: this.activeSupervisor?.activity ?? null,
       providerConnection: this.reconnecting
         ? "reconnecting"
         : this.controller.isConnected ? "connected" : "disconnected",
+      ...(sessionStartFailure ? { sessionStartFailure } : {}),
       phase: this.phase,
       isBusy: this.isBusy,
       queuedOperationCount: this.queuedOperationCount,
@@ -4330,6 +4332,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const key = [
       state.pendingHold?.failedTurnId ?? "",
       state.providerConnection,
+      state.sessionStartFailure?.rpcCode ?? "",
+      state.sessionStartFailure?.message ?? "",
       state.operation?.stage ?? "",
       state.operation?.operationId ?? "",
       state.phase,

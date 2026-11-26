@@ -12,6 +12,7 @@ import type {
 import {
   type AcpClient,
   type AcpClientConfig,
+  type AcpSessionStartFailure,
   type ConnectResult,
   type SessionLoadFailure,
   type SwitchSessionOptions,
@@ -146,6 +147,7 @@ export class HarnessController implements AgentClient, ConversationController {
   private readonly connections = new ConnectionAttempts<ConnectResult, ControllerStartEvent>();
   private current: AgentClient | null = null;
   private acp: AcpClient | null = null;
+  private startupFailure: AcpSessionStartFailure | undefined;
   private mode: AgentMode;
   private readonly availableCommandListeners = new Set<
     (commands: readonly InternalSessionCommand[]) => void
@@ -223,6 +225,10 @@ export class HarnessController implements AgentClient, ConversationController {
     return this.acp?.currentSessionId ?? null;
   }
 
+  get sessionStartFailure(): AcpSessionStartFailure | undefined {
+    if (this.acp?.isConnected && !this.acp.hasSession) return this.startupFailure;
+  }
+
   get capabilities(): Capabilities {
     return this.requireAcp().capabilities;
   }
@@ -297,13 +303,19 @@ export class HarnessController implements AgentClient, ConversationController {
   }
 
   private existingConnection(): ConnectResult {
-    return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
+    const sessionStartFailure = this.sessionStartFailure;
+    return {
+      sessionId: this.currentSessionId ?? "",
+      resumed: this.acp?.hasSession ?? false,
+      ...(sessionStartFailure ? { sessionStartFailure } : {}),
+    };
   }
 
   private installConnection(attempt: ConnectionAttempt<ControllerStartEvent>, brought: ReadyConnection, mode = this.mode): ConnectResult {
     attempt.throwIfCancelled();
     this.current = brought.client;
     this.acp = brought.acp;
+    this.startupFailure = brought.result.sessionStartFailure;
     this.mode = mode;
     this.attachAvailableCommandSource();
     return brought.result;
@@ -433,6 +445,7 @@ export class HarnessController implements AgentClient, ConversationController {
     const client = this.current;
     this.current = null;
     this.acp = null;
+    this.startupFailure = undefined;
     this.detachDisconnect?.();
     this.detachDisconnect = null;
     this.connectionChanged();

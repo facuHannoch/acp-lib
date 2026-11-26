@@ -13182,6 +13182,10 @@ exports[`characterization, once session creation refused for authentication: sta
   "again": {
     "resumed": false,
     "sessionId": "",
+    "sessionStartFailure": {
+      "message": "The ACP adapter refused to start a session.",
+      "rpcCode": -32000,
+    },
   },
   "authenticated": {
     "resolved": {},
@@ -13264,6 +13268,10 @@ exports[`characterization, once session creation refused for authentication: sta
   "result": {
     "resumed": false,
     "sessionId": "",
+    "sessionStartFailure": {
+      "message": "The ACP adapter refused to start a session.",
+      "rpcCode": -32000,
+    },
   },
 }
 `;

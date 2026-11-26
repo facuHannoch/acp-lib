@@ -1,4 +1,4 @@
-import { AcpClient, type ConnectResult } from "./client.ts";
+import { AcpClient, type AcpSessionStartFailure, type ConnectResult } from "./client.ts";
 import type { AgentClient } from "./agent-client.ts";
 import type { ConnectionAttempt } from "./connection-attempt.ts";
 import type { AgentControllerConfig, AgentMode, ControllerStartEvent } from "./controller.ts";
@@ -89,8 +89,13 @@ export async function bringUp(
       await client.stop();
       throw err;
     }
-    config.logger?.warn("session_start_failed", { error: String(err) });
-    result = { sessionId: "", resumed: false };
+    const code = typeof err === "object" && err !== null && "code" in err ? err.code : undefined;
+    const sessionStartFailure: AcpSessionStartFailure = Object.freeze({
+      ...(typeof code === "number" && Number.isSafeInteger(code) ? { rpcCode: code } : {}),
+      message: "The ACP adapter refused to start a session.",
+    });
+    config.logger?.warn("session_start_failed", { ...sessionStartFailure });
+    result = { sessionId: "", resumed: false, sessionStartFailure };
   }
   attempt.throwIfCancelled();
   if (result.sessionId) {
