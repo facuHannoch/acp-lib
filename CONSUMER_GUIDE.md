@@ -1237,11 +1237,28 @@ For an operator-managed native inference relay, declare
 `credentialMode: "relay"` on the `openai-compatible` model and set its
 `baseUrl` to the exact relay URL. Omit `apiKeyEnv`. Supply a trusted
 `harness.inferenceRelayGrant` callback. On each executable create or reopen
-it receives `{ sessionId, signal }` and returns
-`{ baseUrl, bearerToken, expiresAtMs }` for that session. Use a short-lived
-relay credential and keep upstream provider keys on the relay side. Prefer
-HTTPS. The native control connection must be trusted, and plaintext requires
-an isolated hop.
+it receives `{ sessionId, signal }` and returns `{ baseUrl, bearerToken }`
+with exactly one lifetime field. Use `lifetime: { mode: "process" }` for a
+process-bound grant with no clock expiry, or `expiresAtMs` for a timed
+grant. The grant stays in memory. Keep upstream provider keys on the relay
+side. Prefer HTTPS. The native control connection must be trusted, and
+plaintext requires an isolated hop.
+
+To clean up a grant after a failed executable open, return an optional opaque
+`grantRef` and configure `harness.onInferenceRelayOpenFailure`. The callback
+receives `{ grantRef, delivery }`. On `not_sent`, abandon the issuance. On
+`unknown`, revoke the grant because it may have reached the harness. Resolve
+the callback only after cleanup is confirmed. `harness.inferenceRelayCleanupMs`
+sets the independent deadline and defaults to 10 seconds. The reference
+stays on the host side.
+
+If startup surfaces `relay_cleanup_unconfirmed` on the error or its cause,
+stop using that SDK host. Verify that the old harness execution has ended or
+been fenced before opening the saved session with a fresh host and process.
+A late cleanup acknowledgement leaves the old execution fenced. If the relay
+revokes the current grant, later inference needs a fresh executable open.
+ACP-client leaves that action to the host and never replays a relay request
+that may have been sent.
 
 Set `harness.config.model.contextBudget` on OpenRouter, OpenCode Go or OpenAI-compatible models
 to fit a larger inference request. For example, a model with a 128,000-token
@@ -1844,6 +1861,26 @@ harness: {
   `toolInvocations(turn)` return each call's state. A call that was dispatched
   but has no recorded result (crash, lost connection, interrupt) is
   `interrupted` with `effect: "unknown"`. It is never run again automatically.
+
+#### Native web tools and proxy egress
+
+Configure managed search and fetch with `harness.config.webSearch` and
+`harness.config.webFetch`. Exa resolves the configured `apiKeyEnv` from the
+harness environment and defaults to `EXA_API_KEY`.
+
+For a hosted deployment that requires a proxy, set
+`HARNESS_WEB_EGRESS=proxy-required` and uppercase `HTTPS_PROXY` in the
+trusted harness launch environment. Use an HTTP or HTTPS proxy URL without
+credentials, such as `http://egress.internal:8080`. Supply the same environment
+on relaunch. Exa search and Exa-backed fetch use CONNECT to the fixed Exa
+origin, with the service credential sent inside origin TLS. Required mode
+ignores `NO_PROXY`, disables direct URL fetch, and never falls back to direct
+egress. With the mode omitted or set to `direct`, the harness connects directly
+and ignores ambient proxy variables.
+
+An Exa result can still reach the model when the provider omits cost data.
+The harness reports the cost as unknown. A proxy failure produces a tool
+error and the turn can continue.
 
 #### Native MCP servers
 
