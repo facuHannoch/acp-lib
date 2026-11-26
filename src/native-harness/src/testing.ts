@@ -1,3 +1,9 @@
+import { createInspection } from "./interfaces/inspector/state.ts";
+import { inspectorProjection, managedInspector } from "./interfaces/inspector/managed.ts";
+import type { InspectorBinding } from "./interfaces/inspector/config.ts";
+import { reminderDefinitions, guardedReminderDefinitions } from "./capabilities/tools/reminders/index.ts";
+import { timelineDefinitions } from "./capabilities/tools/timeline/index.ts";
+import { readToolResultDefinition } from "./capabilities/tools/runtime/catalog.ts";
 import { createRelayAuthority, inferenceRelayAttempt } from "./capabilities/model/inference-relay.ts";
 import { resolveInferenceRelayGrant } from "./util/inference-relay.ts";
 import { resolveServiceEgress } from "./capabilities/tools/web/service-egress.ts";
@@ -18,7 +24,7 @@ import type { SessionStorage, SessionStorageAdapter } from "./contracts/storage.
 import type { ExecuteTool, Model } from "./contracts/loop.ts";
 import { loadScenario, scriptedCompatibilityKey } from "./capabilities/model/scenario-file.ts";
 import { scenarioAttempt } from "./capabilities/model/scenario-attempt.ts";
-import type { ModelRequest } from "./contracts/model-execution.ts";
+import type { ModelAttempt, ModelRequest } from "./contracts/model-execution.ts";
 import type { LoadedScenario } from "./contracts/scenario.ts";
 export type { LoadedScenario, ScenarioHeader, ScenarioModelRecord, ScenarioRecord, ScenarioSend } from "./contracts/scenario.ts";
 export { loadScenario, parseScenario } from "./capabilities/model/scenario-file.ts";
@@ -42,6 +48,7 @@ import { imageValidationAvailable, validateManagedImage } from "./capabilities/a
 export interface ScriptedServerOptions {
   /** Directory of durable sessions, one SQLite file per session ID. */
   home?: string;
+  inspector?: InspectorBinding | "invalid";
   /** Storage location for a session ID, for tests that keep one location across servers. */
   adapter?: (sessionId: string) => SessionStorageAdapter;
   /** `<point>:<n>`: kill this process, without unwinding, right after the n-th
@@ -204,10 +211,48 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       };
       const revisions = new Map<string, number>();
       const relayAuthority = relayGrant && createRelayAuthority(relayGrant);
+      const unavailable = webUnavailable(config, webEgress);
+      const binding = options.inspector;
+      const project = binding && binding !== "invalid" ? inspectorProjection([
+        credential, compatibleKey, relayGrant?.bearerToken,
+        environment[config.webSearch?.apiKeyEnv ?? "EXA_API_KEY"],
+        config.webFetch?.backend === "exa" ? environment[config.webFetch.apiKeyEnv ?? "EXA_API_KEY"] : undefined,
+        ...Object.values(runtimeHeaders ?? {}).flatMap(headers => Object.values(headers)),
+      ]) : undefined;
+      const definitions = [...BUILTINS, notifyChannelDefinition,
+        ...(config.limits?.unattendedTurns === undefined ? reminderDefinitions : guardedReminderDefinitions),
+        ...(config.timelineTools ? timelineDefinitions : []), ...(catalog?.catalog ?? []),
+        ...(webTools?.map(tool => tool.definition) ?? []), ...[...(mcp?.bindings.values() ?? [])].map(tool => tool.definition)];
+      if (catalog || webTools?.length || mcp?.bindings.size) definitions.push(readToolResultDefinition);
+      const inspection = project ? createInspection(config.system, definitions.map(({ name, description, parameters }) =>
+        ({ name, description, parameters })), storage, paths ? "sqlite" : "memory",
+        turnId => session.tools?.invocations(turnId) ?? [], unavailable, project) : undefined;
+      const inspector = binding ? managedInspector(binding, inspection, project) : undefined;
+      function observeAttempt(attempt: ModelAttempt, channel: string, turnId: number, scripted = false): ModelAttempt {
+        if (!inspection || !inspector?.active()) return attempt;
+        return async function* (request, signal) {
+          if (scripted) inspection.request(channel, JSON.stringify(request), turnId);
+          for await (const event of attempt(request, signal)) {
+            if (event.type === "response" && inspector.active()) inspection.response(channel, event.response);
+            yield event;
+          }
+        };
+      }
       const session = createSession({
         ...(script && options.reminderTime !== undefined && Number.isSafeInteger(options.reminderTime)
-          ? { reminderClock: { ...wallReminderClock, now: () => options.reminderTime! } } : {}), ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
-        revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, imageInput, webTools, mcpTools: mcp?.bindings, ...(catalog ? { catalog } : {}), configureTurn(turn) {
+          ? { reminderClock: { ...wallReminderClock, now: () => options.reminderTime! } } : {}),
+        ...(options.requests || inspection ? { captureContext: capture => {
+          if (options.requests) revisions.set(capture.context.channelId, capture.context.timelineRevision);
+          if (inspector?.active()) inspection?.capture(capture);
+        } } : {}),
+        ...(inspection ? { observeModelCall: (...args) => {
+          if (inspector?.active()) inspection.modelCall(...args);
+        } } : {}),
+        systemPrompt: config.system, config, storage, imageInput, webTools, mcpTools: mcp?.bindings,
+        ...(catalog ? { catalog } : {}),
+        configureTurn(turn) {
+        const captureRequest = inspection && inspector?.active()
+          ? (body: string) => { if (inspector.active()) inspection.request(turn.channelId, body, turn.turnId); } : undefined;
         if (compatible) {
           const model: Model = async () => { throw new Error("Chat Completions requires a model attempt"); };
           bindModelAttempt(model, { scripted: false,
@@ -217,23 +262,24 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
               const metadata = attachments ? (id: string) => {
                 const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
               } : undefined;
-              return relayAuthority ? inferenceRelayAttempt(compatible.model, relayAuthority, metadata)
-                : managedCompatibleAttempt(compatible, conversation, compatibleKey, undefined, metadata);
+              const attempt = relayAuthority ? inferenceRelayAttempt(compatible.model, relayAuthority, metadata, captureRequest)
+                : managedCompatibleAttempt(compatible, conversation, compatibleKey, captureRequest, metadata);
+              return observeAttempt(attempt, turn.channelId, turn.turnId);
             } });
           return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
         }
         if (config.model.protocol === "openrouter") {
           const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
-          if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "", providerFetch, undefined,
+          if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => observeAttempt(openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "", providerFetch, captureRequest,
             attachments ? { supported: imageInput, metadata(id) { const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined; },
               read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
-              verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); } } : undefined) });
+              verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); } } : undefined), turn.channelId, turn.turnId) });
           return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
         }
         const model: Model = async () => { throw new Error("Scripted model requires a reserved attempt"); };
         bindModelAttempt(model, { scripted: true, ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }), create: (step, ordinal) => {
           const next = scenarioAttempt(script!, turn.channelId, step!);
-          return async function* (request, signal) {
+          return observeAttempt(async function* (request, signal) {
             // Offline rehearsal can observe the real provider projection while
             // retaining scripted records as the source of model decisions.
             if (fixtureEndpoint && imageInput && attachments && request.messages.some(message => message.role === "user" && message.parts)) {
@@ -264,12 +310,11 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
                 yield { type: "text_delta", text: event.response.content };
               yield event;
             }
-          };
+          }, turn.channelId, turn.turnId, true);
         } });
         return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
       } });
-      const unavailable = webUnavailable(config, webEgress);
-      return { session, config, imageInput, ...(Object.keys(unavailable).length ? { webUnavailable: unavailable } : {}), ...(mcp ? { mcpStatus: mcp.status, stopMcp: mcp.close } : {}), ...(attachments ? { attachments } : {}), close() { void mcp?.close(); attachments?.close(); opened.value.close(); }, commitConfig() {
+      return { session, config, imageInput, inspector, ...(Object.keys(unavailable).length ? { webUnavailable: unavailable } : {}), ...(mcp ? { mcpStatus: mcp.status, stopMcp: mcp.close } : {}), ...(attachments ? { attachments } : {}), close() { void mcp?.close(); attachments?.close(); opened.value.close(); }, commitConfig() {
         const saved = storage.saveConfig(config);
         if (!saved.ok && saved.error.code !== "incompatible") throw new SessionOpenError("storage_failure", saved.error.message);
       }, exportArchive: () => storage.exportArchive() };

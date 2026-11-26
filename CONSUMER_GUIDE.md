@@ -1164,6 +1164,22 @@ Handle that command before normal application startup and keep stdout reserved
 for the harness protocol. The command override includes all arguments, so pass
 the same directory as `harness.home`.
 
+### Managed inspector
+
+Set `HARNESS_INSPECTOR_PORT=0` in the native harness launch environment to open
+the existing read-only inspector on a free loopback port. Start the harness,
+then read `(await agent.nativeHarness.status()).inspector`. A `listening`
+status gives the bound port for `http://127.0.0.1:<port>/`. An `unavailable`
+status gives a fixed reason and the session can still run. An unset port
+leaves the inspector off. Read the status again after a process replacement.
+
+In an isolated container network, use a known container port, set
+`HARNESS_INSPECTOR_HOST=0.0.0.0`, and set
+`HARNESS_INSPECTOR_PUBLIC_AUTHORITY` to the exact loopback Host authority
+that reaches the inspector. Publish through the launcher's loopback mapping
+or local proxy. The launcher supplies the browser URL. Limit access to
+trusted users because the inspector shows conversation and model details.
+
 ### Configuration
 
 ```ts

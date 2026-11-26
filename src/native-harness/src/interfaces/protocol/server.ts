@@ -1,3 +1,4 @@
+import type { InspectorStatus } from "../../contracts/inspector.ts";
 import { attachmentView } from "../../contracts/attachments.ts";
 import { OperatorFault, operatorMethods, operatorRead, readValue } from "./operator.ts";
 import type { ProtocolEndpoint, RpcRequest, RpcResponse, RpcNotification, RpcSessionNotification, ProtocolConfig, Description, Subscription, DurableErrorCode } from "../../contracts/protocol.ts";
@@ -52,6 +53,7 @@ export interface OpenedSession {
   webUnavailable?: import("../../contracts/web.ts").WebUnavailable;
   mcpStatus?(): Record<string, import("../../contracts/mcp.ts").McpServerStatus>;
   stopMcp?(): Promise<void>;
+  inspector?: { start(session: PersistentSession): void; status(): InspectorStatus; stop(): Promise<void> };
 }
 export interface ProtocolServerOptions {
   durable?: boolean;
@@ -186,7 +188,9 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
    * stop first: a resume in it may already have handed a turn to an executor. */
   async function abandon(opened: OpenedSession, batch: boolean) {
     if (batch) { try { opened.session.stop("Open failed"); } catch { /* Storage may be the failure. */ } }
-    try { await opened.stopMcp?.(); } finally { opened.close(); }
+    try { await opened.inspector?.stop(); } finally {
+      try { await opened.stopMcp?.(); } finally { opened.close(); }
+    }
   }
 
   /** Read one snapshot, then keep every later notification behind the response.
@@ -200,7 +204,11 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const image = opened.imageInput && (opened.session.reminders?.executable() ?? true)
       ? { imageInput: true as const, imageLimits: { formats: ["image/png", "image/jpeg", "image/webp"], fileBytes: ATTACHMENT_LIMITS.fileBytes,
         turnBytes: ATTACHMENT_LIMITS.imageBytesPerTurn, maxImages: ATTACHMENT_LIMITS.references, maxSide: ATTACHMENT_LIMITS.imageSide, maxPixels: ATTACHMENT_LIMITS.imagePixels } } : {};
-    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision, ...image, ...(opened.webUnavailable ? { webUnavailable: opened.webUnavailable } : {}), ...(opened.mcpStatus ? { mcpServers: opened.mcpStatus() } : {}) };
+    return { ...inspectorStatus(opened), sessionId: value.sessionId, lifecycle: value.lifecycle, revision, ...image, ...(opened.webUnavailable ? { webUnavailable: opened.webUnavailable } : {}), ...(opened.mcpStatus ? { mcpServers: opened.mcpStatus() } : {}) };
+  }
+
+  function inspectorStatus(opened: OpenedSession) {
+    return opened.inspector ? { inspector: opened.inspector.status() } : {};
   }
 
   function holdAfterResponse(start?: () => void) {
@@ -289,6 +297,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         if (opened.session.reminders) holdAfterResponse();
         results = finish?.();
         reminderResult = prepareReminders(opened.session, reminderBatch);
+        opened.inspector?.start(opened.session);
         current = opened;
         if (batch) startup = { batch, results: results! };
       } catch (error) { try { await abandon(opened, !!batch); } catch { /* Preserve startup failure. */ } throw error; }
@@ -323,6 +332,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         const results = finish?.();
         opened.commitConfig?.();
         const reminderResult = prepareReminders(opened.session, reminderBatch);
+        opened.inspector?.start(opened.session);
         const result = ready(opened);
         holdAfterResponse(() => { if (current === opened) opened.session.start(); });
         current = opened;
@@ -460,6 +470,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     if (method === "session/status") {
       keys(p, []);
       return { ...wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()),
+        ...inspectorStatus(current),
         ...(current.webUnavailable ? { webUnavailable: current.webUnavailable } : {}),
         ...(current.mcpStatus ? { mcpServers: current.mcpStatus() } : {}) };
     }
@@ -489,13 +500,16 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const windowMs = p.unlessDueWithinMs ?? 0;
       if (p.ifIdle !== true || p.unlessDueWithinMs === null || !Number.isSafeInteger(windowMs) || windowMs < 0) bad("Invalid conditional stop");
       if (!session.reminders) throw new Fault("invalid_state", "Conditional stop is unavailable");
-      return session.reminders.conditionalStop(windowMs);
+      const result = session.reminders.conditionalStop(windowMs);
+      if (result.stopped) await current.inspector?.stop();
+      return result;
     }
     if (method === "session/stop") {
       keys(p, []);
       const status = session.stop("Stopped by the host");
-      await current.stopMcp?.();
-      return wireStatus(status, session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot());
+      try { await current.inspector?.stop(); } finally { await current.stopMcp?.(); }
+      return { ...wireStatus(status, session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()),
+        ...inspectorStatus(current) };
     }
     if (method === "session/model-calls") {
       keys(p, ["after", "limit"]);
@@ -578,8 +592,12 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       bridge.disconnect();
       transfers?.dispose();
       opened?.session.reminders?.releaseTimer();
-      if (opened?.stopMcp) await opened.stopMcp();
-      opened?.close();
+      if (opened) {
+        // Without optional resources, storage ownership is released synchronously.
+        try { if (opened.inspector) await opened.inspector.stop(); } finally {
+          try { if (opened.stopMcp) await opened.stopMcp(); } finally { opened.close(); }
+        }
+      }
     },
   };
 }

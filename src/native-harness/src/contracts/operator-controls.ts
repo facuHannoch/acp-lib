@@ -2,6 +2,7 @@ import type { ApprovalCloseReason, ApprovalRequest } from "./config-permissions.
 import type { ChannelChangeResult, ChannelStatusResult, ItemStatus, StoredMessage, PendingChannelChange, ProtocolConfig, TurnStatus } from "./protocol.ts";
 
 export interface OpenResult {
+  inspector?: import("./inspector.ts").InspectorStatus;
   webUnavailable?: import("./web.ts").WebUnavailable;
   mcpServers?: Record<string, import("./mcp.ts").McpServerStatus>;
   sessionId: string;

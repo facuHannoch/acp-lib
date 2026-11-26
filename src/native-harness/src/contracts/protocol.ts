@@ -141,6 +141,7 @@ export interface TurnStatus {
 /** `idle`, `suspended` and unresolved interrupted work are distinguishable:
  * see SessionStatus in the session contract for the exact derivation. */
 export interface StatusResult {
+  inspector?: import("./inspector.ts").InspectorStatus;
   webUnavailable?: import("./web.ts").WebUnavailable;
   mcpServers?: Record<string, import("./mcp.ts").McpServerStatus>;
   sessionId: string; revision: number;

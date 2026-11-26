@@ -1,4 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
+import { managedInspectorBinding } from "../src/interfaces/inspector/config.ts";
+import { inspectorProjection } from "../src/interfaces/inspector/managed.ts";
 import { createInspection } from "../src/interfaces/inspector/state.ts";
 import { serveInspector } from "../src/interfaces/inspector/server.ts";
 import { createSession } from "../src/index.ts";
@@ -74,4 +76,23 @@ test("inspector captures remain detached and bounded per channel", () => {
   expect(inspection.channel("a").requests).toHaveLength(8);
   expect(b.requests[0]).toMatchObject({ turnId: 2, body: { omitted: true }, response: { content: "B answer" } });
   observer.stop(); storage.close();
+});
+
+test("managed inspector requires an exact wildcard authority and hides retained sensitive values", async () => {
+  expect(managedInspectorBinding({})).toBeUndefined();
+  expect(managedInspectorBinding({ HARNESS_INSPECTOR_PORT: "bad" })).toBe("invalid");
+  const environment = { HARNESS_INSPECTOR_PORT: "0", HARNESS_INSPECTOR_HOST: "0.0.0.0" };
+  expect(managedInspectorBinding(environment)).toBe("invalid");
+  const binding = managedInspectorBinding({ ...environment, HARNESS_INSPECTOR_PUBLIC_AUTHORITY: "127.0.0.1:12345" });
+  if (!binding || binding === "invalid") throw new Error("Expected wildcard binding");
+  const { inspection, storage, observer } = fixture();
+  const server = serveInspector(inspection, binding);
+  try {
+    const url = `http://127.0.0.1:${server.port}/state`;
+    expect((await fetch(url)).status).toBe(403);
+    expect((await fetch(url, { headers: { Host: binding.authority! } })).status).toBe(200);
+    const project = inspectorProjection(["runtime-key.123"]);
+    expect(project({ text: "answer runtime-key.123", image: "data:image/png;base64,AAA=", name: "photo.png" }))
+      .toEqual({ text: "answer [REDACTED]", image: "[REDACTED_IMAGE]", name: "photo.png" });
+  } finally { await server.stop(true); observer.stop(); storage.close(); }
 });

@@ -27,7 +27,8 @@ function read<T>(result: StorageResult<T>) {
 export function createInspection(systemPrompt: string, tools: readonly ToolDefinition[],
   reads: InspectionStorageReads, storage: string,
   webInvocations?: (turnId: number) => import("../../contracts/tools.ts").ToolInvocation[],
-  webUnavailable: import("../../contracts/web.ts").WebUnavailable = {}) {
+  webUnavailable: import("../../contracts/web.ts").WebUnavailable = {},
+  project: (body: unknown) => unknown = body => body) {
   const instructions = composeSystemPrompt(systemPrompt);
   const captures = new Map<string, { turnId: number; metadata: NonNullable<InspectedInference["context"]> }>();
   const channels = new Map<string, InspectedInference[]>();
@@ -87,14 +88,14 @@ export function createInspection(systemPrompt: string, tools: readonly ToolDefin
       const capture = captures.get(id);
       requests.push({ ...(capture && capture.turnId === turnId ? { context: capture.metadata } : {}),
         number: (requests.at(-1)?.number ?? 0) + 1, turnId, at: new Date().toISOString(),
-        body: Buffer.byteLength(body) <= CAPTURE_BYTES ? JSON.parse(body) : { omitted: true } });
+        body: Buffer.byteLength(body) <= CAPTURE_BYTES ? project(JSON.parse(body)) : { omitted: true } });
       if (requests.length > CAPTURE_LIMIT) requests.shift();
       invalidate();
     },
     response(id: string, message: Extract<Message, { role: "assistant" }>) {
       const request = channels.get(id)?.at(-1);
       if (!request) return;
-      request.response = Buffer.byteLength(JSON.stringify(message)) <= CAPTURE_BYTES ? structuredClone(message) : { omitted: true };
+      request.response = Buffer.byteLength(JSON.stringify(message)) <= CAPTURE_BYTES ? structuredClone(project(message) as typeof message) : { omitted: true };
       invalidate();
     },
   };

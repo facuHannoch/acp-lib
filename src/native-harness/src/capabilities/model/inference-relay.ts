@@ -48,7 +48,8 @@ async function relayRefusal(response: { status: number; body: ReadableStream<Uin
 /** A relay attempt owns its direct dispatcher and releases it on any terminal
  * event, including cancellation by the model runner. */
 export function inferenceRelayAttempt(model: string, authority: RelayAuthority,
-  metadata?: Parameters<typeof openAICompatibleAttempt>[5]): ModelAttempt {
+  metadata?: Parameters<typeof openAICompatibleAttempt>[5],
+  onRequest?: Parameters<typeof openAICompatibleAttempt>[4]): ModelAttempt {
   return async function* (request, signal) {
     const captured = authority.capture(), { grant } = captured;
     const isExpired = () => grant.expiresAtMs !== undefined && Date.now() >= grant.expiresAtMs;
@@ -88,7 +89,7 @@ export function inferenceRelayAttempt(model: string, authority: RelayAuthority,
       if (refusal === "native_grant_revoked") authority.revoke(captured);
       return new Response(null, { status: response.status });
     }) as unknown as typeof fetch;
-    const attempt = openAICompatibleAttempt(grant.baseUrl, model, grant.bearerToken, directFetch, undefined, metadata);
+    const attempt = openAICompatibleAttempt(grant.baseUrl, model, grant.bearerToken, directFetch, onRequest, metadata);
     const token = grant.bearerToken;
     const marker = "[relay credential hidden]";
     const redact = (text: string) => text.replaceAll(token, marker.includes(token) ? "[ ]" : marker);

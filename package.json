@@ -1,6 +1,6 @@
 {
   "name": "@qlairoslabs/acp-client",
-  "version": "0.13.9e-alpha.1",
+  "version": "0.13.10e-alpha.1",
   "description": "Embeddable Agent Client Protocol (ACP) client library with degraded PTY fallback.",
   "type": "module",
   "module": "src/index.ts",
