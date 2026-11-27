@@ -8,7 +8,7 @@ import type { PermissionSettings } from "./matcher.ts";
 import { selectPermissionOutcome, unansweredPermissionOutcome } from "./outcome.ts";
 import { permissionLevel, recordingPermissionHandlers, type ConversationPermissionConfig } from "./policy.ts";
 
-export type PermissionResolutionSource = "handler" | "consumer" | "default" | "timeout" | "turn_ended";
+export type PermissionResolutionSource = "handler" | "consumer" | "delegator" | "default" | "timeout" | "turn_ended";
 export type PermissionResolution = {
   readonly outcome: PermissionOutcome;
   readonly by: PermissionResolutionSource;
@@ -73,6 +73,7 @@ interface PermissionEntry {
   close(resolution: PermissionResolution): void;
   closeLocally(stopping?: boolean): void;
   answer?(optionId: string): Promise<boolean>;
+  answerAsModel?(option: string, policyNames: readonly string[]): Promise<boolean>;
 }
 
 const forwarding = new WeakMap<object, {
@@ -80,9 +81,22 @@ const forwarding = new WeakMap<object, {
   readonly policy: () => ConversationPermissionConfig;
 }>();
 
+export interface ModelWorkerApproval {
+  readonly mode: "model" | "both";
+  readonly authorize: (policies: readonly string[]) => boolean;
+  deliver(id: string, choices: readonly string[], expiresAt: number, signal: AbortSignal): Promise<boolean>;
+}
+
+export async function answerForwardedWorkerPermission(conversation: object | undefined, id: string, option: string,
+  policies: readonly string[]): Promise<boolean> {
+  const destination = conversation && forwarding.get(conversation);
+  return destination ? destination.coordinator.answerAsModel(id, option, policies) : false;
+}
+
 export interface ForwardPermissionOptions {
   readonly source: WorkerPermissionSource;
   readonly includeAllowAlways: boolean;
+  readonly model?: ModelWorkerApproval;
   readonly unanswered?: PermissionSettings["unanswered"];
   readonly signal?: AbortSignal;
 }
@@ -99,7 +113,7 @@ export async function forwardPermission(
   };
   const time = acpPermissionArrivals.get(request);
   if (time && offered !== request) acpPermissionArrivals.set(offered, time);
-  return (await destination.coordinator.request(undefined, offered, destination.policy(), undefined, signal, undefined, source)).outcome;
+  return (await destination.coordinator.request(undefined, offered, destination.policy(), undefined, signal, undefined, source, options.model)).outcome;
 }
 
 export class ConversationPermissions {
@@ -128,6 +142,10 @@ export class ConversationPermissions {
     return { accepted: await this.pending.get(id)?.answer?.(optionId) ?? false };
   }
 
+  async answerAsModel(id: string, option: string, policies: readonly string[]): Promise<boolean> {
+    return await this.pending.get(id)?.answerAsModel?.(option, policies) ?? false;
+  }
+
   internalHandler(turnId: string, policy: ConversationPermissionConfig): PromptHandlers {
     const onPermissionRequest: NonNullable<PromptHandlers["onPermissionRequest"]> = async (request, signal) =>
       (await this.request(turnId, request, policy, undefined, signal)).outcome;
@@ -143,6 +161,7 @@ export class ConversationPermissions {
     signal?: AbortSignal,
     recordRequested?: () => Promise<void>,
     source?: WorkerPermissionSource,
+    model?: ModelWorkerApproval,
   ): Promise<PermissionResolution> {
     const native = nativePermissionRequests.get(request);
     if (this.stopped || signal?.aborted) {
@@ -168,7 +187,7 @@ export class ConversationPermissions {
       }
     }
 
-    const waitForConsumer = level === "ask" && !handler && policy.answersPermissions === true;
+    const waitForConsumer = level === "ask" && !handler && model?.mode !== "model" && policy.answersPermissions === true;
     const offered = Object.freeze(request.options.map(option => Object.freeze({ ...option })));
     const arrival = native?.arrival ?? acpPermissionArrivals.get(request) ?? permissionArrival();
     const budget = policy.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
@@ -223,34 +242,60 @@ export class ConversationPermissions {
       return send(decision);
     };
 
-    if (waitForConsumer) {
+    if (waitForConsumer || model) {
       const claim = () => {
-        if (!entry.answer) return false;
+        if (!entry.answer && !entry.answerAsModel) return false;
         entry.answer = undefined;
+        entry.answerAsModel = undefined;
         clearTimeout(timer);
         return true;
       };
       const expire = () => {
         if (claim()) void send(refuse("timeout")).catch(failed);
       };
-      entry.answer = async optionId => {
+      const answer = async (optionId: string, by: "consumer" | "delegator") => {
         if (remaining() <= 0) expire();
         if (!offered.some(option => option.optionId === optionId) || !claim()) return false;
-        const accepted = await sendAfterRecord({ outcome: { outcome: "selected", optionId }, by: "consumer" }).catch(failed);
-        return accepted && (await result).by === "consumer";
+        const accepted = await sendAfterRecord({ outcome: { outcome: "selected", optionId }, by }).catch(failed);
+        return accepted && (await result).by === by;
       };
+      if (waitForConsumer) entry.answer = optionId => answer(optionId, "consumer");
+      if (model) {
+        const choices = new Map<string, string>();
+        for (const option of offered) {
+          if ((option.kind === "allow_once" || option.kind === "reject_once") && !choices.has(option.kind))
+            choices.set(option.kind, option.optionId);
+        }
+        entry.answerAsModel = async (option, policies) => {
+          const optionId = choices.get(option);
+          return optionId !== undefined && model.authorize(policies) && answer(optionId, "delegator");
+        };
+        const unavailable = () => {
+          if (!entry.answerAsModel || !this.pending.has(id)) return;
+          if (!entry.answer && claim()) {
+            void sendAfterRecord({
+              outcome: unansweredPermissionOutcome(request.options, policy.permissions?.unanswered),
+              by: "default", refused: true,
+            }).catch(failed);
+          } else entry.answerAsModel = undefined;
+        };
+        void Promise.resolve().then(async () => {
+          if (!entry.answerAsModel || handlerAbort.signal.aborted) return;
+          if (!await model.deliver(id, [...choices.keys()], arrival.wallTime + budget, handlerAbort.signal)) unavailable();
+        }).catch(unavailable);
+      }
       timer = setTimeout(expire, Math.max(0, Math.ceil(remaining())));
       // A failed requested record cannot leave an otherwise unclaimed request open.
       void record.catch(() => { if (claim()) void sendAfterRecord(refuse("default")).catch(failed); });
     }
 
-    this.emit({
+    if (!model || waitForConsumer) this.emit({
       kind: "permission_requested", id, ...(source ? { source: Object.freeze({ ...source }) } : { turnId: turnId! }),
       tool: request.tool && Object.freeze(structuredClone(request.tool)),
-      title: request.title, options: offered, ...(waitForConsumer ? { expiresAt: arrival.wallTime + budget } : {}),
+      title: request.title, options: offered, ...(waitForConsumer || model ? { expiresAt: arrival.wallTime + budget } : {}),
     });
 
-    if (native?.hostHandled || native?.settled || waitForConsumer) return result;
+    if (native?.hostHandled || native?.settled || waitForConsumer || model) return result;
     if (level !== "ask" || !handler) {
       const unanswered = level === "ask" && !handler;
       const cancelTurn = unanswered && policy.permissions?.unanswered === "cancel";

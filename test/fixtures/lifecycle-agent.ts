@@ -135,17 +135,24 @@ function prompt(m: any): void {
     text(session, "partial reply");
     return;
   }
-  if (mode === "permission") {
-    permission = { promptId: m.id, session, id: `permission-${randomUUID()}` };
-    send({
-      id: permission.id,
-      method: "session/request_permission",
-      params: {
-        sessionId: session,
-        toolCall: { toolCallId: "permission-tool", title: "permission test" },
-        options: [{ optionId: "allow", kind: "allow_once", name: "Allow" }],
-      },
-    });
+  if (mode === "permission" || mode === "readpermission") {
+    const ask = () => {
+      if (pending?.id !== m.id) return;
+      const gate = mode === "readpermission" ? process.env.LIFECYCLE_PERMISSION_GATE_FILE : undefined;
+      if (gate && !existsSync(gate)) { setTimeout(ask, 5); return; }
+      permission = { promptId: m.id, session, id: `permission-${randomUUID()}` };
+      send({
+        id: permission.id,
+        method: "session/request_permission",
+        params: {
+          sessionId: session,
+          toolCall: { toolCallId: "permission-tool", title: "permission test",
+            ...(mode === "readpermission" ? { kind: "read", rawInput: { path: "README.md" } } : {}) },
+          options: [{ optionId: "allow", kind: "allow_once", name: "Allow" }],
+        },
+      });
+    };
+    ask();
     return;
   }
   if (mode === "tool" || mode === "natural") {

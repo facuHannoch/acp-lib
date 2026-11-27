@@ -2087,6 +2087,21 @@ results may be absent until the harness opens. Delivery states are `pending`
 retries only the newest policy-blocked delivery. A retired or missing
 destination remains a failed delivery.
 
+For native giving conversations, `orchestrator.workerApprovals` defaults
+to `"consumer"`. Set it to `"model"` to let the native model answer eligible
+asks, or `"both"` to keep the host responder available as well. Grant
+`worker_answer` in the applicable harness policy and use
+`orchestrator.toolNames.answer` to rename it.
+
+Each contributing orchestrator policy must explicitly grant the action
+in `modelApproval.rules`. The initial model path supports structured
+workspace-relative read requests. List the paths safe to include in
+shared history in each contributing policy's `modelApproval.shareReadPaths`.
+For example, use
+`modelApproval: { rules: { "kind:read": "allow" }, shareReadPaths: ["README.md"] }`.
+The model can select a one-time answer. An ask stays with the conversation
+that received it. After redirect, new asks follow the new giving conversation.
+
 From the source checkout, run the offline smoke test with
 `bun smoke-tests/orchestrator/run.ts`. Live mode requires explicit approval
 for spend, `ACP_ORCH_LIVE=1`, `OPENROUTER_API_KEY`, local Codex binaries

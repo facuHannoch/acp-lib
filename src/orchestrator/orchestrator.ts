@@ -1,6 +1,6 @@
 import { ownPermissions } from "../permissions/policy.ts";
 import type { PermissionSettings } from "../permissions/matcher.ts";
-import { workerPermissionHandler, type FindGivingConversation } from "./permissions.ts";
+import { workerPermissionHandler, type FindGivingConversation, type WorkerApprovalRouting } from "./permissions.ts";
 import { WorkerPolicyError } from "../errors.ts";
 import { canSeeWorker, checkWorkerOpenLimit, requireWorkerRedirect, requireWorkerUse } from "./policy.ts";
 import type { AssignmentPlan, WorkerAssignmentPort } from "./assignments.ts";
@@ -29,6 +29,7 @@ export class Orchestrator {
     private readonly emit: (event: WorkerEvent) => void,
     private readonly assignments?: WorkerAssignmentPort,
     private readonly findGivingConversation?: FindGivingConversation,
+    private readonly approvals?: WorkerApprovalRouting,
   ) {
     this.pool = new WorkerPool(options.limit, options.idleStopMs ?? 600_000);
     const defaults = ownPermissions(options.defaultPermissions);
@@ -267,7 +268,7 @@ export class Orchestrator {
     const input = {
       text,
       handlers: {
-        onPermissionRequest: workerPermissionHandler(actor, row, this.findGivingConversation, this.defaultWorkerPermissions),
+        onPermissionRequest: workerPermissionHandler(actor, row, this.findGivingConversation, this.defaultWorkerPermissions, this.approvals),
         ...(accepted ? { onUpdate: confirmDispatch } : {}),
       },
       delivery: plan.kind === "start" ? "queue" as const : "steer" as const,

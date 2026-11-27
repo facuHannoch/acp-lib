@@ -249,3 +249,53 @@ test("an unanswered ACP ask can be cancelled by the conversation setting", async
     await conversation.stop();
   }
 }, 10_000);
+
+for (const first of ["consumer", "delegator"] as const) {
+  test(`worker approval is claimed once when ${first} answers first`, async () => {
+    const coordinator = new ConversationPermissions(() => {}, () => noopLogger);
+    const delivered = Promise.withResolvers<string>();
+    const request: PermissionRequest = {
+      toolCallId: "read", options: [
+        { optionId: "safe", name: "Allow", kind: "allow_once" },
+        { optionId: "persistent", name: "Always allow", kind: "allow_always" },
+      ], raw: {},
+    };
+    const resolved = coordinator.request(undefined, request, { answersPermissions: true }, undefined, undefined,
+      undefined, undefined, { mode: "both", authorize: policies => policies.includes("owner"),
+        async deliver(id, choices) { expect(choices).toEqual(["allow_once"]); delivered.resolve(id); return true; } });
+    const id = await delivered.promise;
+    expect(await coordinator.answerAsModel(id, "persistent", ["owner"])).toBe(false);
+    expect(await coordinator.answerAsModel(id, "allow_once", ["guest"])).toBe(false);
+    const consumer = () => coordinator.answer(id, "safe").then(result => result.accepted);
+    const model = () => coordinator.answerAsModel(id, "allow_once", ["owner"]);
+    expect(await Promise.all(first === "consumer" ? [consumer(), model()] : [model(), consumer()])).toEqual([true, false]);
+    expect(await resolved).toMatchObject({ by: first, outcome: { outcome: "selected", optionId: "safe" } });
+  });
+}
+
+test("failed model notice falls back only to an enabled consumer", async () => {
+  for (const answersPermissions of [true, false]) {
+    let id: string | undefined;
+    const delivered = Promise.withResolvers<void>();
+    const coordinator = new ConversationPermissions(event => {
+      if (event.kind === "permission_requested") id = event.id;
+    }, () => noopLogger);
+    const request: PermissionRequest = {
+      toolCallId: "read", options: [
+        { optionId: "allow", name: "Allow", kind: "allow_once" },
+        { optionId: "deny", name: "Deny", kind: "reject_once" },
+      ], raw: {},
+    };
+    const result = coordinator.request(undefined, request, { answersPermissions }, undefined, undefined,
+      undefined, undefined, { mode: "both", authorize: () => true,
+        async deliver() { delivered.resolve(); return false; } });
+    await delivered.promise;
+    if (answersPermissions) {
+      expect(await coordinator.answer(id!, "allow")).toEqual({ accepted: true });
+      expect(await result).toMatchObject({ by: "consumer", outcome: { optionId: "allow" } });
+    } else {
+      expect(id).toBeUndefined();
+      expect(await result).toMatchObject({ by: "default", outcome: { optionId: "deny" } });
+    }
+  }
+});

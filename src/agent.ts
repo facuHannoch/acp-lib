@@ -163,9 +163,9 @@ export class Agent {
     this.adapters = adapters;
     const orchestration = config.orchestrator;
     if (orchestration) {
-      const toolNames = resolveDelegationToolNames(orchestration.toolNames);
+      const toolNames = resolveDelegationToolNames(orchestration.toolNames, orchestration.workerApprovals);
       this.wrapNativeFunctions = functions => withDelegationTools(functions, orchestration,
-        () => this.orchestrator!, () => this.conversations, toolNames);
+        () => this.orchestrator!, () => this.conversations, toolNames, id => this.manager.liveConversation(id));
     }
     const channels = config.harness ? protectedChannels(persistence) : undefined;
     this.nativeHarness = config.harness
@@ -259,7 +259,10 @@ export class Agent {
         () => this.nativeHarness?.flushWorkerDelivery());
       this.orchestrator = new Orchestrator(persistence.workers!, this.conversations, { ...workerOptions, adapterId,
         defaultPermissions: config.orchestrator.defaults?.workerPermissions }, logger,
-        event => this.eventBus.publishWorker(event), assignments, id => this.manager.liveConversation(id));
+        event => this.eventBus.publishWorker(event), assignments, id => this.manager.liveConversation(id),
+        this.nativeHarness && config.orchestrator.workerApprovals && config.orchestrator.workerApprovals !== "consumer" ? {
+          config: config.orchestrator, send: this.nativeHarness.sendWorkerApprovalNotice.bind(this.nativeHarness),
+        } : undefined);
       this.workers = workerConsumerApi(this.orchestrator);
     }
     if (checkpointing?.enabled) {

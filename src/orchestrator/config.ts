@@ -5,14 +5,21 @@ import type { PersistenceBackend, RecordCaptureLevel } from "../persistence/back
 
 const defaultDelegationToolNames = { delegate: "delegate", check: "check", list: "list", stop: "stop" } as const;
 type DelegationToolNames = Readonly<Record<keyof typeof defaultDelegationToolNames, string>>;
+export type WorkerApprovalMode = "consumer" | "model" | "both";
 
 export interface OrchestratorConfig {
   /** Model-facing names for ACP-client's native worker tools. Unspecified names keep their defaults. */
-  readonly toolNames?: Partial<DelegationToolNames>;
+  readonly toolNames?: Partial<DelegationToolNames & { answer: string }>;
+  readonly workerApprovals?: WorkerApprovalMode;
   /** Each entry corresponds to a configured native harness policy name. */
   readonly policies?: Readonly<Record<string, {
     readonly delegation: DelegationPolicy;
     readonly workerPermissions?: PermissionSettings;
+    /** Scope of model answers and the read paths safe to include in shared notices. */
+    readonly modelApproval?: {
+      readonly rules: NonNullable<PermissionSettings["rules"]>;
+      readonly shareReadPaths?: readonly string[];
+    };
   }>>;
   /** Forwarded requests retain owner options only when every contributing name is listed here. */
   readonly ownerPolicies?: readonly string[];
@@ -30,20 +37,21 @@ export interface OrchestratorConfig {
   };
 }
 
-export function resolveDelegationToolNames(input: OrchestratorConfig["toolNames"]): DelegationToolNames {
-  if (input === undefined) return defaultDelegationToolNames;
+export function resolveDelegationToolNames(input: OrchestratorConfig["toolNames"], mode: WorkerApprovalMode = "consumer"): DelegationToolNames & { answer?: string } {
+  if (input === undefined) return mode === "consumer" ? defaultDelegationToolNames : { ...defaultDelegationToolNames, answer: "worker_answer" };
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
     throw new TypeError("orchestrator.toolNames must be a map of worker operations to tool names");
   }
-  const names: Record<keyof DelegationToolNames, string> = { ...defaultDelegationToolNames };
+  const names: Record<keyof DelegationToolNames, string> & { answer?: string } = { ...defaultDelegationToolNames };
+  if (mode !== "consumer") names.answer = "worker_answer";
   for (const [operation, name] of Object.entries(input)) {
-    if (!Object.hasOwn(defaultDelegationToolNames, operation)) {
+    if (operation !== "answer" && !Object.hasOwn(defaultDelegationToolNames, operation)) {
       throw new Error(`unknown orchestrator tool operation: ${operation}`);
     }
     if (typeof name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
       throw new Error(`invalid orchestrator tool name for ${operation}`);
     }
-    names[operation as keyof DelegationToolNames] = name;
+    if (operation !== "answer" || mode !== "consumer") names[operation as keyof DelegationToolNames | "answer"] = name;
   }
   const resolved = Object.values(names);
   if (new Set(resolved).size !== resolved.length) throw new Error("orchestrator tool names must be distinct");
@@ -53,6 +61,9 @@ export function resolveDelegationToolNames(input: OrchestratorConfig["toolNames"
 export function validateOrchestrator(
   config: OrchestratorConfig, persistence: PersistenceBackend, messageCapture: RecordCaptureLevel,
 ): void {
+  if (config.workerApprovals !== undefined && !["consumer", "model", "both"].includes(config.workerApprovals)) {
+    throw new Error("invalid orchestrator.workerApprovals mode");
+  }
   if (!persistence.capabilities.workers || !persistence.workers) throw new PersistenceCapabilityError("workers");
   if (!persistence.capabilities.workerDelivery || !persistence.workerDelivery) throw new PersistenceCapabilityError("workerDelivery");
   if (messageCapture !== "content") throw new Error('orchestrator requires message capture "content"');

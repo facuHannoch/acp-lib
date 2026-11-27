@@ -1,3 +1,5 @@
+import { answerForwardedWorkerPermission } from "../permissions/conversation.ts";
+import type { FindGivingConversation } from "./permissions.ts";
 import { isAgentConversationId } from "../agent-ids.ts";
 import type { AgentConversationManager } from "../agent/config.ts";
 import { WorkerPolicyError } from "../errors.ts";
@@ -19,7 +21,8 @@ export function withDelegationTools(
   config: OrchestratorConfig,
   orchestrator: () => Orchestrator,
   conversations: () => Pick<AgentConversationManager, "get">,
-  names = resolveDelegationToolNames(config.toolNames),
+  names = resolveDelegationToolNames(config.toolNames, config.workerApprovals),
+  findGivingConversation?: FindGivingConversation,
 ): NativeFunctionsConfig {
   for (const name of Object.values(names)) {
     if (functions && Object.hasOwn(functions.tools, name)) throw new Error(`native delegation tool name is already registered: ${name}`);
@@ -79,6 +82,16 @@ export function withDelegationTools(
     ...functions,
     tools: {
       ...functions?.tools,
+      ...(names.answer ? { [names.answer]: tool(
+        "Answer a pending worker approval for this conversation. Use the request and one-time choice from its notice.",
+        { type: "object", properties: { request: string, option: { type: "string", enum: ["allow_once", "reject_once"] } },
+          required: ["request", "option"], additionalProperties: false },
+        async (args, caller) => ({
+          status: caller.kind === "conversation" && await answerForwardedWorkerPermission(
+            findGivingConversation?.(caller.conversationId), args.request as string, args.option as string, caller.policyNames,
+          ) ? "answered" : "request_unavailable",
+        }),
+      ) } : {}),
       [names.delegate]: tool(`Omit worker to open a worker. ${WORKER_SEND_DESCRIPTION}`, {
         type: "object",
         properties: { worker: string, text: string, about: string, redirect: { type: "boolean" },

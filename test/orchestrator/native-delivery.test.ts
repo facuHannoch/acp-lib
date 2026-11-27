@@ -173,3 +173,73 @@ for (const state of ["pending", "blocked_policy", "missing", "retired"] as const
     } finally { await rig.clean(); }
   }, 35_000);
 }
+
+test.each([["direct", false], ["after redirect", true]] as const)(
+  "an idle native model answers an eligible worker ask without a UI responder (%s)", async (_case, redirect) => {
+  const rig = await nativeRig();
+  const permissionGate = join(rig.directory, "allow-worker-ask");
+  const workerGate = join(rig.directory, "worker-tool-boundary");
+  const provider = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    const { messages } = await request.json() as { messages: { role: string; content?: string }[] };
+    const last = messages.at(-1);
+    const text = last?.content ?? "";
+    const approval = last?.role === "user" && text.includes("worker_approval")
+      ? /"request":"([a-f0-9-]+)"/.exec(text)?.[1] : undefined;
+    const tool = (name: string, args: object) => ({
+      delta: { tool_calls: [{ index: 0, id: name, function: { name, arguments: JSON.stringify(args) } }] },
+      finish_reason: "tool_calls",
+    });
+    const choice = approval ? tool("answer_worker", { request: approval, option: "allow_once" })
+      : last?.role === "user" && text.includes("Take over read")
+        ? tool("delegate", { worker: "w1", redirect: true, text: "[lifecycle:readpermission] read" })
+        : last?.role === "user" && text.includes("Delegate read")
+          ? tool("delegate", { text: redirect ? "[lifecycle:tool] original" : "[lifecycle:readpermission] read" })
+          : { delta: { content: "Ready." }, finish_reason: "stop" };
+    return new Response(`data: ${JSON.stringify({ choices: [choice] })}\n\ndata: [DONE]\n\n`,
+      { headers: { "content-type": "text/event-stream" } });
+  } });
+  rig.harness.config = {
+    version: 1, system: "Worker model approval fixture", defaultPolicy: "owner",
+    policies: { owner: { fallback: "deny", tools: { delegate: "allow", answer_worker: "allow" } } },
+    model: { protocol: "openai-compatible", providerId: "fixture", baseUrl: `http://127.0.0.1:${provider.port}/v1`, model: "fixture" },
+  };
+  try {
+    const agent = await rig.open({
+      adapters,
+      conversationDefaults: { env: {
+        LIFECYCLE_PERMISSION_GATE_FILE: permissionGate, LIFECYCLE_TOOL_GATE_FILE: workerGate,
+        LIFECYCLE_END_GATE_FILE: join(rig.directory, "hold-old-end"),
+      } },
+      orchestrator: { workers, workerApprovals: "model", toolNames: { answer: "answer_worker" }, policies: {
+        owner: { delegation: scope, modelApproval: { rules: { "kind:read": "allow" }, shareReadPaths: ["README.md"] } },
+      } },
+    });
+    const first = await agent.conversations.create({ title: "Alice", answersPermissions: false });
+    const conversation = redirect ? await agent.conversations.create({ title: "Bob", answersPermissions: false }) : first;
+    const boundary = Promise.withResolvers<void>();
+    agent.events.subscribe(({ event }) => {
+      if (event.record.kind === "tool_call" && event.record.state === "announced" &&
+        event.record.agentConversationId !== first.id && event.record.agentConversationId !== conversation.id) boundary.resolve();
+    });
+    const accepted = Promise.withResolvers<void>(), idle = Promise.withResolvers<void>();
+    conversation.subscribe(({ event }) => {
+      if (event.kind === "permission_resolved" && event.by === "delegator" && event.outcome === "approved") accepted.resolve();
+    });
+    agent.events.subscribeWorkers(({ event }) => { if (event.kind === "worker_idle") idle.resolve(); });
+    expect((await first.prompt("Delegate read")).text).toContain("Ready.");
+    if (redirect) {
+      await waitFor(boundary.promise, "worker's original tool boundary");
+      expect((await conversation.prompt("Take over read")).text).toContain("Ready.");
+      await writeFile(workerGate, "");
+    }
+    await writeFile(permissionGate, "");
+    await waitFor(accepted.promise, "approval answered by the model");
+    await waitFor(idle.promise, "worker completed after approval");
+    const staged = await agent.persistence.workerDelivery!.readStaged("1:delegate");
+    expect(staged?.outcome).toMatchObject({ kind: "result", text: "permission=selected" });
+    expect(staged?.delivery.destination).toEqual({ kind: "native", id: conversation.id });
+  } finally {
+    await rig.clean();
+    await provider.stop(true);
+  }
+}, 20_000);

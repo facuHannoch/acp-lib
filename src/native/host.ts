@@ -204,21 +204,53 @@ export class NativeHarnessHost {
       this.#log, config.onChannelChangeBlocked);
     if (workerDelivery) this.#workerDelivery = new NativeWorkerDelivery(
       workerDelivery, () => this.#state === "running",
-      ({ id, destination, source, text, policyNames }) => this.#changes.enqueue(destination.id, async () => {
-        if (this.#state !== "running" || await this.#changes.pendingChange(destination.id)) return false;
-        const client = this.#client();
-        const params = { channel: destination.id, notice: { id, source, text, policyNames: [...policyNames] } };
-        try {
-          await client.notify(params);
-        } catch (error) {
-          if (codeOf(error) !== "timeout" || client !== this.#connection?.client) throw error;
-          await client.notify(params);
-        }
-        return true;
-      }),
+      ({ id, destination, source, text, policyNames }) =>
+        this.#sendWorkerNotice(destination.id, { id, source, text, policyNames: [...policyNames] }),
     );
     if (channels && fileHasPendingChannelChanges(records)) {
       this.#log.warn("native_file_channel_changes_ignored", { sessionId: this.sessionId });
+    }
+  }
+
+  #sendWorkerNotice(channel: string, notice: Parameters<HarnessClient["notify"]>[0]["notice"], signal?: AbortSignal) {
+    return this.#changes.enqueue(channel, async () => {
+      if (this.#state !== "running" || await this.#changes.pendingChange(channel) || signal?.aborted) return false;
+      const client = this.#client();
+      try {
+        await client.notify({ channel, notice });
+      } catch (error) {
+        if (codeOf(error) !== "timeout" || client !== this.#connection?.client || signal?.aborted) throw error;
+        await client.notify({ channel, notice });
+      }
+      return true;
+    });
+  }
+
+  /** Approval delivery may wait for an existing reconnect, without starting a process. */
+  async sendWorkerApprovalNotice(channel: string, notice: Parameters<HarnessClient["notify"]>[0]["notice"],
+    signal: AbortSignal): Promise<boolean> {
+    const original = this.#connection;
+    if (this.#state !== "running" || !original || signal.aborted) return false;
+    try {
+      return await this.#sendWorkerNotice(channel, notice, signal);
+    } catch (error) {
+      if (!ambiguous(error) || signal.aborted) return false;
+      const ready = await new Promise<boolean>(resolve => {
+        const finish = (available: boolean) => {
+          unsubscribe();
+          signal.removeEventListener("abort", check);
+          resolve(available);
+        };
+        const check = () => {
+          if (signal.aborted || this.#stopped || this.#state === "failed") finish(false);
+          else if (this.#state === "running" && this.#connection !== original) finish(true);
+        };
+        const unsubscribe = this.subscribeState(check);
+        signal.addEventListener("abort", check, { once: true });
+        check();
+      });
+      if (!ready) return false;
+      return this.#sendWorkerNotice(channel, notice, signal).catch(() => false);
     }
   }
 
