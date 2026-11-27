@@ -1,0 +1,279 @@
+name: acp-lib
+
+# Default values inherited by every future Agent creation unless overridden.
+defaults:
+  # OpenCode without an explicit model/inference_source uses its credential-free
+  # hosted provider; selecting it consents to external processing of prompts and workspace context.
+  harness: claude        # claude | codex | gemini | copilot | kimi | minimax | opencode | pi
+  runtime:
+    type: host           # host | docker
+    ports: []            # fixed/automatic slots, e.g. [3000, auto]
+    limits:              # enforced by Docker; unsupported by the host provider
+      cpu: null
+      memory: null       # exact bytes or B/KiB/MiB/GiB/TiB, e.g. 2GiB
+      pids: null
+  workspace:
+    environment: filesystem  # filesystem | docker | vm
+    mode: worktree           # worktree | clone | self | none
+    git:
+      branch: null           # explicit branch override
+      repository: null       # clone a different repo; null = current repo
+      submodules: []         # submodule paths to init
+    on_provision: null       # shell script run once after workspace creation
+    persist_home: false       # durable agent home across runtime recreation
+    # home_ref: codex-primary # optional hub-scoped home shared concurrently by assigned agents
+    stores: []               # shared package caches: pnpm, npm, uv, micromamba
+  voice:
+    speech_to_text: azure-stt
+    text_to_speech: piper-tts
+    language: auto
+    voices:
+      es: es_ES-davefx-medium
+      # en: en_US-mike-medium
+      en: en_GB-vctk-medium#p225
+    speed: 1.0
+  on_start: []             # commands run every time the runtime starts
+  session_prompt: null
+  mcp_groups: []
+  skill_groups: []
+  skills: []
+  acp_session_idle_timeout: 20m
+  maximum_concurrent_turns: 16 # active turns across this Agent's conversations
+  # runtime_idle_timeout: 60m
+  # How a harness's tool-permission requests are answered:
+  #   approve — automatically allowed
+  #   cancel  — automatically refused
+  #   ask     — held until someone with the chat_approve tier answers it in the
+  #             chat, whether or not a browser is open
+  default_permission: approve
+  persistence:
+    transcript:
+      preset: detailed
+    audit_log:
+      capture:
+        reasoning: none
+        tools: input
+        lifecycle: true
+        transitions: metadata
+        permissions: decision
+        usage: true
+        configuration: selections
+
+capabilities:
+  # stt-moonshine:
+  #   type: transcribe
+  #   description: Moonshine base (English only, CPU)
+  #   provider: { api: openai, endpoint: http://127.0.0.1:8012/v1, model: moonshine/base }
+  # stt-whisper-small:
+  #   type: transcribe
+  #   description: Whisper small (GPU)
+  #   provider: { api: openai, endpoint: http://127.0.0.1:8011/v1, model: small }
+
+  stt-whisper-turbo:
+    type: transcribe
+    description: Whisper large-v3-turbo (GPU)
+    provider: { server: whisper-turbo, model: large-v3-turbo }
+  stt-whisper-base:
+    type: transcribe
+    description: Whisper base (CPU)
+    provider: { server: whisper-base, model: base }
+
+
+  azure-stt:
+    type: transcribe
+    description: Azure speech to text
+    provider:
+      api: azure-speech
+      endpoint: https://eastus.stt.speech.microsoft.com
+      model: default
+      api_key: $AZURE_SPEECH_KEY        # read from the Hub's environment or .secrets/common/.env
+    language_locales: { es: es-AR, en: en-US }   # regional locales for transcription
+  deepgram-stt:
+    type: transcribe
+    description: Deepgram Nova-3
+    provider:
+      api: deepgram
+      endpoint: https://api.deepgram.com
+      model: nova-3
+      api_key: $DEEPGRAM_API_KEY
+    params:                                   # optional: words to recognize better
+      keyterms: { type: string_array, default: [ACP, acp-client, agentco, chatStore] }
+
+
+  # Text to Speech
+  piper-tts:
+    type: speak
+    description: Local Piper voices
+    provider: { server: piper, model: en_US-lessac-medium }
+  deepgram-tts:
+    type: speak
+    description: Deepgram Aura-2 voices
+    provider:
+      api: deepgram
+      endpoint: https://api.deepgram.com
+      model: aura-2
+      api_key: $DEEPGRAM_API_KEY
+  azure-tts:                            # optional: Azure voices
+    type: speak
+    description: Azure voices
+    provider:
+      api: azure-speech
+      endpoint: https://eastus.tts.speech.microsoft.com
+      model: default
+      api_key: $AZURE_SPEECH_KEY
+      # voices:
+      #   es: 
+
+
+model_servers:
+  piper:
+    backend: piper                 # port 5000 by default
+    # models: [en_US-lessac-medium]  # Piper voice names
+    models:
+      - en_US-lessac-medium
+      - en_US-ryan-high
+      - en_US-ljspeech-high
+      - en_US-amy-medium
+      - en_US-kristin-medium
+      - en_US-hfc_female-medium
+      - en_US-hfc_male-medium
+      - en_US-joe-medium
+      - en_US-john-medium
+      - en_US-bryce-medium
+      - en_US-norman-medium
+      - en_US-sam-medium
+      - en_US-arctic-medium
+      - en_GB-vctk-medium
+      - en_GB-northern_english_male-medium
+      - en_GB-alba-medium
+      - es_AR-daniela-high
+      - es_ES-davefx-medium
+      - ja_JP-hi_fi_captain-medium
+      - zh_CN-huayan-medium
+      - zh_CN-xiao_ya-medium
+      # - libritts_r
+     # ensure: started                # the Hub starts it with itself
+  whisper-turbo:
+    backend: whisper.cpp
+    models: [large-v3-turbo]       # one model per whisper.cpp server
+    port: 8090
+    # ensure: started
+  whisper-base:
+    backend: whisper.cpp
+    models: [base]
+    port: 8091
+    # ensure: started
+
+
+# Hub-wide admission ceilings. Null leaves local deployments unlimited.
+# Hub-wide resident conversation sessions, including idle ones.
+capacity:
+  maximum_started_agents: null
+  maximum_provisioned_agents: null
+  maximum_open_harness_sessions: null
+  maximum_voice_sessions: null
+  maximum_calls: null
+
+
+server:
+  port: 3409
+  agent_port: 3413
+  # hub_url: https://agents.theday0.com
+  http_secret: tds
+  trusted_proxy: true
+  # Isolated executable artifact previews. Remote use requires wildcard DNS/TLS.
+  outbound:
+    mcp: community      # off | bundled | trusted | community | any
+    skills: trusted     # same five modes; community acts as trusted for skills
+
+    # Replaces the shipped list entirely. One adapter per entry.
+    trusted_catalogs:
+      - docker: https://desktop.docker.com/mcp/catalog/v3/catalog.yaml
+      - marketplace: github.com/anthropics/claude-plugins-official
+      - marketplace: github.com/anthropics/skills
+
+    # Registry publishers you vouch for, by verified domain. Default: none.
+    trusted_publishers:
+      - notion.com
+ #  preview:
+ #    enabled: true
+ #    base_domain: previews.agents.theday0.com
+ #    allow_loopback_origins: true
+ #    # Permit declared localhost/127.0.0.0/8/[::1] HTTP(S) API/form targets.
+ #  # Stable public sites backed only by frozen artifact versions.
+ #  public_artifacts:
+ #    enabled: false
+ #    base_domain: null
+ #    # On public sites this refers to each visitor's machine, not the hub host.
+ #    allow_loopback_origins: true
+  public_allow_cidrs: 
+    - 100.64.0.0/10
+  tiers:
+    reads:        public
+    lifecycle:    public
+    tasks:        public
+    chat_read:    public
+    chat_write:   public
+    chat_approve: public
+    resources_read:  public
+    resources_write: public
+    resources_publish: public
+    processes_read: public
+    processes_write: public
+    processes_execute: public
+    auth:         public
+    registration: public
+    debug:        public
+    terminal:     public
+    capabilities: public
+    tools_write:  public
+  # public_open: true      # accept connections from any IP
+  # trusted_proxy: true    # set when running behind a reverse proxy
+  # http_secret: "$AGENTS_HTTP_SECRET"
+  # Hub diagnostics to stderr: debug | info | warn | error (default info).
+  # "debug" also turns on the raw ACP protocol trace from the agent sessions.
+  # Override per-run with `agents hub start --log-level debug` (or --verbose).
+  # log_level: info
+
+task_policy:
+  on_completion: retired   # retired | unprovisioned | provisioned | started
+  agent_config:
+    harness: claude
+    runtime:
+      type: host
+      ports: [auto]
+    workspace:
+      environment: filesystem
+      mode: worktree
+
+# Named Agent creation templates. These are passive until provisioned/added;
+# only `ensure` creates an instance automatically.
+agents:
+
+  opencode-1:
+    harness:
+      name: opencode
+      # Where there options here ? like to send custom arguments to opencode
+      model: opencode-go/deepseek-v4.1-flash
+      # There is a bug that prepends `opencode-ai` to the model id. If opencode is logged in, then all the models should appear
+# Model, I think actually can mean two different things: if we make model select one of the inference_sources, it will not actaully select a model. if theres no inference source it will actually try to select the said model no wait that seems consistent1
+    #   model: deepseek
+    # inference_sources:
+    #   deepseek:
+    #     endpoint: https://opencode.ai/zen/go/v1/responses
+    #     api_key: $OPENCODE_GO_API_KEY
+    #     model: opencode-go/deepseek-v4.1-flash
+
+
+  
+  atlas:
+    ensure: started
+    harness:
+      name: claude
+      model: opus
+
+  bob:
+    ensure: started
+    harness:
+      name: codex
+      model: sol 6.1

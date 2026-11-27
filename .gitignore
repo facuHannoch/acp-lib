@@ -2,7 +2,7 @@
 /.res/local/
 .env
 
-node_modules/
+node_modules
 .agents/.secrets/
 .agents/.workspaces/
 .agents/.artifacts/
