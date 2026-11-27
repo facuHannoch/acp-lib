@@ -6,7 +6,7 @@ import { AcpWorkerDelivery } from "./orchestrator/acp-delivery.ts";
 import { DurableWorkerAssignments } from "./orchestrator/durable-assignments.ts";
 import { workerConsumerApi, type WorkerConsumerApi } from "./orchestrator/consumer-api.ts";
 import { Orchestrator } from "./orchestrator/orchestrator.ts";
-import { validateOrchestrator } from "./orchestrator/config.ts";
+import { resolveDelegationToolNames, validateOrchestrator } from "./orchestrator/config.ts";
 import { validatePermissionConsumerConfig } from "./permissions/consumer-config.ts";
 import { inheritPermissionConfig, ownPermissions } from "./permissions/policy.ts";
 import { randomUUID } from "node:crypto";
@@ -162,8 +162,11 @@ export class Agent {
     this.persistence = persistence;
     this.adapters = adapters;
     const orchestration = config.orchestrator;
-    if (orchestration) this.wrapNativeFunctions = functions => withDelegationTools(functions, orchestration,
-      () => this.orchestrator!, () => this.conversations);
+    if (orchestration) {
+      const toolNames = resolveDelegationToolNames(orchestration.toolNames);
+      this.wrapNativeFunctions = functions => withDelegationTools(functions, orchestration,
+        () => this.orchestrator!, () => this.conversations, toolNames);
+    }
     const channels = config.harness ? protectedChannels(persistence) : undefined;
     this.nativeHarness = config.harness
       ? new NativeHarnessHost({

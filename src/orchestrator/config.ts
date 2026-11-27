@@ -3,7 +3,12 @@ import type { PermissionSettings } from "../permissions/matcher.ts";
 import { PersistenceCapabilityError } from "../persistence/backend.ts";
 import type { PersistenceBackend, RecordCaptureLevel } from "../persistence/backend.ts";
 
+const defaultDelegationToolNames = { delegate: "delegate", check: "check", list: "list", stop: "stop" } as const;
+type DelegationToolNames = Readonly<Record<keyof typeof defaultDelegationToolNames, string>>;
+
 export interface OrchestratorConfig {
+  /** Model-facing names for ACP-client's native worker tools. Unspecified names keep their defaults. */
+  readonly toolNames?: Partial<DelegationToolNames>;
   /** Each entry corresponds to a configured native harness policy name. */
   readonly policies?: Readonly<Record<string, {
     readonly delegation: DelegationPolicy;
@@ -23,6 +28,26 @@ export interface OrchestratorConfig {
     /** Time idle before stopping the provider process. Defaults to ten minutes. */
     readonly idleStopMs?: number | false;
   };
+}
+
+export function resolveDelegationToolNames(input: OrchestratorConfig["toolNames"]): DelegationToolNames {
+  if (input === undefined) return defaultDelegationToolNames;
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("orchestrator.toolNames must be a map of worker operations to tool names");
+  }
+  const names: Record<keyof DelegationToolNames, string> = { ...defaultDelegationToolNames };
+  for (const [operation, name] of Object.entries(input)) {
+    if (!Object.hasOwn(defaultDelegationToolNames, operation)) {
+      throw new Error(`unknown orchestrator tool operation: ${operation}`);
+    }
+    if (typeof name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+      throw new Error(`invalid orchestrator tool name for ${operation}`);
+    }
+    names[operation as keyof DelegationToolNames] = name;
+  }
+  const resolved = Object.values(names);
+  if (new Set(resolved).size !== resolved.length) throw new Error("orchestrator tool names must be distinct");
+  return names;
 }
 
 export function validateOrchestrator(

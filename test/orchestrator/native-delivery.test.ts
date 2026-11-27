@@ -11,6 +11,42 @@ const scope = { use: true, scope: "all", redirect: true } as const;
 const adapters = { main: { kind: "native" }, worker: { command: [process.execPath, workerPeer] } } as const;
 const workers = { adapterId: "worker", limit: 1, idleStopMs: false } as const;
 
+test("stdio worker aliases follow policy on reopen and keep historical names", async () => {
+  const rig = await nativeRig();
+  const call = (name: string, id: string): Step =>
+    ({ content: null, calls: [{ id, name, arguments: {} }] });
+  rig.script([
+    call("list_workers", "before"), reply("First list."),
+    call("workers_list", "after"), reply("Second list."),
+  ]);
+  async function open(list: string) {
+    rig.harness.config = {
+      version: 1, system: "Worker list test", model: { protocol: "scripted", script: join(rig.directory, "script.jsonl") },
+      defaultPolicy: "owner", policies: { owner: { fallback: "deny", tools: { [list]: "allow" } } },
+    };
+    return rig.open({ adapters, orchestrator: { workers, toolNames: { list }, policies: { owner: { delegation: scope } } } });
+  }
+  try {
+    const first = await open("list_workers");
+    const conversation = await first.conversations.create({ title: "Worker aliases" });
+    expect((await conversation.prompt("List workers")).text).toBe("First list.");
+    expect(await first.nativeHarness!.toolInvocation("1:before")).toMatchObject({ tool: "list_workers", state: "succeeded" });
+    await first.close();
+
+    const reopened = await open("workers_list");
+    const restored = await reopened.conversations.open(conversation.id);
+    expect((await restored.conversation.prompt("List workers again")).text).toBe("Second list.");
+    const host = reopened.nativeHarness!;
+    const offeredNames = (await host.tools()).map(tool => tool.name);
+    expect(offeredNames).toContain("workers_list");
+    expect(offeredNames).not.toContain("list_workers");
+    expect(await host.toolInvocation("1:before")).toMatchObject({ tool: "list_workers", state: "succeeded" });
+    expect(await host.toolInvocation("2:after")).toMatchObject({ tool: "workers_list", state: "succeeded" });
+  } finally {
+    await rig.clean();
+  }
+}, 20_000);
+
 test("stdio delegation redirects at an ACP tool boundary, forwards the ask, and delivers one composed notice", async () => {
   const rig = await nativeRig({
     defaultPolicy: "owner",

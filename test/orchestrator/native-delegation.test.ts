@@ -8,7 +8,7 @@ import type { ItemStatus } from "../../src/native-harness/src/client.ts";
 import { modelScenario } from "../../src/native-harness/test/helpers/scenario.ts";
 import { createNativeFunctionHost } from "../../src/native/functions.ts";
 import type { NativeFunctionContext } from "../../src/native/functions.ts";
-import type { OrchestratorConfig } from "../../src/orchestrator/config.ts";
+import { resolveDelegationToolNames, type OrchestratorConfig } from "../../src/orchestrator/config.ts";
 import { takenSender } from "../../src/native/delegation-sender.ts";
 import { withDelegationTools } from "../../src/orchestrator/native-delegation.ts";
 import { matchWorkerPermissionLevel } from "../../src/orchestrator/policy.ts";
@@ -226,4 +226,22 @@ test("native delegation declines unknown or absent policies, and uses explicit e
     { sender: "notice-label", policy: allowed, policyNames: ["owner"], workerPermissions: [{ default: "ask" }], isOwner: true },
   ]);
   expect(() => withDelegationTools({ tools: { list } }, config, getOrchestrator, getConversations)).toThrow("native delegation tool name is already registered: list");
+  const renamed = { ...config, toolNames: { list: "list_workers" } };
+  const mapped = withDelegationTools({ tools: { list } }, renamed, getOrchestrator, getConversations);
+  expect(mapped.tools.list).toBe(list);
+  await expect(mapped.tools.list_workers!.handler({}, { ...context, tool: "list_workers" })).resolves.toEqual([]);
+  await expect(mapped.tools.list_workers!.handler({}, { ...context, tool: "list_workers", policyNames: ["unconfigured"] }))
+    .rejects.toMatchObject({ code: "delegation_policy_unknown" });
+  expect(() => withDelegationTools({ tools: { list_workers: list } }, renamed, getOrchestrator, getConversations))
+    .toThrow("native delegation tool name is already registered: list_workers");
+});
+
+test("worker tool maps reject unknown operations, invalid labels and resolved collisions", () => {
+  expect(resolveDelegationToolNames({ list: "list_workers" })).toEqual({
+    delegate: "delegate", check: "check", list: "list_workers", stop: "stop",
+  });
+  expect(() => resolveDelegationToolNames({ list: "check" })).toThrow("tool names must be distinct");
+  expect(() => resolveDelegationToolNames({ list: "list workers" })).toThrow("invalid orchestrator tool name for list");
+  const unknown = { list: "list_workers", inspect: "inspect_worker" };
+  expect(() => resolveDelegationToolNames(unknown)).toThrow("unknown orchestrator tool operation: inspect");
 });

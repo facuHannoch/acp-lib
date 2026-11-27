@@ -2032,12 +2032,22 @@ export async function workerControls(agent: Agent, handle: string) {
 }
 ```
 
-The harness exposes `delegate`, `check`, `list` and `stop` as native tools.
+The harness exposes `delegate`, `check`, `list` and `stop` by default.
 Grant them in the harness policy as well as configuring the corresponding
 orchestrator policy. For `delegate`, send `{ text, about? }` to create a
 worker, or include `worker` to send to a known handle. `check` and `stop`
-take `{ worker }`; `list` takes an empty object. These names are reserved
-while native delegation is enabled. The trusted host can also use
+take `{ worker }`; `list` takes an empty object.
+
+Set `orchestrator.toolNames: { list: "list_workers" }` to rename the list
+tool. Use the exposed name in the harness policy, for example
+`harness.config.policies.owner.tools.list_workers = "allow"`. Omitted
+operations keep their default names. Names must be distinct, use 1–64
+ASCII letters, digits, underscores or hyphens, and avoid collisions with
+consumer functions and reserved harness names. Close and reopen the Agent
+with the updated map and policy to apply a rename. Historical calls retain
+the name originally used.
+
+The trusted host can also use
 `agent.orchestrator` with a consumer actor. Use
 `agent.events.subscribeWorkers` for worker lifecycle events. Event kinds are
 `worker_opened`, `worker_busy`, `worker_idle`, `worker_replied`,

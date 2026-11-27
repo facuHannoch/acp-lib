@@ -1,7 +1,7 @@
 import { isAgentConversationId } from "../agent-ids.ts";
 import type { AgentConversationManager } from "../agent/config.ts";
 import { WorkerPolicyError } from "../errors.ts";
-import type { OrchestratorConfig } from "./config.ts";
+import { resolveDelegationToolNames, type OrchestratorConfig } from "./config.ts";
 import type { SendWorkerInput, WorkerActor } from "./contracts.ts";
 import type { Orchestrator } from "./orchestrator.ts";
 import { composeDelegationPolicy } from "./policy.ts";
@@ -9,7 +9,6 @@ import { WORKER_SEND_DESCRIPTION } from "./tool-descriptions.ts";
 import { ownPermissions } from "../permissions/policy.ts";
 import { FunctionError, type NativeFunction, type NativeFunctionContext, type NativeFunctionsConfig } from "../native/functions.ts";
 
-const names = ["delegate", "check", "list", "stop"] as const;
 const string = { type: "string" } as const;
 const handleOnly = { type: "object", properties: { worker: string }, required: ["worker"], additionalProperties: false };
 const denyDelegation = { use: false, scope: "none", redirect: false } as const;
@@ -20,8 +19,9 @@ export function withDelegationTools(
   config: OrchestratorConfig,
   orchestrator: () => Orchestrator,
   conversations: () => Pick<AgentConversationManager, "get">,
+  names = resolveDelegationToolNames(config.toolNames),
 ): NativeFunctionsConfig {
-  for (const name of names) {
+  for (const name of Object.values(names)) {
     if (functions && Object.hasOwn(functions.tools, name)) throw new Error(`native delegation tool name is already registered: ${name}`);
   }
   const policies = new Map(Object.entries(config.policies ?? {}).map(([name, policy]) => [name, {
@@ -79,7 +79,7 @@ export function withDelegationTools(
     ...functions,
     tools: {
       ...functions?.tools,
-      delegate: tool(`Omit worker to open a worker. ${WORKER_SEND_DESCRIPTION}`, {
+      [names.delegate]: tool(`Omit worker to open a worker. ${WORKER_SEND_DESCRIPTION}`, {
         type: "object",
         properties: { worker: string, text: string, about: string, redirect: { type: "boolean" },
           assignment: { type: "string", enum: ["new"] } },
@@ -92,11 +92,11 @@ export function withDelegationTools(
         }
         return orchestrator().open(actor, input);
       }),
-      check: tool("Check a worker by handle, including its latest staged result and delivery state. Results for native destinations may be absent until the harness opens.", handleOnly,
+      [names.check]: tool("Check a worker by handle, including its latest staged result and delivery state. Results for native destinations may be absent until the harness opens.", handleOnly,
         (args, actor) => orchestrator().check(actor, args.worker as string)),
-      list: tool("List visible workers with their latest staged results and delivery states. Results for native destinations may be absent until the harness opens.", { type: "object", properties: {}, additionalProperties: false },
+      [names.list]: tool("List visible workers with their latest staged results and delivery states. Results for native destinations may be absent until the harness opens.", { type: "object", properties: {}, additionalProperties: false },
         (_args, actor) => orchestrator().list(actor)),
-      stop: tool('Interrupt running work and clear pending prompts. Returns "stopped" after an interruption or "idle" if there was no work to stop.', handleOnly,
+      [names.stop]: tool('Interrupt running work and clear pending prompts. Returns "stopped" after an interruption or "idle" if there was no work to stop.', handleOnly,
         async (args, actor) => ({ status: await orchestrator().stop(actor, args.worker as string) })),
     },
   };
