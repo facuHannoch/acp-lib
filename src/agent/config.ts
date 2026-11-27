@@ -1,4 +1,3 @@
-import type { ReminderServiceOptions } from "../native/reminders/service.ts";
 import type { OrchestratorConfig } from "../orchestrator/config.ts";
 import type { ConversationPermissionConfig, PermissionPolicyConfig } from "../permissions/policy.ts";
 import type { OperationLifecycleConfig } from "../operations/contracts.ts";
@@ -87,7 +86,6 @@ export interface AgentConfig extends PermissionPolicyConfig {
    * process starts on first use, not when the Agent or a conversation opens.
    */
   readonly harness?: AgentHarnessConfig;
-  readonly reminders?: Pick<ReminderServiceOptions, "authorize" | "limits">;
   readonly identity?: AgentIdentityRuntime | CheckpointBackedIdentityConfig;
   readonly identityConsistency?: IdentityConsistency;
   readonly identityTimeoutMs?: number;

@@ -77,9 +77,9 @@ describe("fromAcp", () => {
 
 describe("conversationCapabilities of an ACP controller", () => {
   test("never native steering; backend unknown without capabilities", () => {
-    expect(conversationCapabilitiesFromAcp(null)).toEqual({ nativeSteering: false, reminders: false, backend: null });
+    expect(conversationCapabilitiesFromAcp(null)).toEqual({ nativeSteering: false, backend: null });
     const acp = initialize({ loadSession: true });
-    expect(conversationCapabilitiesFromAcp(acp)).toEqual({ nativeSteering: false, reminders: false, backend: fromAcp(acp) });
+    expect(conversationCapabilitiesFromAcp(acp)).toEqual({ nativeSteering: false, backend: fromAcp(acp) });
   });
 
   test("reading from a client: absent, not connected yet (NotConnectedError is unknown, not thrown), connected; other errors propagate", () => {
@@ -96,7 +96,7 @@ describe("conversationCapabilities of an ACP controller", () => {
     cleanups.push(() => rm(directory, { recursive: true, force: true }));
     const controller = new HarnessController({ adapter: { command: ["bun", ECHO] }, adapterId: "fixture", cwd: directory });
     cleanups.push(() => controller.stop());
-    expect(controller.conversationCapabilities).toEqual({ nativeSteering: false, reminders: false, backend: null });
+    expect(controller.conversationCapabilities).toEqual({ nativeSteering: false, backend: null });
     expect(() => controller.capabilities).toThrow();
     await controller.start();
     const after = controller.conversationCapabilities;
@@ -119,7 +119,7 @@ describe("conversationCapabilities of an ACP controller", () => {
     cleanups.push(() => controller.stop());
     await controller.start();
     expect(controller.isDegraded).toBe(true);
-    expect(controller.conversationCapabilities).toEqual({ nativeSteering: false, reminders: false, backend: null });
+    expect(controller.conversationCapabilities).toEqual({ nativeSteering: false, backend: null });
     expect(() => controller.capabilities).toThrow("requires ACP");
   }, 20_000);
 });

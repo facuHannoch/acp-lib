@@ -1,4 +1,3 @@
-import { nativeConversationCapabilities } from "./capabilities.ts";
 import { advanceItemReceipts } from "./item-receipts.ts";
 import { terminalNativeTurns } from "./metering.ts";
 import { NativeInferenceSource } from "../metering/native/source.ts";
@@ -213,7 +212,17 @@ export class NativeController implements ConversationController, ChannelPort {
   subscribeUsageUpdate(_listener: UsageListener): () => void { return () => undefined; }
   get currentSessionId(): string | null { return this.#host.sessionId; }
   get conversationCapabilities(): ConversationCapabilities {
-    return nativeConversationCapabilities();
+    return {
+      nativeSteering: true,
+      // The harness times out model calls, approvals and tools itself and reports the outcome.
+      supervision: "backend",
+      freshContext: false,
+      backend: {
+        loadSession: false, forkSession: false, listSessions: false,
+        media: { image: false, audio: false, file: false },
+        mcpServers: { stdio: false, http: false, sse: false },
+      },
+    };
   }
 
   /** The last confirmed delivery milestone of an input this conversation sent, if any. */

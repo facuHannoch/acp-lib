@@ -13,7 +13,6 @@ import type { MediaCapabilities } from "../media/acp.ts";
 export interface ConversationCapabilities {
   /** Steer by injecting into the running turn; false for the `HarnessController`. */
   nativeSteering: boolean;
-  reminders?: boolean;
   /** Null when unknown: before the agent's `initialize`, and in PTY mode. */
   backend: BackendCapabilities | null;
   /**
@@ -64,7 +63,7 @@ export function fromAcp(capabilities: Capabilities): BackendCapabilities {
 
 /** What an ACP controller reports: no native steering; `backend` unknown until the agent has answered. */
 export function conversationCapabilitiesFromAcp(capabilities: Capabilities | null): ConversationCapabilities {
-  return { nativeSteering: false, reminders: false, backend: capabilities ? fromAcp(capabilities) : null };
+  return { nativeSteering: false, backend: capabilities ? fromAcp(capabilities) : null };
 }
 
 /** The same, read from an ACP client that may be absent (PTY mode) or not connected yet. */

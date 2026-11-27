@@ -1,9 +1,8 @@
-import { REMINDER_SCHEMA } from "./sqlite-reminders.ts";
 import type { Database } from "bun:sqlite";
 import { contentText } from "../media/content.ts";
 import type { PersistedContent } from "./backend.ts";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 22;
+export const SQLITE_AGENT_SCHEMA_VERSION = 21;
 
 const WORKERS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS workers (
@@ -689,7 +688,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
@@ -784,7 +783,6 @@ export function migrateSqliteAgentSchema(database: Database): void {
       if (!meteringColumns.some(({ name }) => name === "native_metering_proof_json")) {
         database.exec("ALTER TABLE metering_records ADD COLUMN native_metering_proof_json TEXT");
       }
-      if (version < 22) database.exec(REMINDER_SCHEMA);
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(
           "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",

@@ -52,7 +52,6 @@ import type { MediaStore } from "../media/store.ts";
 export class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle {
   private readonly outputMedia = new WeakMap<object, string>();
   private readonly deliveredMessages = new Map<string, { ids: readonly string[]; throughSequence: number }>();
-  get reminders() { return this.agent.reminders; }
   readonly nativeMetering: DurableNativeMetering;
 
   constructor(

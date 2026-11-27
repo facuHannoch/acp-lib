@@ -1,5 +1,3 @@
-import { createSqliteReminderPersistence } from "./sqlite-reminders.ts";
-import type { ReminderPersistence } from "./reminders.ts";
 import { serializeNativeMeteringProof } from "../metering/native/proof.ts";
 import { SqliteWorkers } from "./sqlite-workers.ts";
 import { randomUUID } from "node:crypto";
@@ -176,7 +174,6 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly recoveryCheckpoints: ConversationRecoveryCheckpointRepository;
   readonly identity: IdentityPersistence;
   readonly channels: ChannelPersistence;
-  readonly reminders: ReminderPersistence;
   readonly workerDelivery?: SqliteWorkerDelivery;
   readonly workers: NonNullable<PersistenceScope["workers"]>;
   private readonly workerOwnerId = randomUUID();
@@ -209,7 +206,6 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       fullTextSearch,
       identity: true,
       channels: true,
-      reminders: true,
       workers: true,
       workerDelivery: Boolean(ownerLock),
       auditOutbox: true,
@@ -239,7 +235,6 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     this.recoveryCheckpoints = scope.recoveryCheckpoints!;
     this.identity = scope.identity!;
     this.channels = scope.channels!;
-    this.reminders = scope.reminders!;
     this.workers = scope.workers!;
     this.workerDelivery = scope.workerDelivery as SqliteWorkerDelivery | undefined;
     this.identityDelivery = scope.identityDelivery!;
@@ -392,7 +387,6 @@ export class SqliteAgentPersistence implements PersistenceBackend {
         runWrite,
       ),
       identityDelivery: new SqliteIdentityDeliveryPersistence(this.database, runWrite),
-      reminders: createSqliteReminderPersistence(this.database, runWrite, readChannels),
       channels: new SqliteChannelPersistence(this.database, runWrite, readChannels),
       workers: new SqliteWorkers(this.database, runWrite, readChannels),
       ...(this.ownerLock ? { workerDelivery: new SqliteWorkerDelivery(

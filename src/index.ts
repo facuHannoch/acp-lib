@@ -799,7 +799,3 @@ export { NativeInputStoppedError } from "./agent-conversation-errors.ts";
 export type { ConversationPermissionEvent, PermissionResolutionSource, WorkerPermissionSource } from "./permissions/conversation.ts";
 export type { PermissionConsumerConfig } from "./permissions/consumer-config.ts";
 export type { PermissionPolicyConfig } from "./permissions/policy.ts";
-export { ReminderError } from "./native/reminders/schedule.ts";
-export type { ReminderErrorCode, ReminderSchedule, ReminderScheduleInput } from "./native/reminders/schedule.ts";
-export type { Reminder } from "./persistence/reminders.ts";
-export type { ReminderCreate, ReminderEdit, ReminderView, ReminderEvent } from "./native/reminders/service.ts";

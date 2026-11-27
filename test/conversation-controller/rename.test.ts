@@ -75,7 +75,7 @@ describe("HarnessController", () => {
     expect(asController.currentSessionId).toBeNull();
     expect(asController.configOptions.size).toBe(0);
     expect(asController.cancelGraceMs).toBeUndefined();
-    expect(asController.conversationCapabilities).toEqual({ nativeSteering: false, reminders: false, backend: null });
+    expect(asController.conversationCapabilities).toEqual({ nativeSteering: false, backend: null });
   });
 
   test("the existing error strings keep the old class name (callers and snapshots match on them)", async () => {

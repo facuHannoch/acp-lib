@@ -1,4 +1,3 @@
-import type { ReminderService } from "./native/reminders/service.ts";
 import type { NativeMeteringRecovery } from "./metering/native/durability.ts";
 import type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 import type { Adapter } from "./adapters.ts";
@@ -87,7 +86,6 @@ export interface OwnedPromptFailed extends OwnedPromptInput, OwnedPromptTurnMess
 
 /** @internal Agent-owned persistence and identity boundary for a conversation turn. */
 export interface AgentConversationOwnerLifecycle {
-  readonly reminders?: ReminderService;
   readonly nativeMetering?: NativeMeteringRecovery;
   operationFailed?(input: { readonly operationId: string; readonly error: OperationStalledError }): Promise<void>;
   recoverInPlace?(error: unknown): Promise<void>;

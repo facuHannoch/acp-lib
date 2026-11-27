@@ -1,5 +1,3 @@
-import { protocolMethod } from "./persistence/protocol-method.ts";
-import { ReminderError } from "./native/reminders/schedule.ts";
 // AgentConversation — one durable conversation and the library's compatibility front
 // face. Existing consumers still import this constructor as `AgentSession`; both names
 // refer to the same class while the new agent-level owner is introduced.
@@ -4023,16 +4021,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
   }
 
+  // --- thin proxies to the live connection -------------------------------------
   get capabilities(): Capabilities {
     return acpCapabilitiesOf(this.controller);
   }
   /** What the backend offers, in neutral terms; safe to read before connecting and in PTY mode. */
   get conversationCapabilities(): ConversationCapabilities { return this.controller.conversationCapabilities; }
-  get reminders() {
-    const service = this.ownerLifecycle?.reminders;
-    if (!service) throw new ReminderError(this.conversationCapabilities.reminders ? "reminders_unavailable" : "reminders_unsupported", "Reminders require an owning Agent and a native conversation");
-    return service.conversation(this.agentConversationId, this.conversationCapabilities.reminders === true, event => this.emit(event));
-  }
   get configOptions(): ConfigOptions {
     return this.controller.configOptions;
   }
@@ -4488,4 +4482,10 @@ function runtimeRecordFromActivity(
       // self-contained model activity, so it must not be persisted independently.
       return null;
   }
+}
+
+function protocolMethod(message: PersistenceJsonValue): string | undefined {
+  if (message === null || Array.isArray(message) || typeof message !== "object") return undefined;
+  const method = (message as { readonly method?: unknown }).method;
+  return typeof method === "string" ? method : undefined;
 }

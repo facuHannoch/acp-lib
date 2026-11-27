@@ -48,7 +48,6 @@ describe("SQLite agent persistence", () => {
       fullTextSearch: true,
       identity: true,
       channels: true,
-      reminders: true,
       workerDelivery: true,
       workers: true,
       auditOutbox: true,

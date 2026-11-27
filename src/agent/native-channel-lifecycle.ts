@@ -12,28 +12,16 @@ export function protectPendingRetirement(
 ): ChannelPersistence {
   return {
     desire(channel, desire) {
-      if (desire.lifecycle === undefined) return channels.desire(channel, desire);
+      if (desire.lifecycle !== "open" && desire.lifecycle !== "suspended") return channels.desire(channel, desire);
       const change = { ...desire };
-      return persistence.transaction(async ({ channels: scoped, reminders }) => {
+      return persistence.transaction(async ({ channels: scoped }) => {
         const pending = await scoped!.pendingChange(channel);
-        if (pending?.desire.lifecycle === "retired" && change.lifecycle !== "retired") return pending;
-        const result = await scoped!.desire(channel, change);
-        await reminders?.setConversationSuspended(channel, change.lifecycle !== "open");
-        return result;
+        return pending?.desire.lifecycle === "retired" ? pending : scoped!.desire(channel, change);
       });
     },
     pendingChange: channels.pendingChange.bind(channels),
     pendingChanges: channels.pendingChanges.bind(channels),
-    confirmChange(channel, version) {
-      return persistence.transaction(async ({ channels: scoped, reminders }) => {
-        const pending = await scoped!.pendingChange(channel);
-        const confirmed = await scoped!.confirmChange(channel, version);
-        if (confirmed && pending?.version === version && pending.desire.lifecycle !== undefined) {
-          await reminders?.setConversationSuspended(channel, pending.desire.lifecycle !== "open");
-        }
-        return confirmed;
-      });
-    },
+    confirmChange: channels.confirmChange.bind(channels),
   };
 }
 
@@ -84,7 +72,6 @@ export async function deleteConversationWithChannel(
   };
   const remove = async (scope: PersistenceScope) => {
     const count = checkpoints ? (await scope.recoveryCheckpoints?.deleteForConversation?.(id)) ?? 0 : 0;
-    await scope.reminders?.deleteConversation(id);
     await scope.conversations.delete(id, deletedAt);
     return count;
   };
@@ -98,14 +85,5 @@ export async function deleteConversationWithChannel(
   }
   const disposition = await classify(persistence);
   if (disposition.retired) await nativeHarness?.changeChannel(id, { lifecycle: "retired" });
-  const checkpointsDeleted = persistence.reminders ? await persistence.transaction(remove) : await remove(persistence);
-  return { ...disposition, checkpointsDeleted };
-}
-
-export function protectedChannels(persistence: PersistenceBackend): ChannelPersistence | undefined {
-  if (!persistence.capabilities.channels) return undefined;
-  if (!persistence.channels) {
-    throw new Error("The persistence backend advertises channel intents but provides no channels repository");
-  }
-  return protectPendingRetirement(persistence, persistence.channels);
+  return { ...disposition, checkpointsDeleted: await remove(persistence) };
 }
