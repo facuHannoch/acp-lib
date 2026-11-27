@@ -12,6 +12,7 @@ import { FrameLimit, turnStatus, wireStatus } from "./load.ts";
 import { TransferFault, createTransfers, decodeArchive, encodeArchive, readArchiveFile, writeArchiveFile, TRANSFER_LIMITS } from "./transfers.ts";
 import type { ChannelChangeResult, PendingChannelChange, TransferLimits } from "../../contracts/protocol.ts";
 import { ChannelChangeFault, applyChannelChanges, checkPolicies, parseChannelChanges, sameBatch } from "./channel-changes.ts";
+import { WORKER_APPROVAL_SERVE } from "../../contracts/worker-approvals.ts";
 import type { RpcCallbackCancel, RpcCallbackRequest } from "../../contracts/protocol.ts";
 import type { ToolCatalogInput } from "../../contracts/tools.ts";
 import { CatalogError, parseCatalog, sameCatalog } from "../../capabilities/tools/runtime/catalog.ts";
@@ -97,7 +98,7 @@ export function describe(durable: boolean, archives = false, functions = false, 
     capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, reminders: true, routines: true, unattendedTurnGuard: true, ...(functions ? { functions: true as const } : {}), ...(attachments ? { managedAttachments: true as const, orderedParts: true as const } : {}),
       methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/open"] : []), ...operatorMethods, "session/status", "reminder/change", "reminder/get", "reminder/list",
         "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/notify", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
-        ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? toolMethods() : []), ...(attachments ? ["attachment/begin", "attachment/write", "attachment/status", "attachment/finalize", "attachment/abort", "attachment/read"] : [])],
+        ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? [...toolMethods(), WORKER_APPROVAL_SERVE] : []), ...(attachments ? ["attachment/begin", "attachment/write", "attachment/status", "attachment/finalize", "attachment/abort", "attachment/read"] : [])],
       events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "approval_closed", "reminder_changed", "reminder_fired", "reminder_expired", "reminder_cancelled", "routine_disposition", "routine_migration_blocked", "session/event"] },
   };
 }
@@ -136,6 +137,8 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     } catch (error) { throw error instanceof CatalogError ? new Fault(error.code, error.message) : error; }
   };
 
+  let workerApprovalTool: string | undefined;
+
   async function attach(request: SessionRequest): Promise<OpenedSession> {
     if (current || opening) throw new Fault("already_exists", "One session per endpoint");
     opening = true;
@@ -146,6 +149,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     catch (error) { opening = false; throw error instanceof SessionOpenError || error instanceof CatalogError ? new Fault(error.code, error.message) : new Fault("invalid_config", String(error)); }
     // Handlers are bound before any recovered work can start.
     opened.session.tools?.serve(served ?? [], served ? bridge.executor : undefined);
+    if (workerApprovalTool) opened.session.serveWorkerApprovals?.(workerApprovalTool, bridge.readWorkerApprovals);
     startupTools = request.tools;
     opened.session.subscribe(value => {
       const event = structuredClone(value);
@@ -263,6 +267,12 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { protocolVersion: 1, harness: { version: "0.0.0" }, description };
     }
     if (!initialized) throw new Fault("not_ready", "Initialize first");
+    if (method === WORKER_APPROVAL_SERVE) {
+      keys(p, ["answerTool"]);
+      if (current || opening || workerApprovalTool) throw new Fault("already_exists", "Register worker approval context before opening a session");
+      workerApprovalTool = text(p.answerTool);
+      return { accepted: true };
+    }
     if (method === "config/validate") {
       keys(p, ["config"]);
       try { validateManagedConfig(p.config); } catch (error) { throw new Fault("invalid_config", String(error)); }

@@ -1,4 +1,5 @@
 import type { RpcCallbackCancel, RpcCallbackRequest, RpcCallbackResponse } from "../../contracts/protocol.ts";
+import { WORKER_APPROVAL_READ, type ReadWorkerApprovals, type WorkerApprovalView } from "../../contracts/worker-approvals.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import type { FunctionExecutor, FunctionResult, ResultPage } from "../../contracts/tools.ts";
 import { CallbackFailure, CallbackLost } from "../../capabilities/tools/runtime/functions.ts";
@@ -36,8 +37,10 @@ export function createCallbackBridge(emit: (message: RpcCallbackRequest | RpcCal
       params: { invocationId: request.invocationId, reason: signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? "cancelled") } })),
     read: (request, signal) => ask<ResultPage>("results/read", request, signal),
   };
+  const readWorkerApprovals: ReadWorkerApprovals = (query, signal) =>
+    ask<readonly WorkerApprovalView[]>(WORKER_APPROVAL_READ, query, signal);
   return {
-    executor,
+    executor, readWorkerApprovals,
     /** The host's answer. Unknown, repeated and late IDs are ignored. */
     respond(response: RpcCallbackResponse) {
       const wait = response && Number.isSafeInteger(response.id) ? waiting.get(response.id) : undefined;

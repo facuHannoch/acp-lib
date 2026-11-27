@@ -1,6 +1,6 @@
 import type { ClientTransport, ProtocolEndpoint, RpcCallbackCancel, RpcCallbackRequest, RpcNotification, RpcResponse, RpcSessionNotification } from "../../contracts/protocol.ts";
 type Callback = RpcCallbackRequest | RpcCallbackCancel;
-const isCallback = (message: { method?: string }): message is Callback => message.method === "functions/call" || message.method === "results/read" || message.method === "functions/cancel";
+const isCallback = (message: { method?: string }): message is Callback => message.method === "functions/call" || message.method === "results/read" || message.method === "functions/cancel" || message.method === "context/worker-approvals/read";
 import { LiveQueue } from "./live-queue.ts";
 
 // Match the data boundary stdio imposes: no shared references or functions.

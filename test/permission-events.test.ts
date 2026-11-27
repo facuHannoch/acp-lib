@@ -2,10 +2,11 @@ import { expect, spyOn, test } from "bun:test";
 import { resolve } from "node:path";
 import { AgentSession } from "../src/agent-session.ts";
 import type { AgentConversationOwnerLifecycle } from "../src/agent-conversation-owner.ts";
+import { createAgentConversationId } from "../src/agent-ids.ts";
 import { Agent } from "../src/agent.ts";
 import { noopLogger } from "../src/logger.ts";
 import { acpPermissionArrivals, permissionArrival } from "../src/permissions/arrival.ts";
-import { ConversationPermissions, type ConversationPermissionEvent } from "../src/permissions/conversation.ts";
+import { answerForwardedWorkerPermission, ConversationPermissions, readForwardedWorkerPermissions, type ConversationPermissionEvent } from "../src/permissions/conversation.ts";
 import type { PermissionRequest } from "../src/types.ts";
 
 const fixture = resolve(import.meta.dir, "fixtures/permission-agent.ts");
@@ -252,7 +253,12 @@ test("an unanswered ACP ask can be cancelled by the conversation setting", async
 
 for (const first of ["consumer", "delegator"] as const) {
   test(`worker approval is claimed once when ${first} answers first`, async () => {
-    const coordinator = new ConversationPermissions(() => {}, () => noopLogger);
+    const giving = {}, other = {};
+    const policy = () => ({ answersPermissions: true });
+    const coordinator = new ConversationPermissions(() => {}, () => noopLogger, giving, policy);
+    new ConversationPermissions(() => {}, () => noopLogger, other, policy);
+    const source = { kind: "worker", handle: "w1", conversationId: createAgentConversationId() } as const;
+    const action = { kind: "read", details: { path: "private-file.ts" } };
     const delivered = Promise.withResolvers<string>();
     const request: PermissionRequest = {
       toolCallId: "read", options: [
@@ -261,15 +267,22 @@ for (const first of ["consumer", "delegator"] as const) {
       ], raw: {},
     };
     const resolved = coordinator.request(undefined, request, { answersPermissions: true }, undefined, undefined,
-      undefined, undefined, { mode: "both", authorize: policies => policies.includes("owner"),
-        async deliver(id, choices) { expect(choices).toEqual(["allow_once"]); delivered.resolve(id); return true; } });
+      undefined, source, { mode: "both", action, authorize: policies => policies.includes("owner"),
+        async deliver(id) { delivered.resolve(id); return true; } });
     const id = await delivered.promise;
+    expect(readForwardedWorkerPermissions(giving, ["owner"])).toMatchObject([
+      { request: id, worker: "w1", action, choices: ["allow_once"] },
+    ]);
+    expect(readForwardedWorkerPermissions(giving, ["guest"])).toEqual([]);
+    expect(readForwardedWorkerPermissions(other, ["owner"])).toEqual([]);
+    expect(await answerForwardedWorkerPermission(other, id, "allow_once", ["owner"])).toBe(false);
     expect(await coordinator.answerAsModel(id, "persistent", ["owner"])).toBe(false);
     expect(await coordinator.answerAsModel(id, "allow_once", ["guest"])).toBe(false);
     const consumer = () => coordinator.answer(id, "safe").then(result => result.accepted);
     const model = () => coordinator.answerAsModel(id, "allow_once", ["owner"]);
     expect(await Promise.all(first === "consumer" ? [consumer(), model()] : [model(), consumer()])).toEqual([true, false]);
     expect(await resolved).toMatchObject({ by: first, outcome: { outcome: "selected", optionId: "safe" } });
+    expect(readForwardedWorkerPermissions(giving, ["owner"])).toEqual([]);
   });
 }
 
@@ -287,7 +300,7 @@ test("failed model notice falls back only to an enabled consumer", async () => {
       ], raw: {},
     };
     const result = coordinator.request(undefined, request, { answersPermissions }, undefined, undefined,
-      undefined, undefined, { mode: "both", authorize: () => true,
+      undefined, undefined, { mode: "both", action: { kind: "read", details: { path: "README.md" } }, authorize: () => true,
         async deliver() { delivered.resolve(); return false; } });
     await delivered.promise;
     if (answersPermissions) {

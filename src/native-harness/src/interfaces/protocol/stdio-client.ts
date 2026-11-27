@@ -7,6 +7,8 @@ function callback(value: any): value is Callback {
   if (!Number.isSafeInteger(value.id)) return false;
   if (value.method === "functions/call") return [value.params.invocationId, value.params.sessionId, value.params.channel, value.params.turnId, value.params.tool, value.params.handler].every(field => typeof field === "string")
     && !!value.params.arguments && typeof value.params.arguments === "object";
+  if (value.method === "context/worker-approvals/read") return typeof value.params.channel === "string"
+    && Array.isArray(value.params.policyNames) && value.params.policyNames.every((name: unknown) => typeof name === "string");
   return value.method === "results/read" && [value.params.resultId, value.params.invocationId, value.params.channel].every(field => typeof field === "string")
     && Number.isSafeInteger(value.params.offset) && Number.isSafeInteger(value.params.length);
 }

@@ -3,6 +3,7 @@ import type { ClientTransport, Methods, DurableMethods, InitializeParams, Create
 import type { EventSink, SessionEventSink } from "../contracts/events.ts";
 import { createHash } from "node:crypto";
 import type { FunctionCall, FunctionResult, ResultPage, ResultRead } from "../contracts/tools.ts";
+import type { WorkerApprovalReader } from "../contracts/worker-approvals.ts";
 import { MAX_FRAME_BYTES } from "./protocol/framing.ts";
 
 /** A typed failure a function handler reports to the model (decision 0021). */
@@ -40,6 +41,7 @@ export class HarnessClient {
   private readonly unsubscribe: () => void;
   private unsubscribeCallbacks = () => {};
   private functionHandler: FunctionHandler | undefined;
+  private workerApprovalReader?: WorkerApprovalReader;
   private resultReader: ResultReader | undefined;
   /** Calls being handled, by invocation ID, so a cancellation reaches the right one. */
   private readonly running = new Map<string, AbortController>();
@@ -83,6 +85,13 @@ export class HarnessClient {
       if (message.method === "results/read") {
         const reader = this.resultReader;
         answer(async () => { if (!reader) throw new FunctionError("result_unavailable", "This host stores no results"); return reader(message.params); });
+        return;
+      }
+      if (message.method === "context/worker-approvals/read") {
+        answer(async () => {
+          try { return this.workerApprovalReader?.(message.params) ?? []; }
+          catch { return []; }
+        });
         return;
       }
       const names = message.params.policyNames;
@@ -138,6 +147,10 @@ export class HarnessClient {
   /** Decision 0021. Serve `functions/call` requests. Set before `initialize`
    * advertises handler names. One handler routes by `call.handler`. */
   serveFunctions(handler: FunctionHandler, reader?: ResultReader) { this.functionHandler = handler; this.resultReader = reader; }
+  serveWorkerApprovals(answerTool: string, reader: WorkerApprovalReader, signal?: AbortSignal) {
+    this.workerApprovalReader = reader;
+    return this.request("context/worker-approvals/serve", { answerTool }, signal);
+  }
   tools() { return this.request("session/tools", {}); }
   revokeTool(name: string) { return this.request("tool/revoke", { name }); }
   restoreTool(name: string) { return this.request("tool/restore", { name }); }

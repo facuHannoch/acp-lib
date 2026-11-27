@@ -21,3 +21,6 @@ export type { OpenResult } from "./contracts/operator-controls.ts";
 export type { ReminderBlockReason, OneOffSchedule, ReminderSchedule, RoutineSchedule, IntervalRoutineSchedule, CalendarRoutineSchedule, RoutineEnd, RoutineDeliveryOptions, RoutineTimezoneMigration, ReminderLimits, ReminderChannelEvent } from "./contracts/reminders.ts";
 
 export type { InspectorStatus } from "./contracts/inspector.ts";
+
+export { WORKER_APPROVAL_SERVE, MAX_WORKER_APPROVAL_BYTES, MAX_WORKER_APPROVALS } from "./contracts/worker-approvals.ts";
+export type { WorkerApprovalReader, WorkerApprovalView } from "./contracts/worker-approvals.ts";

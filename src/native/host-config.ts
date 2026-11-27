@@ -1,5 +1,5 @@
 import type { RoutineConfigInput } from "./reminders/routine-wire.ts";
-import type { HarnessClient, ChannelEvent, ChannelChangeResult } from "../native-harness/src/client.ts";
+import type { HarnessClient, ChannelEvent, ChannelChangeResult, WorkerApprovalReader } from "../native-harness/src/client.ts";
 import type { AcpLauncher } from "../launcher.ts";
 import type { Logger } from "../logger.ts";
 import type { NativeHostRecords } from "./records.ts";
@@ -27,6 +27,10 @@ export type NativeApprovalResponder = (
 export interface NativeHarnessHostConfig {
   /** The durable harness session: the Agent's id. */
   readonly sessionId: string;
+  readonly workerApprovalContext?: {
+    answerTool: string;
+    read: WorkerApprovalReader;
+  };
   /** Sent on every open. Session configuration is fixed while the session is open. */
   readonly config: RoutineConfigInput;
   /** Fresh secret material for each executable native harness open. */

@@ -118,6 +118,7 @@ export interface PersistentSessionOptions {
 /** Creating the session executes nothing: it can be inspected, loaded and
  * exported first. Opening, starting and resuming are separate actions. */
 export interface PersistentSession {
+  serveWorkerApprovals?(answerTool: string, read: import("./worker-approvals.ts").ReadWorkerApprovals): void;
   reminders?: Pick<SessionStorage, "readReminder" | "listReminders" | "reminderWake" | "unattendedGuard"> & {
     change(change: import("./reminders.ts").ReminderChange): ReturnType<SessionStorage["changeReminder"]>;
     processStartup(): void;

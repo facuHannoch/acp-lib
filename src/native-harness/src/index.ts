@@ -13,6 +13,7 @@ import type { SessionAgent, TurnExecutor } from "./contracts/agent.ts";
 import type { EventSink, SessionEventSink } from "./contracts/events.ts";
 import type { SessionStorage } from "./contracts/storage.ts";
 import { createMemoryStorageAdapter } from "./state/storage/memory.ts";
+import type { ReadWorkerApprovals } from "./contracts/worker-approvals.ts";
 import { CONTEXT_LIMITS, createSessionContext } from "./capabilities/context/session.ts";
 import { chatRequestSizer } from "./capabilities/model/chat-request.ts";
 import type { ContextLimitFailure } from "./contracts/context.ts";
@@ -79,6 +80,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       const attachment = store.readManagedAttachment?.(id);
       return attachment?.ok ? attachment.value?.metadata : undefined;
     }) : undefined;
+  let workerApprovals: { answerTool: string; read: ReadWorkerApprovals } | undefined;
   const context = createSessionContext(store, identity.value.sessionId, options.systemPrompt, CONTEXT_LIMITS, options.captureContext, sizeRequest);
   const limitError = (detail?: ContextLimitFailure) => Object.assign(new Error("Required inference material exceeds the context budget"),
     { outcome: detail ? `context_limit:${JSON.stringify(detail)}` : "context_limit" });
@@ -240,14 +242,16 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
             ...(event.type === "message_completed" && recorded ? { messageId: String(recorded.seq) } : {}) } });
       },
     }, async signal => {
-      const built = context.build(turn, offer);
+      const built = await context.build(turn, offer, signal, workerApprovals);
+      signal?.throwIfAborted();
       if (!built.ok) throw limitError(built.detail);
-      const { tools, fixedToolCount, messages, takenItemIds, representedItemIds: itemIds } = built.value;
+      const { tools, fixedToolCount, messages, takenItemIds, privateApprovalContext, representedItemIds: itemIds } = built.value;
       phase(turn.turnId, "model");
       const binding = getModelAttempt(services.model);
       let draftId: string | undefined;
       try {
       const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools, takenItemIds,
+        ...(privateApprovalContext ? { privateApprovalContext } : {}),
         ...(contextBudget ? { contextBudget } : {}), ...(fixedToolCount === undefined ? {} : { fixedToolCount }) },
         started: callId => {
           phase(turn.turnId, "model", callId);
@@ -341,6 +345,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   changes.subscribe(() => reminderRuntime.refresh());
   function processStartup() { if (!startupProcessed) { startupProcessed = true; reminderRuntime.process(); } }
   return {
+    serveWorkerApprovals(answerTool, read) { workerApprovals = { answerTool, read }; },
     ...(tools ? { tools } : {}),
     reminders: {
       readReminder: id => store.readReminder(id), listReminders: params => store.listReminders(params),

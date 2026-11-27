@@ -1,3 +1,4 @@
+import { MAX_WORKER_APPROVALS, MAX_WORKER_APPROVAL_BYTES, type WorkerApprovalView } from "../native-harness/src/client.ts";
 import type { AgentConversationId } from "../agent-ids.ts";
 import type { AgentSessionEvent } from "../agent-conversation-contracts.ts";
 import type { Logger } from "../logger.ts";
@@ -73,6 +74,7 @@ interface PermissionEntry {
   close(resolution: PermissionResolution): void;
   closeLocally(stopping?: boolean): void;
   answer?(optionId: string): Promise<boolean>;
+  modelView?(policyNames: readonly string[]): WorkerApprovalView | undefined;
   answerAsModel?(option: string, policyNames: readonly string[]): Promise<boolean>;
 }
 
@@ -83,8 +85,14 @@ const forwarding = new WeakMap<object, {
 
 export interface ModelWorkerApproval {
   readonly mode: "model" | "both";
+  readonly action: WorkerApprovalView["action"];
   readonly authorize: (policies: readonly string[]) => boolean;
-  deliver(id: string, choices: readonly string[], expiresAt: number, signal: AbortSignal): Promise<boolean>;
+  deliver(id: string, signal: AbortSignal): Promise<boolean>;
+}
+
+export function readForwardedWorkerPermissions(conversation: object | undefined, policies: readonly string[]): readonly WorkerApprovalView[] {
+  const destination = conversation && forwarding.get(conversation);
+  return destination ? destination.coordinator.modelViews(policies) : [];
 }
 
 export async function answerForwardedWorkerPermission(conversation: object | undefined, id: string, option: string,
@@ -140,6 +148,18 @@ export class ConversationPermissions {
 
   async answer(id: string, optionId: string): Promise<{ accepted: boolean }> {
     return { accepted: await this.pending.get(id)?.answer?.(optionId) ?? false };
+  }
+
+  modelViews(policies: readonly string[]): readonly WorkerApprovalView[] {
+    const views: WorkerApprovalView[] = [];
+    for (const entry of this.pending.values()) {
+      if (!entry.answerAsModel) continue;
+      const view = entry.modelView?.(policies);
+      if (!view || Buffer.byteLength(JSON.stringify([...views, view])) > MAX_WORKER_APPROVAL_BYTES) continue;
+      views.push(view);
+      if (views.length === MAX_WORKER_APPROVALS) break;
+    }
+    return views;
   }
 
   async answerAsModel(id: string, option: string, policies: readonly string[]): Promise<boolean> {
@@ -261,14 +281,18 @@ export class ConversationPermissions {
       };
       if (waitForConsumer) entry.answer = optionId => answer(optionId, "consumer");
       if (model) {
-        const choices = new Map<string, string>();
+        const choices = new Map<WorkerApprovalView["choices"][number], string>();
         for (const option of offered) {
-          if ((option.kind === "allow_once" || option.kind === "reject_once") && !choices.has(option.kind))
-            choices.set(option.kind, option.optionId);
+          const kind = option.kind === "allow_once" ? "allow_once" : option.kind === "reject_once" ? "reject_once" : undefined;
+          if (kind && !choices.has(kind)) choices.set(kind, option.optionId);
         }
         entry.answerAsModel = async (option, policies) => {
-          const optionId = choices.get(option);
+          const optionId = option === "allow_once" || option === "reject_once" ? choices.get(option) : undefined;
           return optionId !== undefined && model.authorize(policies) && answer(optionId, "delegator");
+        };
+        if (source) entry.modelView = policies => {
+          if (remaining() <= 0 || !model.authorize(policies)) return;
+          return { request: id, worker: source.handle, action: model.action, choices: [...choices.keys()], expiresAt: arrival.wallTime + budget };
         };
         const unavailable = () => {
           if (!entry.answerAsModel || !this.pending.has(id)) return;
@@ -281,7 +305,7 @@ export class ConversationPermissions {
         };
         void Promise.resolve().then(async () => {
           if (!entry.answerAsModel || handlerAbort.signal.aborted) return;
-          if (!await model.deliver(id, [...choices.keys()], arrival.wallTime + budget, handlerAbort.signal)) unavailable();
+          if (!await model.deliver(id, handlerAbort.signal)) unavailable();
         }).catch(unavailable);
       }
       timer = setTimeout(expire, Math.max(0, Math.ceil(remaining())));

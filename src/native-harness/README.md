@@ -693,6 +693,13 @@ await client.openSession({ sessionId, tools: { catalog: [
   and returns a preview and a reference. The model reads parts with
   `read_tool_result`; the harness accepts only IDs recorded for the requesting
   channel and forwards the read to the host as `results/read`.
+- **Worker approvals.** A host that owns live worker approvals may register
+  its answer tool with `client.serveWorkerApprovals(answerTool, reader)` after
+  initialize and before executable open. Check that the harness advertises
+  `context/worker-approvals/serve` first. The harness requests a bounded view
+  for the current channel and policies when it offers the answer tool. The
+  resulting view is provider input and stays outside the timeline and routine
+  captures. [Decision 0044](.res/decisions/0044-live-worker-approval-context.md)
 
 Adjustable defaults are in
 [BUSINESS_RULES.md](.res/docs/BUSINESS_RULES.md). The work log is

@@ -1,6 +1,6 @@
 import type { OrchestratorConfig } from "./config.ts";
 import type { NativeHarnessHost } from "../native/host.ts";
-import { describeModelApproval } from "./model-approval.ts";
+import { canAnswerModelApproval, describeModelApproval } from "./model-approval.ts";
 import type { PermissionSettings } from "../permissions/matcher.ts";
 import type { AgentConversationId } from "../agent-ids.ts";
 import { forwardPermission } from "../permissions/conversation.ts";
@@ -12,6 +12,7 @@ import { matchWorkerPermissionLevel } from "./policy.ts";
 
 export interface WorkerApprovalRouting {
   readonly config: OrchestratorConfig;
+  readonly supported: () => boolean;
   readonly send: NativeHarnessHost["sendWorkerApprovalNotice"];
 }
 
@@ -27,18 +28,17 @@ export function workerPermissionHandler(
     const unanswered = policies.some(policy => policy.unanswered === "cancel") ? "cancel" : "reject";
     if (actor.kind === "consumer") return unansweredPermissionOutcome(request.options, unanswered);
     const mode = approvals?.config.workerApprovals;
-    const description = approvals && (mode === "model" || mode === "both") && actor.destinationKind === "native" &&
+    const action = approvals?.supported() && (mode === "model" || mode === "both") && actor.destinationKind === "native" &&
       request.options.some(option => option.kind === "allow_once" || option.kind === "reject_once")
-      ? describeModelApproval(approvals.config, actor.policyNames, request) : undefined;
+      ? describeModelApproval(request) : undefined;
     return forwardPermission(findGivingConversation?.(actor.conversationId), request, {
       source: { kind: "worker", handle: worker.handle, conversationId: worker.conversationId },
-      ...(approvals && description && (mode === "model" || mode === "both") ? { model: {
-        mode,
-        authorize: policies => describeModelApproval(approvals.config, policies, request) === description,
-        deliver: (id, choices, expiresAt, liveSignal) => approvals.send(actor.conversationId, {
-          id: `worker-approval:${id}`, source: worker.handle, policyNames: [...actor.policyNames],
-          text: JSON.stringify({ kind: "worker_approval", worker: worker.handle, action: description,
-            request: id, choices, expiresAt }),
+      ...(approvals && action && canAnswerModelApproval(approvals.config, actor.policyNames, request) && (mode === "model" || mode === "both") ? { model: {
+        mode, action,
+        authorize: policies => canAnswerModelApproval(approvals.config, policies, request),
+        deliver: (id, liveSignal) => approvals.send(actor.conversationId, {
+          id: `worker-approval:${id}`, source: "worker approval", policyNames: [...actor.policyNames],
+          text: "A worker approval is pending in this conversation.",
         }, liveSignal),
       } } : {}),
       includeAllowAlways: actor.isOwner === true,

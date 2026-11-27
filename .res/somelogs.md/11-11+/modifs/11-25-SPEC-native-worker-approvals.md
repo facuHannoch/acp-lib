@@ -8,7 +8,7 @@ A native conversation that delegates to an ACP worker can receive and answer
 an eligible worker permission request. The host can remain a responder.
 ACP-client owns forwarding, pending requests, the answer tool, and notice
 delivery. The native harness supplies its existing tool catalog, turn policy,
-and `channel/notify` operation.
+and `channel/notify` operation, with a connection callback for live views.
 
 A worker policy decision of allow or deny settles as it does today. This spec
 applies only when the decision is ask. The worker's giving conversation when
@@ -49,12 +49,12 @@ that the existing policy permits for the human responder. Requests without
 an eligible one-time option use the existing consumer path. A model answer
 settles the individual ask and carries no authority to change worker policy.
 
-For the initial action projection, support structured workspace-relative read
-requests. Each contributing grant must list the exact path in
-`modelApproval.shareReadPaths` before it may be included in shared history.
-Other requests use the human path until a safe projection is available.
-Match the original structured request and derive the displayed action from
-those same fields. Do not copy a worker-supplied title or assignment label.
+Project structured file reads, edits, moves and deletes, command lines
+and argument arrays, and basic HTTP(S) fetch URLs. Match permissions against
+the original structured input. Derive the displayed details from recognized
+fields and mask common inline credentials. Ignore worker-supplied titles. Opaque payloads remain on the consumer path. There is no path allowlist.
+For an unsupported or over-budget action projection, use the existing
+consumer path.
 
 ## Pending request and delivery
 
@@ -69,17 +69,25 @@ before publishing a notice or allowing an answer. Reuse the existing
 permission deadline measured from request ingress. Notice delivery and
 retries do not reset that deadline.
 
-Send a bounded native notice with a stable item ID derived from the
-coordinator request ID. Include the worker handle, a concise action summary,
-the request ID, the available one-time choice names (`allow_once` and
-`reject_once`), and the expiry. Map the choice to the original worker option
-inside the coordinator. The summary must give the model enough information
-to distinguish the action it is approving. Use the human path when that
-detail cannot safely fit in the notice. Keep raw permission payloads,
-secrets, and private action details out of the notice, which may appear in
-shared history. The action summary is information for the responder. Use
-the originating policy names and the native host's channel ordering when
-calling `channel/notify`.
+Send a generic wake notice with a stable item ID derived from the
+coordinator request ID. The notice uses originating policy names and native
+channel ordering. The notice text carries no action details or answer inputs.
+
+Before an executable open, the host negotiates live approval context with
+the harness on the stdio connection. When the configured answer tool is
+offered, the harness asks the host for views for the current channel and
+its contributing policies. The host reads the existing pending permission
+entries, rechecks authorization and expiry, and returns the worker handle,
+projected action, request ID, one-time choices, and deadline. The harness
+fits complete views into the provider request after required turn material.
+An unavailable callback or a view that does not fit leaves normal inference
+available and preserves the existing approval deadline. Older harnesses
+use the consumer path.
+
+The provider receives the transient view. Native history, timeline, portable
+storage, and routine model capture omit that input. A model's ordinary
+published response remains normal conversation output, so the model is
+asked to answer via the tool and leave action details out of its reply.
 
 Use normal channel admission and active-turn intake. A notice can wake an
 idle channel on a running harness. Approval notice delivery never cold-starts
@@ -162,8 +170,8 @@ replay of worker actions.
    attempts cannot win. Verify a renamed answer tool with its exposed
    policy key.
 4. Verify empty or mixed grants, unavailable action detail, and a grant
-   removed before the answer. Check that private action details stay out of
-   the notice and shared context.
+   removed before the answer. Check that action details and the transient
+   approval view stay out of saved notices, shared context and captures.
 5. Exercise delivery failure with and without a host responder. Verify an
    idle channel wakes on a running harness, and that suspended channels
    and stopped harnesses are not started by an approval notice.

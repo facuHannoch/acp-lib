@@ -96,6 +96,7 @@ export interface InferenceContext {
   readonly messages: readonly Message[];
   readonly tools: readonly ToolDefinition[];
   readonly fixedToolCount?: number;
+  readonly privateApprovalContext?: true;
   /** Only original input items represented in this request may get receipts. */
   readonly representedItemIds: readonly string[];
   readonly takenItemIds: readonly string[];

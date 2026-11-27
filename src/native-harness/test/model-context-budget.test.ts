@@ -49,7 +49,7 @@ test("OpenRouter accounts for image tokens separately and bounds encoded bytes b
   expect(JSON.parse(wire[0]!)).toMatchObject({ max_tokens: 256 });
 });
 
-test("configured builder distinguishes required storage overflow and preserves a complete mixed exchange", () => {
+test("configured builder distinguishes required storage overflow and preserves a complete mixed exchange", async () => {
   const turn = { channelId: "a", turnId: 1 };
   const row = (seq: number, message: TimelineEntry["message"], turnId = 1): TimelineEntry =>
     ({ channelId: "a", turnId, seq, from: "fixture", at: "2026-01-01T00:00:00.000Z", message });
@@ -71,11 +71,46 @@ test("configured builder distinguishes required storage overflow and preserves a
     } }),
   }, "session", "system", CONTEXT_LIMITS, value => { captured = value; },
   chatRequestSizer("fixture", true, { contextWindowTokens: 10_000, maxRequestBytes: 6000 }));
-  expect(context.build(turn, () => ({ tools: [] }))).toMatchObject({ ok: false, detail: { limit: "required_storage" } });
+  expect(await context.build(turn, () => ({ tools: [] }))).toMatchObject({ ok: false, detail: { limit: "required_storage" } });
   storageOverflow = false;
-  const built = context.build(turn, () => ({ tools: [] }));
+  const built = await context.build(turn, () => ({ tools: [] }));
   expect(built).toMatchObject({ ok: true });
   expect(captured?.context.messages).toContainEqual({ role: "tool", callId: "s", content: sibling });
   expect(captured?.omitted.local).toBe(1);
   expect(captured?.budget).toMatchObject({ estimator: "chat-completions-utf8-v1", toolDefinitionBytes: 0, maxRequestBytes: 6000 });
+});
+
+test("live worker approval context is scoped, optional and excluded from context capture", async () => {
+  const tool = { name: "answer_worker", description: "Answer a worker", parameters: {} };
+  const turn = { channelId: "giving", turnId: 1 };
+  let captured: ContextCapture | undefined;
+  const context = createSessionContext({
+    readInferencePolicies: () => ({ ok: true, revision: 1, value: ["owner"] }),
+    readInferenceContext: () => ({ ok: true, revision: 1, value: {
+      policyNames: ["owner"], required: [], optionalTurn: [], localHistory: [], sharedHistory: [], unfinished: [], takenItemIds: [],
+    } }),
+  }, "session", "", CONTEXT_LIMITS, value => { captured = value; },
+  chatRequestSizer("fixture", true, { contextWindowTokens: 10_000, maxRequestBytes: 2600 }));
+  let reads = 0;
+  const build = (offered: boolean) => context.build(turn, () => ({ tools: offered ? [tool] : [] }), undefined, {
+    answerTool: tool.name,
+    async read(query) {
+      reads++;
+      expect(query).toEqual({ channel: "giving", policyNames: ["owner"] });
+      const pending = { worker: "w1", choices: ["allow_once"] as const, expiresAt: Date.now() + 10000 };
+      return [
+        { ...pending, request: "large", action: { kind: "edit", details: "x".repeat(3000) } },
+        { ...pending, request: "small", action: { kind: "read", details: { path: "approval-canary.ts" } } },
+      ];
+    },
+  });
+  expect(await build(false)).toMatchObject({ ok: true });
+  expect(reads).toBe(0);
+  const built = await build(true);
+  if (!built.ok) throw new Error(built.message);
+  expect(reads).toBe(1);
+  expect(built.value.privateApprovalContext).toBe(true);
+  expect(JSON.stringify(built.value.messages)).toContain("approval-canary.ts");
+  expect(JSON.stringify(built.value.messages)).not.toContain("xxxxx");
+  expect(JSON.stringify(captured)).not.toContain("approval-canary.ts");
 });

@@ -3,6 +3,8 @@ import type { StorageResult, TimelineEntry } from "./storage.ts";
 
 /** One immutable logical request, identical across the attempts of a call. */
 export interface ModelRequest { messages: readonly Message[]; tools: readonly ToolDefinition[];
+  /** Omit the request and response payload from routine captures. */
+  privateApprovalContext?: true;
   /** Effective managed budget for this immutable request. */
   contextBudget?: import("./config-permissions.ts").ModelContextBudget;
   /** IDs first included at this inference boundary, in take order. The first

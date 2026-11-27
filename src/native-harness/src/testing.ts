@@ -231,9 +231,9 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       function observeAttempt(attempt: ModelAttempt, channel: string, turnId: number, scripted = false): ModelAttempt {
         if (!inspection || !inspector?.active()) return attempt;
         return async function* (request, signal) {
-          if (scripted) inspection.request(channel, JSON.stringify(request), turnId);
+          if (scripted && !request.privateApprovalContext) inspection.request(channel, JSON.stringify(request), turnId);
           for await (const event of attempt(request, signal)) {
-            if (event.type === "response" && inspector.active()) inspection.response(channel, event.response);
+            if (event.type === "response" && !request.privateApprovalContext && inspector.active()) inspection.response(channel, event.response);
             yield event;
           }
         };
@@ -251,29 +251,33 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         systemPrompt: config.system, config, storage, imageInput, webTools, mcpTools: mcp?.bindings,
         ...(catalog ? { catalog } : {}),
         configureTurn(turn) {
-        const captureRequest = inspection && inspector?.active()
-          ? (body: string) => { if (inspector.active()) inspection.request(turn.channelId, body, turn.turnId); } : undefined;
+        const captureRequest = (body: string) => {
+          if (inspector?.active()) inspection?.request(turn.channelId, body, turn.turnId);
+        };
+        const observeProvider = (create: (capture?: (body: string) => void) => ModelAttempt): ModelAttempt => (request, signal) =>
+          observeAttempt(create(request.privateApprovalContext || !inspection ? undefined : captureRequest),
+            turn.channelId, turn.turnId)(request, signal);
         if (compatible) {
           const model: Model = async () => { throw new Error("Chat Completions requires a model attempt"); };
+          const conversation = { sessionId, channelId: turn.channelId };
+          const metadata = attachments ? (id: string) => {
+            const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
+          } : undefined;
           bindModelAttempt(model, { scripted: false,
             ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }),
-            create: () => {
-              const conversation = { sessionId, channelId: turn.channelId };
-              const metadata = attachments ? (id: string) => {
-                const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined;
-              } : undefined;
-              const attempt = relayAuthority ? inferenceRelayAttempt(compatible.model, relayAuthority, metadata, captureRequest)
-                : managedCompatibleAttempt(compatible, conversation, compatibleKey, captureRequest, metadata);
-              return observeAttempt(attempt, turn.channelId, turn.turnId);
-            } });
+            create: () => observeProvider(capture => relayAuthority
+              ? inferenceRelayAttempt(compatible.model, relayAuthority, metadata, capture)
+              : managedCompatibleAttempt(compatible, conversation, compatibleKey, capture, metadata)) });
           return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
         }
         if (config.model.protocol === "openrouter") {
-          const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
-          if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => observeAttempt(openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "", providerFetch, captureRequest,
-            attachments ? { supported: imageInput, metadata(id) { const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined; },
-              read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
-              verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); } } : undefined), turn.channelId, turn.turnId) });
+          const modelId = config.model.model;
+          const model = (options.providerFactory ?? openRouter)(credential!, modelId);
+          if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => observeProvider(capture =>
+            openRouterAttempt(credential!, modelId, providerFetch, capture,
+              attachments ? { supported: imageInput, metadata(id) { const value = storage.readManagedAttachment(id); return value.ok ? value.value?.metadata : undefined; },
+                read(metadata) { return attachments!.readForInference(turn.channelId, metadata.id); },
+                verify(metadata, signal) { return attachments!.verifyForInference(turn.channelId, metadata.id, signal); } } : undefined)) });
           return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
         }
         const model: Model = async () => { throw new Error("Scripted model requires a reserved attempt"); };
@@ -291,12 +295,12 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
               for await (const event of probe(request, signal)) if (event.type === "failure") throw new Error(event.code ?? event.message);
             }
             if (options.attempts) appendFileSync(options.attempts, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, step, ordinal, itemIds: request.takenItemIds })}\n`);
-            if (options.captureRequests) {
+            if (options.captureRequests && !request.privateApprovalContext) {
               const requests = models.get(turn.channelId) ?? [];
               requests.push(structuredClone(request));
               models.set(turn.channelId, requests);
             }
-            if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, revision: revisions.get(turn.channelId), messages: request.messages, tools: request.tools.map(tool => tool.name) })}\n`);
+            if (options.requests && !request.privateApprovalContext) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, revision: revisions.get(turn.channelId), messages: request.messages, tools: request.tools.map(tool => tool.name) })}\n`);
             if (options.stallChannel === turn.channelId && step === 0) {
               yield { type: "accepted" }; yield { type: "usage", usage: { inputTokens: 7 } };
               yield { type: "text_delta", text: "Partial reply" };

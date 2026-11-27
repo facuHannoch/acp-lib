@@ -2094,13 +2094,27 @@ asks, or `"both"` to keep the host responder available as well. Grant
 `orchestrator.toolNames.answer` to rename it.
 
 Each contributing orchestrator policy must explicitly grant the action
-in `modelApproval.rules`. The initial model path supports structured
-workspace-relative read requests. List the paths safe to include in
-shared history in each contributing policy's `modelApproval.shareReadPaths`.
-For example, use
-`modelApproval: { rules: { "kind:read": "allow" }, shareReadPaths: ["README.md"] }`.
-The model can select a one-time answer. An ask stays with the conversation
-that received it. After redirect, new asks follow the new giving conversation.
+in `modelApproval.rules`. For example,
+`modelApproval: { rules: { "kind:read": "allow", "kind:edit": "allow", "kind:execute": "allow" } }`
+lets the model answer supported file and command asks. The worker's permission
+policy still decides which actions require an ask. The model can select
+`allow_once` or `reject_once` when the worker offers that choice.
+
+The receiving channel's model gets a bounded view of the live request when
+the answer tool is available. Supported views include structured file reads,
+edits, moves and deletes, command lines and argument arrays, and basic HTTP(S)
+fetch URLs. A path allowlist is no longer required. The saved wake notice
+contains a generic prompt, and the private approval view is excluded from
+shared history and routine model request captures. The configured model
+provider receives the view, which may include paths, commands and edit
+details. Common inline credential forms are masked. Unrecognized or
+oversized requests stay on the existing consumer path. When upgrading
+from the read-only feature, remove the deprecated `shareReadPaths` field.
+A `"kind:read": "allow"` rule now covers any supported read.
+
+An ask stays with the conversation that received it. After redirect, new
+asks follow the new giving conversation. In `"both"` mode the first valid
+answer wins.
 
 From the source checkout, run the offline smoke test with
 `bun smoke-tests/orchestrator/run.ts`. Live mode requires explicit approval

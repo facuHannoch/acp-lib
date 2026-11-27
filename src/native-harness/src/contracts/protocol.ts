@@ -276,6 +276,7 @@ export interface DurableMethods extends ModelExecutionMethods, ReminderMethods, 
  * events. Delivered through `subscribeSession` on the transport and endpoint. */
 export interface RpcSessionNotification { jsonrpc: "2.0"; method: "session/event"; params: SessionEvent | import("./reminders.ts").ReminderSessionEvent }
 export interface Methods {
+  "context/worker-approvals/serve": { params: { answerTool: string }; result: { accepted: true } };
   initialize: { params: InitializeParams; result: InitializeResult };
   /** Validate without opening a session or starting execution. */
   "config/validate": { params: { config: unknown }; result: { valid: true } };
@@ -299,7 +300,8 @@ export interface RpcNotification { jsonrpc: "2.0"; method: "channel/event"; para
 // them apart. A response for a request that is no longer outstanding is ignored.
 export type RpcCallbackRequest =
   | { jsonrpc: "2.0"; id: number; method: "functions/call"; params: import("./tools.ts").FunctionCall }
-  | { jsonrpc: "2.0"; id: number; method: "results/read"; params: import("./tools.ts").ResultRead };
+  | { jsonrpc: "2.0"; id: number; method: "results/read"; params: import("./tools.ts").ResultRead }
+  | { jsonrpc: "2.0"; id: number; method: "context/worker-approvals/read"; params: import("./worker-approvals.ts").WorkerApprovalQuery };
 /** Ends the harness's wait for `invocationId`; the handler may stop. No reply. */
 export interface RpcCallbackCancel { jsonrpc: "2.0"; method: "functions/cancel"; params: { invocationId: string; reason: string } }
 export type RpcCallbackResponse = { jsonrpc: "2.0"; id: number; result: unknown }

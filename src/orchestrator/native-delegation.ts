@@ -83,7 +83,7 @@ export function withDelegationTools(
     tools: {
       ...functions?.tools,
       ...(names.answer ? { [names.answer]: tool(
-        "Answer a pending worker approval for this conversation. Use the request and one-time choice from its notice.",
+        "Answer a pending worker approval for this conversation. Use the request and one-time choice from the current pending approval context.",
         { type: "object", properties: { request: string, option: { type: "string", enum: ["allow_once", "reject_once"] } },
           required: ["request", "option"], additionalProperties: false },
         async (args, caller) => ({

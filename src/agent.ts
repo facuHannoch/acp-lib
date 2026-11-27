@@ -7,11 +7,12 @@ import { DurableWorkerAssignments } from "./orchestrator/durable-assignments.ts"
 import { workerConsumerApi, type WorkerConsumerApi } from "./orchestrator/consumer-api.ts";
 import { Orchestrator } from "./orchestrator/orchestrator.ts";
 import { resolveDelegationToolNames, validateOrchestrator } from "./orchestrator/config.ts";
+import { readForwardedWorkerPermissions } from "./permissions/conversation.ts";
 import { validatePermissionConsumerConfig } from "./permissions/consumer-config.ts";
 import { inheritPermissionConfig, ownPermissions } from "./permissions/policy.ts";
 import { randomUUID } from "node:crypto";
 import {
-  type AgentSessionId,
+  isAgentConversationId, type AgentSessionId,
 } from "./agent-ids.ts";
 import { NativeHarnessHost } from "./native/host.ts";
 import { protectedChannels } from "./agent/native-channel-lifecycle.ts";
@@ -162,8 +163,8 @@ export class Agent {
     this.persistence = persistence;
     this.adapters = adapters;
     const orchestration = config.orchestrator;
-    if (orchestration) {
-      const toolNames = resolveDelegationToolNames(orchestration.toolNames, orchestration.workerApprovals);
+    const toolNames = orchestration && resolveDelegationToolNames(orchestration.toolNames, orchestration.workerApprovals);
+    if (orchestration && toolNames) {
       this.wrapNativeFunctions = functions => withDelegationTools(functions, orchestration,
         () => this.orchestrator!, () => this.conversations, toolNames, id => this.manager.liveConversation(id));
     }
@@ -172,6 +173,10 @@ export class Agent {
       ? new NativeHarnessHost({
         sessionId: id,
         ...config.harness,
+        ...(toolNames?.answer ? { workerApprovalContext: { answerTool: toolNames.answer,
+          read: ({ channel, policyNames }) => isAgentConversationId(channel)
+            ? readForwardedWorkerPermissions(this.manager.liveConversation(channel), policyNames) : [],
+        } } : {}),
         ...(this.wrapNativeFunctions ? { functions: this.wrapNativeFunctions(config.harness.functions) } : {}),
         ...(config.harness.launcher ?? config.conversationDefaults?.launcher
           ? { launcher: config.harness.launcher ?? config.conversationDefaults!.launcher }
@@ -261,7 +266,7 @@ export class Agent {
         defaultPermissions: config.orchestrator.defaults?.workerPermissions }, logger,
         event => this.eventBus.publishWorker(event), assignments, id => this.manager.liveConversation(id),
         this.nativeHarness && config.orchestrator.workerApprovals && config.orchestrator.workerApprovals !== "consumer" ? {
-          config: config.orchestrator, send: this.nativeHarness.sendWorkerApprovalNotice.bind(this.nativeHarness),
+          config: config.orchestrator, supported: () => this.nativeHarness!.supportsWorkerApprovalContext(), send: this.nativeHarness.sendWorkerApprovalNotice.bind(this.nativeHarness),
         } : undefined);
       this.workers = workerConsumerApi(this.orchestrator);
     }

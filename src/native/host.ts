@@ -40,6 +40,7 @@ import {
   type TurnStatus,
   type ToolAvailability,
   type ToolInvocation,
+  WORKER_APPROVAL_SERVE,
 } from "../native-harness/src/client.ts";
 import { commitChannelCatchUp, openOrCreate, readCompleteMessage, recoverChannel, recoverStoppedReplies } from "./recovery.ts";
 import { createNativeFunctionHost, type NativeFunctionHost } from "./functions.ts";
@@ -547,6 +548,10 @@ export class NativeHarnessHost {
     if (!capabilities.startupChannelChanges) throw new HarnessIncompatibleError("the native harness cannot apply channel changes at open");
     if (functions && !capabilities.functions) throw new HarnessIncompatibleError("the native harness cannot call host functions");
 
+    const workerApprovals = this.#config.workerApprovalContext;
+    if (workerApprovals && capabilities.methods.includes(WORKER_APPROVAL_SERVE))
+      await client.serveWorkerApprovals(workerApprovals.answerTool, workerApprovals.read, signal);
+
     // The startup cutoff: what is pending now goes inside the open and is applied before any work
     // can run. An edit made after this line is sent through the live channel methods once open.
     const batch = await this.#changes.startupBatch(signal);
@@ -889,6 +894,7 @@ export class NativeHarnessHost {
   #lastStatus?: StatusResult;
   #capabilities?: Awaited<ReturnType<HarnessClient["initialize"]>>["description"]["capabilities"];
 
+  supportsWorkerApprovalContext() { return this.#capabilities?.methods.includes(WORKER_APPROVAL_SERVE) === true; }
   get capabilities() { return this.#capabilities; }
   get sessionLifecycle() { return this.#lastStatus?.lifecycle; }
   async status(): Promise<StatusResult> {

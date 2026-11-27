@@ -135,10 +135,10 @@ function prompt(m: any): void {
     text(session, "partial reply");
     return;
   }
-  if (mode === "permission" || mode === "readpermission") {
+  if (["permission", "readpermission", "editpermission", "executepermission"].includes(mode)) {
     const ask = () => {
       if (pending?.id !== m.id) return;
-      const gate = mode === "readpermission" ? process.env.LIFECYCLE_PERMISSION_GATE_FILE : undefined;
+      const gate = mode !== "permission" ? process.env.LIFECYCLE_PERMISSION_GATE_FILE : undefined;
       if (gate && !existsSync(gate)) { setTimeout(ask, 5); return; }
       permission = { promptId: m.id, session, id: `permission-${randomUUID()}` };
       send({
@@ -147,7 +147,9 @@ function prompt(m: any): void {
         params: {
           sessionId: session,
           toolCall: { toolCallId: "permission-tool", title: "permission test",
-            ...(mode === "readpermission" ? { kind: "read", rawInput: { path: "README.md" } } : {}) },
+            ...(mode === "readpermission" ? { kind: "read", rawInput: { path: "README.md" } } : {}),
+            ...(mode === "editpermission" ? { kind: "edit", rawInput: { path: "src/live-approval-private.ts", newText: "export const ready = true;" } } : {}),
+            ...(mode === "executepermission" ? { kind: "execute", rawInput: { command: ["fixture", "--token", "canary-worker-credential"], cwd: "/workspace", description: "Run the fixture command" } } : {}) },
           options: [{ optionId: "allow", kind: "allow_once", name: "Allow" }],
         },
       });

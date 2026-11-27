@@ -15,9 +15,10 @@ export interface OrchestratorConfig {
   readonly policies?: Readonly<Record<string, {
     readonly delegation: DelegationPolicy;
     readonly workerPermissions?: PermissionSettings;
-    /** Scope of model answers and the read paths safe to include in shared notices. */
+    /** Scope of one-time model answers. All contributing policies must allow the ask. */
     readonly modelApproval?: {
       readonly rules: NonNullable<PermissionSettings["rules"]>;
+      /** @deprecated Live approval context does not require a shared path list. */
       readonly shareReadPaths?: readonly string[];
     };
   }>>;

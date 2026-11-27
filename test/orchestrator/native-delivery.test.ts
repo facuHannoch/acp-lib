@@ -174,26 +174,35 @@ for (const state of ["pending", "blocked_policy", "missing", "retired"] as const
   }, 35_000);
 }
 
-test.each([["direct", false], ["after redirect", true]] as const)(
-  "an idle native model answers an eligible worker ask without a UI responder (%s)", async (_case, redirect) => {
+test.each([
+  ["unlisted read", false, "read", "README.md"],
+  ["unlisted edit after redirect", true, "edit", "src/live-approval-private.ts"],
+  ["command with masked credentials", false, "execute", '"argv":["fixture","--token","[redacted]"]'],
+] as const)(
+  "an idle native model answers a worker ask without a UI responder (%s)", async (_case, redirect, kind, detail) => {
   const rig = await nativeRig();
+  rig.env.HARNESS_INSPECTOR_PORT = "0";
   const permissionGate = join(rig.directory, "allow-worker-ask");
   const workerGate = join(rig.directory, "worker-tool-boundary");
+  const privateRequests: { channel?: string; detail: string }[] = [];
+  const laterRequests: string[] = [];
   const provider = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const { messages } = await request.json() as { messages: { role: string; content?: string }[] };
     const last = messages.at(-1);
     const text = last?.content ?? "";
-    const approval = last?.role === "user" && text.includes("worker_approval")
+    const approval = last?.role === "user" && text.startsWith("Pending worker approvals")
       ? /"request":"([a-f0-9-]+)"/.exec(text)?.[1] : undefined;
+    if (approval) privateRequests.push({ channel: /Current channel: "([^"]+)"/.exec(messages[1]?.content ?? "")?.[1], detail: text });
+    if (text.includes("Check shared history")) laterRequests.push(JSON.stringify(messages));
     const tool = (name: string, args: object) => ({
       delta: { tool_calls: [{ index: 0, id: name, function: { name, arguments: JSON.stringify(args) } }] },
       finish_reason: "tool_calls",
     });
     const choice = approval ? tool("answer_worker", { request: approval, option: "allow_once" })
-      : last?.role === "user" && text.includes("Take over read")
-        ? tool("delegate", { worker: "w1", redirect: true, text: "[lifecycle:readpermission] read" })
-        : last?.role === "user" && text.includes("Delegate read")
-          ? tool("delegate", { text: redirect ? "[lifecycle:tool] original" : "[lifecycle:readpermission] read" })
+      : last?.role === "user" && text.includes("Take over worker")
+        ? tool("delegate", { worker: "w1", redirect: true, text: `[lifecycle:${kind}permission] ask` })
+        : last?.role === "user" && text.includes("Delegate worker")
+          ? tool("delegate", { text: redirect ? "[lifecycle:tool] original" : `[lifecycle:${kind}permission] ask` })
           : { delta: { content: "Ready." }, finish_reason: "stop" };
     return new Response(`data: ${JSON.stringify({ choices: [choice] })}\n\ndata: [DONE]\n\n`,
       { headers: { "content-type": "text/event-stream" } });
@@ -211,7 +220,7 @@ test.each([["direct", false], ["after redirect", true]] as const)(
         LIFECYCLE_END_GATE_FILE: join(rig.directory, "hold-old-end"),
       } },
       orchestrator: { workers, workerApprovals: "model", toolNames: { answer: "answer_worker" }, policies: {
-        owner: { delegation: scope, modelApproval: { rules: { "kind:read": "allow" }, shareReadPaths: ["README.md"] } },
+        owner: { delegation: scope, modelApproval: { rules: { [`kind:${kind}`]: "allow" } } },
       } },
     });
     const first = await agent.conversations.create({ title: "Alice", answersPermissions: false });
@@ -226,10 +235,10 @@ test.each([["direct", false], ["after redirect", true]] as const)(
       if (event.kind === "permission_resolved" && event.by === "delegator" && event.outcome === "approved") accepted.resolve();
     });
     agent.events.subscribeWorkers(({ event }) => { if (event.kind === "worker_idle") idle.resolve(); });
-    expect((await first.prompt("Delegate read")).text).toContain("Ready.");
+    expect((await first.prompt("Delegate worker")).text).toContain("Ready.");
     if (redirect) {
       await waitFor(boundary.promise, "worker's original tool boundary");
-      expect((await conversation.prompt("Take over read")).text).toContain("Ready.");
+      expect((await conversation.prompt("Take over worker")).text).toContain("Ready.");
       await writeFile(workerGate, "");
     }
     await writeFile(permissionGate, "");
@@ -238,6 +247,27 @@ test.each([["direct", false], ["after redirect", true]] as const)(
     const staged = await agent.persistence.workerDelivery!.readStaged("1:delegate");
     expect(staged?.outcome).toMatchObject({ kind: "result", text: "permission=selected" });
     expect(staged?.delivery.destination).toEqual({ kind: "native", id: conversation.id });
+    expect(privateRequests).toHaveLength(1);
+    expect(privateRequests[0]?.channel).toBe(conversation.id);
+    expect(privateRequests[0]!.detail).toContain(detail);
+    expect(privateRequests[0]!.detail).not.toContain("canary-worker-credential");
+    const other = redirect ? first : await agent.conversations.create({ title: "Other" });
+    await other.prompt("Check shared history");
+    expect(laterRequests).toHaveLength(1);
+    expect(laterRequests[0]).not.toContain(kind === "execute" ? "canary-worker-credential" : detail);
+    expect(laterRequests[0]).not.toContain("Pending worker approvals");
+    const host = agent.nativeHarness!;
+    const timeline = JSON.stringify(await host.timeline());
+    expect(timeline).toContain("A worker approval is pending");
+    expect(timeline).not.toContain("Pending worker approvals");
+    expect(timeline).not.toContain(kind === "execute" ? "canary-worker-credential" : detail);
+    const inspector = (await host.status()).inspector;
+    if (inspector?.state !== "listening") throw new Error("Expected an active inspector");
+    const capture = await (await fetch(`http://127.0.0.1:${inspector.port}/channel?id=${conversation.id}`)).text();
+    expect(capture).toContain("Ready.");
+    expect(capture).not.toContain("Pending worker approvals");
+    expect(capture).not.toContain(kind === "execute" ? "canary-worker-credential" : detail);
+
   } finally {
     await rig.clean();
     await provider.stop(true);
